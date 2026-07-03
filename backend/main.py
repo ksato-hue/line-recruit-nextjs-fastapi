@@ -25,12 +25,8 @@ ADMIN_ORIGIN = os.getenv(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        ADMIN_ORIGIN,
-        "https://line-recruit-admin.onrender.com",
-    ],
-    allow_credentials=True,
+    allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
