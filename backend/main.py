@@ -1,4 +1,3 @@
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from supabase import create_client
 from fastapi import FastAPI, Request, HTTPException
@@ -8,34 +7,29 @@ from typing import Any, Optional
 import os
 import requests
 
-app = FastAPI()
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://line-recruit-admin.onrender.com",
-    ],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 
 supabase = create_client(
     SUPABASE_URL,
     SUPABASE_KEY
 )
+
 app = FastAPI(title="LINE Recruit API")
 
-# Next.js 管理画面からAPIを呼ぶためのCORS設定
-# 本番では NEXT_PUBLIC_ADMIN_ORIGIN に管理画面URLを入れてください。
-ADMIN_ORIGIN = os.getenv("ADMIN_ORIGIN", "http://localhost:3000")
+ADMIN_ORIGIN = os.getenv(
+    "ADMIN_ORIGIN",
+    "https://line-recruit-admin.onrender.com"
+)
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[ADMIN_ORIGIN, "http://127.0.0.1:3000", "http://localhost:3000"],
+    allow_origins=[
+        "http://localhost:3000",
+        ADMIN_ORIGIN,
+        "https://line-recruit-admin.onrender.com",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
