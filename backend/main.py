@@ -36,6 +36,7 @@ LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 
 user_states = {}
 applicants = {}
+interview_confirmations = {}
 
 
 @app.get("/")
@@ -57,6 +58,7 @@ async def webhook(request: Request):
         reply_token = event.get("replyToken")
 
         print("受信メッセージ:", message)
+        try_insert_line_message_log(user_id, message, "inbound", "reply")
 
         response = handle_message(user_id, message)
 
@@ -171,19 +173,157 @@ def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _format_interview_datetime(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    normalized = value.replace("T", " ")
+    for fmt, length in (("%Y-%m-%d %H:%M", 16), ("%Y-%m-%d %H:%M:%S", 19)):
+        try:
+            parsed = datetime.strptime(normalized[:length], fmt)
+            return f"{parsed.year}年{parsed.month}月{parsed.day}日 {parsed.hour:02d}:{parsed.minute:02d}"
+        except ValueError:
+            continue
+    return normalized
+
+
 def _find_active_interview_slot(line_user_id: str, slot_datetime: str) -> Optional[dict[str, Any]]:
+    normalized_datetime = slot_datetime.replace("T", " ")
     result = (
         supabase.table("interview_slots")
         .select("*")
         .eq("line_user_id", line_user_id)
-        .eq("slot_datetime", slot_datetime)
+        .eq("slot_datetime", normalized_datetime)
         .order("created_at", desc=True)
         .execute()
     )
     for slot in result.data or []:
-        if slot.get("status") not in ["選択済み", "キャンセル"]:
+        if slot.get("status") not in ["選択済み", "キャンセル", "確認待ち"]:
             return slot
     return None
+
+
+def _get_pending_interview_confirmation(user_id: str) -> Optional[dict[str, Any]]:
+    pending = interview_confirmations.get(user_id)
+    if pending:
+        return pending
+
+    result = (
+        supabase.table("interview_slots")
+        .select("*")
+        .eq("line_user_id", user_id)
+        .eq("status", "確認待ち")
+        .order("created_at", desc=True)
+        .execute()
+    )
+    if not result.data:
+        return None
+
+    slot = result.data[0]
+    return {
+        "slot_id": slot.get("id"),
+        "applicant_id": slot.get("applicant_id"),
+        "slot_datetime": slot.get("slot_datetime"),
+        "interview_type": slot.get("interview_type") or "面接",
+    }
+
+
+def _finish_interview_confirmation(user_id: str) -> dict[str, Any]:
+    pending = _get_pending_interview_confirmation(user_id)
+    if not pending:
+        user_states[user_id] = None
+        return text_response("確認中の面接候補日がありません。候補日をもう一度選択してください。")
+
+    applicant_id = pending.get("applicant_id")
+    selected_datetime = pending.get("slot_datetime")
+    selected_slot_id = pending.get("slot_id")
+    interview_type = pending.get("interview_type") or "面接"
+    selected_at = _utc_now()
+
+    (
+        supabase.table("interview_slots")
+        .update({"status": "選択済み", "selected_at": selected_at})
+        .eq("id", selected_slot_id)
+        .execute()
+    )
+    (
+        supabase.table("interview_slots")
+        .update({"status": "キャンセル"})
+        .eq("applicant_id", applicant_id)
+        .neq("id", selected_slot_id)
+        .execute()
+    )
+    (
+        supabase.table("applicants")
+        .update({
+            "status": "面接確定",
+            "interview_status": "面接確定",
+            "interview_date": selected_datetime,
+        })
+        .eq("id", applicant_id)
+        .execute()
+    )
+
+    user_states[user_id] = None
+    interview_confirmations.pop(user_id, None)
+
+    return text_response(
+        "面接日程を確定しました。\n\n"
+        "■面接種別\n"
+        f"{interview_type}\n\n"
+        "■面接日時\n"
+        f"{_format_interview_datetime(selected_datetime)}\n\n"
+        "担当者より詳細をご連絡いたします。"
+    )
+
+
+def _reset_interview_confirmation(user_id: str) -> dict[str, Any]:
+    pending = _get_pending_interview_confirmation(user_id)
+    interview_confirmations.pop(user_id, None)
+    user_states[user_id] = None
+    if not pending:
+        return text_response("候補日をもう一度選択してください。")
+
+    slot_id = pending.get("slot_id")
+    applicant_id = pending.get("applicant_id")
+    if slot_id:
+        (
+            supabase.table("interview_slots")
+            .update({"status": "候補"})
+            .eq("id", slot_id)
+            .execute()
+        )
+
+    slot_result = (
+        supabase.table("interview_slots")
+        .select("*")
+        .eq("applicant_id", applicant_id)
+        .execute()
+    )
+    buttons = [
+        slot.get("slot_datetime")
+        for slot in slot_result.data or []
+        if slot.get("slot_datetime") and slot.get("status") not in ["選択済み", "キャンセル"]
+    ]
+    return text_response("ご都合の良い日時をもう一度選択してください。", buttons[:5] or None)
+
+
+def handle_interview_confirmation(user_id: str, message: str) -> Optional[dict[str, Any]]:
+    if user_states.get(user_id) != "confirming_interview_slot":
+        return None
+    try:
+        if message == "確定する":
+            return _finish_interview_confirmation(user_id)
+        if message == "選び直す":
+            return _reset_interview_confirmation(user_id)
+        return text_response("面接日程を確定する場合は「確定する」、変更する場合は「選び直す」を選択してください。", ["確定する", "選び直す"])
+    except Exception as exc:
+        print("面接候補日確定処理エラー:", exc)
+        user_states[user_id] = None
+        interview_confirmations.pop(user_id, None)
+        return text_response(
+            "面接日程の確定中にエラーが発生しました。\n"
+            "恐れ入りますが、担当者からの連絡をお待ちください。"
+        )
 
 
 def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict[str, Any]]:
@@ -199,47 +339,39 @@ def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict
             print("interview_slots の必要な値が不足しています:", selected_slot)
             return None
 
-        selected_at = _utc_now()
         (
             supabase.table("interview_slots")
-            .update({"status": "選択済み", "selected_at": selected_at})
+            .update({"status": "確認待ち"})
             .eq("id", selected_slot_id)
             .execute()
         )
-        (
-            supabase.table("interview_slots")
-            .update({"status": "キャンセル"})
-            .eq("applicant_id", applicant_id)
-            .neq("id", selected_slot_id)
-            .execute()
-        )
-        (
-            supabase.table("applicants")
-            .update({
-                "status": "面接確定",
-                "interview_status": "面接確定",
-                "interview_date": selected_datetime,
-            })
-            .eq("id", applicant_id)
-            .execute()
-        )
+        user_states[user_id] = "confirming_interview_slot"
+        interview_confirmations[user_id] = {
+            "slot_id": selected_slot_id,
+            "applicant_id": applicant_id,
+            "slot_datetime": selected_datetime,
+            "interview_type": selected_slot.get("interview_type") or "面接",
+        }
 
         return text_response(
-            "面接日程を確定しました。\n\n"
-            "■面接日時\n"
-            f"{selected_datetime}\n\n"
-            "担当者より詳細をご連絡いたします。"
+            f"{_format_interview_datetime(selected_datetime)}からの"
+            f"{selected_slot.get('interview_type') or '面接'}で確定しますか？",
+            ["確定する", "選び直す"]
         )
     except Exception as exc:
         print("面接候補日選択処理エラー:", exc)
         return text_response(
-            "面接日程の確定中にエラーが発生しました。\n"
+            "面接候補日の確認中にエラーが発生しました。\n"
             "恐れ入りますが、担当者からの連絡をお待ちください。"
         )
 
 
 def handle_message(user_id, message):
     state = user_states.get(user_id)
+
+    confirmation_response = handle_interview_confirmation(user_id, message)
+    if confirmation_response:
+        return confirmation_response
 
     if not state:
         interview_response = handle_interview_slot_selection(user_id, message)
@@ -901,6 +1033,18 @@ def push_line_message(line_user_id: str, text: str, buttons: Optional[list[str]]
             detail=f"LINE送信に失敗しました: {response.text}"
         )
 
+
+def try_insert_line_message_log(line_user_id: str, message: str, direction: str, message_type: str) -> None:
+    try:
+        supabase.table("line_message_logs").insert({
+            "line_user_id": line_user_id,
+            "message": message,
+            "direction": direction,
+            "message_type": message_type,
+        }).execute()
+    except Exception as exc:
+        print("line_message_logs への保存をスキップしました:", exc)
+
 @app.get("/applicants")
 def get_applicants():
     result = supabase.table("applicants").select("*").execute()
@@ -1223,6 +1367,7 @@ class ApplicantUpdate(BaseModel):
 
 class InterviewSlotCreate(BaseModel):
     slots: list[str]
+    interview_type: Optional[str] = "面接"
 
 
 def _safe_count(rows: list[dict[str, Any]], key: str, value: str) -> int:
@@ -1232,7 +1377,7 @@ def _safe_count(rows: list[dict[str, Any]], key: str, value: str) -> int:
 def _normalize_slot_values(slots: list[str]) -> list[str]:
     normalized: list[str] = []
     for slot in slots:
-        value = slot.strip()
+        value = slot.strip().replace("T", " ")
         if value and value not in normalized:
             normalized.append(value)
 
@@ -1253,6 +1398,20 @@ def _get_applicant_or_404(applicant_id: str) -> dict[str, Any]:
     if not result.data:
         raise HTTPException(status_code=404, detail="応募者が見つかりません")
     return result.data[0]
+
+
+def _insert_interview_slots(rows: list[dict[str, Any]]) -> Any:
+    try:
+        return supabase.table("interview_slots").insert(rows).execute()
+    except Exception as exc:
+        if not any("interview_type" in row for row in rows):
+            raise
+        print("interview_type カラムなしで interview_slots 登録を再試行します:", exc)
+        fallback_rows = [
+            {key: value for key, value in row.items() if key != "interview_type"}
+            for row in rows
+        ]
+        return supabase.table("interview_slots").insert(fallback_rows).execute()
 
 
 @app.get("/api/health")
@@ -1347,6 +1506,7 @@ def api_get_interview_slots(applicant_id: str):
 @app.post("/api/applicants/{applicant_id}/interview-slots")
 def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
     slot_values = _normalize_slot_values(payload.slots)
+    interview_type = (payload.interview_type or "面接").strip() or "面接"
     applicant = _get_applicant_or_404(applicant_id)
     line_user_id = applicant.get("line_user_id")
     if not line_user_id:
@@ -1358,12 +1518,13 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
             "line_user_id": line_user_id,
             "slot_datetime": slot,
             "status": "候補",
+            "interview_type": interview_type,
         }
         for slot in slot_values
     ]
 
     try:
-        slots_result = supabase.table("interview_slots").insert(rows).execute()
+        slots_result = _insert_interview_slots(rows)
         applicant_result = (
             supabase.table("applicants")
             .update({"interview_status": "面接調整中"})
@@ -1371,10 +1532,12 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
             .execute()
         )
         message = (
+            f"{interview_type}の日程調整のご連絡です。\n"
             "面接候補日をお送りします。\n"
             "ご都合の良い日時を選択してください。"
         )
         push_line_message(line_user_id, message, slot_values)
+        try_insert_line_message_log(line_user_id, message, "outbound", "interview_slots")
     except HTTPException:
         raise
     except Exception as exc:
@@ -1385,6 +1548,7 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
         "status": "sent",
         "applicant": (applicant_result.data or [applicant])[0],
         "slots": slots_result.data or [],
+        "interview_type": interview_type,
     }
 
 
@@ -1401,19 +1565,17 @@ def api_inquiries():
 
 @app.post("/api/line/send")
 def api_line_send(payload: dict[str, Any]):
-    """管理画面からLINE送信するための仮API。
-
-    まずは将来の接続口として用意しています。
-    実送信をする場合は push API 用に line_user_id と message を受け取り、
-    LINE Messaging API の /push エンドポイントへ送信してください。
-    """
+    """管理画面から応募者へLINE Push APIで手動送信します。"""
     line_user_id = payload.get("line_user_id")
     message = payload.get("message")
     if not line_user_id or not message:
         raise HTTPException(status_code=400, detail="line_user_id と message が必要です")
 
+    push_line_message(line_user_id, message)
+    try_insert_line_message_log(line_user_id, message, "outbound", "manual")
+
     return {
-        "status": "queued",
+        "status": "sent",
         "line_user_id": line_user_id,
         "message": message,
     }

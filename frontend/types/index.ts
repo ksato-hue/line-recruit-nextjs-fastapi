@@ -19,18 +19,32 @@ export type InterviewSlot = {
   line_user_id?: string;
   slot_datetime: string;
   status?: string;
+  interview_type?: string;
   created_at?: string;
   selected_at?: string;
 };
 
 export type InterviewSlotCreateRequest = {
   slots: string[];
+  interview_type?: string;
 };
 
 export type InterviewSlotCreateResponse = {
   status: string;
   applicant?: Applicant;
   slots: InterviewSlot[];
+  interview_type?: string;
+};
+
+export type LineSendRequest = {
+  line_user_id: string;
+  message: string;
+};
+
+export type LineSendResponse = {
+  status: string;
+  line_user_id: string;
+  message: string;
 };
 
 export type Inquiry = {

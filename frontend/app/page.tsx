@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createInterviewSlots, getApplicants, getDashboard, getInquiries, updateApplicant } from "../lib/api";
+import { createInterviewSlots, getApplicants, getDashboard, getInquiries, sendLineMessage, updateApplicant } from "../lib/api";
 import type { Applicant, Dashboard, Inquiry } from "../types";
 
 const menuItems = [
@@ -9,15 +9,20 @@ const menuItems = [
   "応募者一覧",
   "ステータス管理",
   "LINEメッセージ履歴",
+  "お問い合わせ",
   "リマインド設定",
   "質問ツリー設定",
+  "FAQ設定",
   "メッセージテンプレート設定",
   "面接候補日管理",
   "簡易分析",
   "設定"
 ];
 
-const statusOptions = ["新規応募", "応募途中", "応募完了", "面接調整中", "面接確定", "採用", "不採用", "離脱"];
+const defaultStatusFlow = ["新規応募", "応募途中", "応募完了", "面接調整中", "面接確定", "採用", "不採用"];
+const additionalStatusCandidates = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
+const statusOptions = [...defaultStatusFlow, ...additionalStatusCandidates, "離脱"];
+const interviewTypeOptions = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
 
 function formatDate(value?: string) {
   if (!value) return "-";
@@ -111,6 +116,23 @@ export default function AdminPage() {
     }
   }
 
+  async function handleApplicantStatusSave(applicant: Applicant, status: string) {
+    setIsSaving(true);
+    try {
+      const updated = await updateApplicant(applicant.id, { status });
+      setApplicants((current) => current.map((item) => item.id === applicant.id ? updated : item));
+      if (selectedApplicant?.id === applicant.id) {
+        setSelectedApplicant(updated);
+      }
+      await loadData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "ステータス更新に失敗しました");
+      throw err;
+    } finally {
+      setIsSaving(false);
+    }
+  }
+
   async function handleMemoSave() {
     if (!selectedApplicant) return;
     setIsSaving(true);
@@ -136,13 +158,13 @@ export default function AdminPage() {
   return (
     <main className="appShell">
       <aside className="sidebar">
-        <div className="brand">
+        <button className="brand brandButton" onClick={() => { setActiveMenu("ダッシュボード"); setSelectedApplicant(null); }}>
           <div className="brandMark">採</div>
           <div>
             <strong>LINE採用</strong>
             <span>管理画面</span>
           </div>
-        </div>
+        </button>
         <nav className="navList">
           {menuItems.map((item) => (
             <button
@@ -182,6 +204,7 @@ export default function AdminPage() {
                 setSearch={setSearch}
                 setStatusFilter={setStatusFilter}
                 onSelectApplicant={setSelectedApplicant}
+                onStatusSave={handleApplicantStatusSave}
               />
             )}
 
@@ -189,8 +212,11 @@ export default function AdminPage() {
               <HistoryView applicants={applicants} inquiries={inquiries} />
             )}
 
+            {activeMenu === "お問い合わせ" && <InquiriesView inquiries={inquiries} />}
+
             {activeMenu === "リマインド設定" && <ReminderSettings />}
             {activeMenu === "質問ツリー設定" && <QuestionTreeSettings />}
+            {activeMenu === "FAQ設定" && <FAQSettings />}
             {activeMenu === "メッセージテンプレート設定" && <TemplateSettings />}
             {activeMenu === "面接候補日管理" && <InterviewDateSettings applicants={applicants} />}
             {activeMenu === "簡易分析" && <AnalyticsView dashboard={dashboard} applicants={applicants} />}
@@ -296,14 +322,45 @@ function TodoItem({ title, count, helper }: { title: string; count: number; help
   );
 }
 
-function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatusFilter, onSelectApplicant }: {
+function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatusFilter, onSelectApplicant, onStatusSave }: {
   applicants: Applicant[];
   search: string;
   statusFilter: string;
   setSearch: (value: string) => void;
   setStatusFilter: (value: string) => void;
   onSelectApplicant: (applicant: Applicant) => void;
+  onStatusSave: (applicant: Applicant, status: string) => Promise<void>;
 }) {
+  const [statusDrafts, setStatusDrafts] = useState<Record<string, string>>({});
+  const [savingId, setSavingId] = useState<string | null>(null);
+  const [rowMessage, setRowMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setStatusDrafts((current) => {
+      const next = { ...current };
+      applicants.forEach((applicant) => {
+        const key = String(applicant.id);
+        if (!(key in next)) next[key] = applicant.status || "";
+      });
+      return next;
+    });
+  }, [applicants]);
+
+  async function saveRowStatus(applicant: Applicant) {
+    const key = String(applicant.id);
+    const nextStatus = statusDrafts[key] || "";
+    setSavingId(key);
+    setRowMessage(null);
+    try {
+      await onStatusSave(applicant, nextStatus);
+      setRowMessage(`${applicant.name || "応募者"}のステータスを更新しました`);
+    } catch {
+      setRowMessage("ステータス更新に失敗しました");
+    } finally {
+      setSavingId(null);
+    }
+  }
+
   return (
     <section className="panel">
       <div className="panelHeader">
@@ -320,6 +377,7 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
           {statusOptions.map((status) => <option key={status}>{status}</option>)}
         </select>
       </div>
+      {rowMessage && <div className={rowMessage.includes("失敗") ? "inlineError listNotice" : "successBox listNotice"}>{rowMessage}</div>}
       <div className="tableWrap">
         <table>
           <thead>
@@ -339,7 +397,21 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
                 <td><strong>{applicant.name || "名前未入力"}</strong></td>
                 <td>{applicant.phone || "-"}</td>
                 <td>{applicant.job || "-"}</td>
-                <td><span className={statusClass(applicant.status)}>{applicant.status || "未設定"}</span></td>
+                <td>
+                  <div className="rowStatusEditor">
+                    <span className={statusClass(applicant.status)}>{applicant.status || "未設定"}</span>
+                    <select
+                      value={statusDrafts[String(applicant.id)] ?? applicant.status ?? ""}
+                      onChange={(event) => setStatusDrafts((current) => ({ ...current, [String(applicant.id)]: event.target.value }))}
+                    >
+                      <option value="">未設定</option>
+                      {statusOptions.map((status) => <option key={status}>{status}</option>)}
+                    </select>
+                    <button className="secondaryButton compactButton" onClick={() => saveRowStatus(applicant)} disabled={savingId === String(applicant.id)}>
+                      {savingId === String(applicant.id) ? "変更中..." : "変更する"}
+                    </button>
+                  </div>
+                </td>
                 <td>{applicant.interview_status || applicant.interview_date || "-"}</td>
                 <td>{formatDate(applicant.created_at)}</td>
                 <td><button className="textButton" onClick={() => onSelectApplicant(applicant)}>詳細を見る</button></td>
@@ -365,15 +437,26 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
   const tags = normalizeTags(applicant.tags);
   const [showInterviewForm, setShowInterviewForm] = useState(false);
   const [interviewSlots, setInterviewSlots] = useState(["", "", ""]);
+  const [interviewType, setInterviewType] = useState(interviewTypeOptions[1]);
   const [interviewNotice, setInterviewNotice] = useState<string | null>(null);
   const [interviewError, setInterviewError] = useState<string | null>(null);
   const [isSendingInterview, setIsSendingInterview] = useState(false);
+  const [showLineForm, setShowLineForm] = useState(false);
+  const [lineMessage, setLineMessage] = useState("");
+  const [lineNotice, setLineNotice] = useState<string | null>(null);
+  const [lineError, setLineError] = useState<string | null>(null);
+  const [isSendingLine, setIsSendingLine] = useState(false);
 
   useEffect(() => {
     setShowInterviewForm(false);
     setInterviewSlots(["", "", ""]);
+    setInterviewType(interviewTypeOptions[1]);
     setInterviewNotice(null);
     setInterviewError(null);
+    setShowLineForm(false);
+    setLineMessage("");
+    setLineNotice(null);
+    setLineError(null);
   }, [applicant.id]);
 
   function updateInterviewSlot(index: number, value: string) {
@@ -399,7 +482,7 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
 
     setIsSendingInterview(true);
     try {
-      const result = await createInterviewSlots(applicant.id, { slots });
+      const result = await createInterviewSlots(applicant.id, { slots, interview_type: interviewType });
       setInterviewNotice("面接候補日をLINE送信しました");
       setShowInterviewForm(false);
       await onInterviewSent(result.applicant);
@@ -407,6 +490,32 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
       setInterviewError(err instanceof Error ? err.message : "面接候補日の送信に失敗しました");
     } finally {
       setIsSendingInterview(false);
+    }
+  }
+
+  async function handleLineSubmit() {
+    setLineNotice(null);
+    setLineError(null);
+    const message = lineMessage.trim();
+    if (!applicant.line_user_id) {
+      setLineError("LINEユーザーIDがないため送信できません");
+      return;
+    }
+    if (!message) {
+      setLineError("送信メッセージを入力してください");
+      return;
+    }
+
+    setIsSendingLine(true);
+    try {
+      await sendLineMessage({ line_user_id: applicant.line_user_id, message });
+      setLineNotice("LINEメッセージを送信しました");
+      setLineMessage("");
+      setShowLineForm(false);
+    } catch (err) {
+      setLineError(err instanceof Error ? err.message : "LINE送信に失敗しました");
+    } finally {
+      setIsSendingLine(false);
     }
   }
 
@@ -442,12 +551,19 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
           {interviewError && <div className="inlineError">{interviewError}</div>}
           {showInterviewForm && (
             <div className="interviewForm">
+              <label>
+                面接種別
+                <select value={interviewType} onChange={(event) => setInterviewType(event.target.value)}>
+                  {interviewTypeOptions.map((type) => <option key={type}>{type}</option>)}
+                </select>
+              </label>
               {interviewSlots.map((slot, index) => (
                 <div className="slotRow" key={index}>
                   <input
+                    type="datetime-local"
                     value={slot}
                     onChange={(event) => updateInterviewSlot(index, event.target.value)}
-                    placeholder={`候補日${index + 1} 例: 2026-07-10 10:00`}
+                    aria-label={`候補日${index + 1}`}
                   />
                   <button className="textButton" onClick={() => removeInterviewSlot(index)} disabled={interviewSlots.length <= 2}>
                     削除
@@ -460,6 +576,24 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
                   {isSendingInterview ? "LINE送信中..." : "LINE送信"}
                 </button>
               </div>
+              {!applicant.line_user_id && <small className="muted">LINEユーザーIDがないため送信できません</small>}
+            </div>
+          )}
+        </div>
+
+        <div className="drawerBlock lineSendBlock">
+          <div className="blockHeader">
+            <label>LINE送信</label>
+            <button className="secondaryButton" onClick={() => setShowLineForm((value) => !value)}>LINE送信</button>
+          </div>
+          {lineNotice && <div className="successBox">{lineNotice}</div>}
+          {lineError && <div className="inlineError">{lineError}</div>}
+          {showLineForm && (
+            <div className="lineSendForm">
+              <textarea value={lineMessage} onChange={(event) => setLineMessage(event.target.value)} placeholder="応募者へ送るメッセージを入力" />
+              <button className="primaryButton" onClick={handleLineSubmit} disabled={isSendingLine || !applicant.line_user_id}>
+                {isSendingLine ? "送信中..." : "送信する"}
+              </button>
               {!applicant.line_user_id && <small className="muted">LINEユーザーIDがないため送信できません</small>}
             </div>
           )}
@@ -510,32 +644,91 @@ function Detail({ label, value }: { label: string; value?: string }) {
 }
 
 function HistoryView({ applicants, inquiries }: { applicants: Applicant[]; inquiries: Inquiry[] }) {
+  const logExamples = [
+    "Bot自動送信: 応募開始案内",
+    "Bot自動送信: 応募完了通知",
+    "管理画面送信: 面接候補日送信",
+    "応募者返信: 候補日選択",
+    "Bot自動送信: 面接日程確定",
+    "リマインド送信ログ",
+    "採用/不採用通知ログ"
+  ];
+
   return (
-    <section className="twoColumn">
-      <article className="panel">
-        <h2>応募者LINE履歴</h2>
-        <div className="miniRows">
-          {applicants.slice(0, 8).map((applicant) => (
-            <div className="historyRow" key={applicant.id}>
-              <strong>{applicant.name || "応募者"}</strong>
-              <span>{applicant.status || "応募情報登録"}</span>
-              <small>{formatDate(applicant.created_at)}</small>
-            </div>
-          ))}
+    <div className="gridStack">
+      <section className="panel">
+        <h2>LINEメッセージ履歴</h2>
+        <p className="sectionDescription">
+          LINEメッセージ履歴では、自動送信・手動送信・応募者返信の履歴を確認できます。お問い合わせ対応は「お問い合わせ」画面または inquiries テーブルで管理します。
+        </p>
+        <div className="logTypeGrid">
+          {logExamples.map((item) => <span className="logType" key={item}>{item}</span>)}
         </div>
-      </article>
-      <article className="panel">
-        <h2>お問い合わせ</h2>
-        <div className="miniRows">
-          {inquiries.slice(0, 8).map((inquiry) => (
-            <div className="historyRow" key={inquiry.id}>
-              <strong>{inquiry.status || "未対応"}</strong>
-              <span>{inquiry.message || "-"}</span>
-              <small>{formatDate(inquiry.created_at)}</small>
-            </div>
-          ))}
+      </section>
+      <section className="twoColumn">
+        <article className="panel">
+          <h2>応募者ごとの直近ログ</h2>
+          <div className="miniRows">
+            {applicants.slice(0, 8).map((applicant) => (
+              <div className="historyRow" key={applicant.id}>
+                <strong>{applicant.name || "応募者"}</strong>
+                <span>{applicant.interview_status || applicant.status || "応募情報登録"}</span>
+                <small>{formatDate(applicant.created_at)}</small>
+              </div>
+            ))}
+          </div>
+        </article>
+        <article className="panel">
+          <h2>お問い合わせは別管理</h2>
+          <p className="sectionDescription">この欄は確認用のサマリーです。対応状況の管理は inquiries 側で扱います。</p>
+          <div className="miniRows">
+            {inquiries.slice(0, 5).map((inquiry) => (
+              <div className="historyRow" key={inquiry.id}>
+                <strong>{inquiry.status || "未対応"}</strong>
+                <span>{inquiry.message || "-"}</span>
+                <small>{formatDate(inquiry.created_at)}</small>
+              </div>
+            ))}
+          </div>
+        </article>
+      </section>
+    </div>
+  );
+}
+
+function InquiriesView({ inquiries }: { inquiries: Inquiry[] }) {
+  return (
+    <section className="panel">
+      <div className="panelHeader">
+        <div>
+          <p className="eyebrow">Inquiries</p>
+          <h2>お問い合わせ</h2>
         </div>
-      </article>
+        <span className="pill">{inquiries.length}件</span>
+      </div>
+      <p className="sectionDescription">応募者からのお問い合わせ対応はここで確認します。LINEメッセージ履歴は会話ログ・送信ログの確認用です。</p>
+      <div className="tableWrap">
+        <table>
+          <thead>
+            <tr>
+              <th>日時</th>
+              <th>LINEユーザーID</th>
+              <th>内容</th>
+              <th>ステータス</th>
+            </tr>
+          </thead>
+          <tbody>
+            {inquiries.map((inquiry) => (
+              <tr key={inquiry.id}>
+                <td>{formatDate(inquiry.created_at)}</td>
+                <td>{inquiry.line_user_id || "-"}</td>
+                <td>{inquiry.message || "-"}</td>
+                <td><span className="badge">{inquiry.status || "未対応"}</span></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </section>
   );
 }
@@ -545,21 +738,114 @@ function ReminderSettings() {
 }
 
 function QuestionTreeSettings() {
-  const rows = [
-    ["応募開始", "応募する", "名前入力", "公開中"],
-    ["名前入力", "自由入力", "電話番号入力", "公開中"],
-    ["電話番号入力", "自由入力", "希望職種", "公開中"],
-    ["希望職種", "SNS運用 / Web制作 / 営業", "応募動機", "公開中"],
-    ["応募動機", "自由入力", "確認画面", "公開中"]
+  const branches = [
+    { type: "新卒", questions: ["学校名", "卒業予定年", "希望職種", "志望動機", "勤務開始可能時期"] },
+    { type: "社会人", questions: ["現在の職種", "経験年数", "希望職種", "転職希望時期", "志望動機"] },
+    { type: "その他", questions: ["現在の状況", "希望職種", "働き方の希望", "志望動機"] }
   ];
+
   return (
     <section className="panel">
       <div className="panelHeader"><h2>質問ツリー設定</h2><button className="primaryButton">質問を追加</button></div>
-      <div className="tableWrap">
-        <table>
-          <thead><tr><th>質問</th><th>回答</th><th>次の質問</th><th>ステータス</th></tr></thead>
-          <tbody>{rows.map((row) => <tr key={row[0]}>{row.map((cell) => <td key={cell}>{cell}</td>)}</tr>)}</tbody>
-        </table>
+      <div className="rootQuestion">
+        <span className="stepNumber">1</span>
+        <div>
+          <strong>現在のご状況を教えてください</strong>
+          <small>選択肢: 新卒 / 社会人 / その他</small>
+        </div>
+      </div>
+      <div className="branchGrid">
+        {branches.map((branch) => (
+          <article className="branchCard" key={branch.type}>
+            <div className="branchHeader">
+              <strong>{branch.type}</strong>
+              <button className="textButton">編集</button>
+            </div>
+            <ol>
+              {branch.questions.map((question) => <li key={question}>{question}</li>)}
+            </ol>
+          </article>
+        ))}
+      </div>
+    </section>
+  );
+}
+
+function FAQSettings() {
+  const faqCategories = [
+    {
+      category: "給与について",
+      items: [
+        { question: "給与はどのように決まりますか？", answer: "経験・スキル・希望職種をもとに面接時にご案内します。", published: true },
+        { question: "昇給はありますか？", answer: "評価や実績に応じて昇給の機会があります。", published: true }
+      ]
+    },
+    {
+      category: "休日・休暇について",
+      items: [
+        { question: "年間休日を教えてください", answer: "職種や勤務形態により異なるため、面接時に詳細をご案内します。", published: true }
+      ]
+    },
+    {
+      category: "福利厚生について",
+      items: [
+        { question: "社会保険はありますか？", answer: "雇用条件に応じて各種社会保険を整備しています。", published: true }
+      ]
+    },
+    {
+      category: "働き方について",
+      items: [
+        { question: "勤務時間は固定ですか？", answer: "職種により固定勤務・シフト勤務があります。", published: true }
+      ]
+    },
+    {
+      category: "仕事内容について",
+      items: [
+        { question: "未経験でも応募できますか？", answer: "未経験の方も応募可能です。研修やサポート体制をご案内します。", published: true }
+      ]
+    },
+    {
+      category: "面接について",
+      items: [
+        { question: "面接はオンラインですか？", answer: "オンラインまたは対面で調整可能です。候補日確定後に詳細をご連絡します。", published: true }
+      ]
+    },
+    {
+      category: "会社について",
+      items: [
+        { question: "会社情報を知りたいです", answer: "事業内容や働く環境について、面接前にもLINEでご案内できます。", published: false }
+      ]
+    }
+  ];
+
+  return (
+    <section className="panel">
+      <div className="panelHeader">
+        <div>
+          <p className="eyebrow">FAQ Data</p>
+          <h2>FAQ設定</h2>
+        </div>
+        <button className="primaryButton">FAQを追加</button>
+      </div>
+      <p className="sectionDescription">LINE BotのFAQ回答で使う想定のデータです。カテゴリごとに質問・回答・公開状態を管理します。</p>
+      <div className="faqGrid">
+        {faqCategories.map((category) => (
+          <article className="faqCategory" key={category.category}>
+            <div className="branchHeader">
+              <strong>{category.category}</strong>
+              <button className="textButton">編集</button>
+            </div>
+            {category.items.map((item) => (
+              <div className="faqItem" key={item.question}>
+                <div>
+                  <strong>{item.question}</strong>
+                  <p>{item.answer}</p>
+                </div>
+                <span className={item.published ? "badge badgeGreen" : "badge"}>{item.published ? "公開" : "非公開"}</span>
+              </div>
+            ))}
+          </article>
+        ))}
       </div>
     </section>
   );
@@ -603,7 +889,45 @@ function AnalyticsView({ dashboard, applicants }: { dashboard: Dashboard | null;
 }
 
 function StatusSettings() {
-  return <StaticCards title="ステータス管理" items={statusOptions} />;
+  const [customStatuses, setCustomStatuses] = useState<string[]>([]);
+  const [newStatus, setNewStatus] = useState(additionalStatusCandidates[0]);
+  const flow = [...defaultStatusFlow, ...customStatuses];
+
+  function addStatus() {
+    const value = newStatus.trim();
+    if (!value || flow.includes(value)) return;
+    setCustomStatuses((current) => [...current, value]);
+  }
+
+  return (
+    <section className="panel">
+      <div className="panelHeader">
+        <div>
+          <p className="eyebrow">Selection Flow</p>
+          <h2>ステータス管理</h2>
+        </div>
+      </div>
+      <p className="sectionDescription">この順番で選考が進みます。追加したステータスもフロー上に表示されます。</p>
+      <div className="statusFlow">
+        {flow.map((status, index) => (
+          <article className="statusStep" key={`${status}-${index}`}>
+            <span className="stepNumber">{index + 1}</span>
+            <strong>{status}</strong>
+            <button className="textButton">編集</button>
+          </article>
+        ))}
+      </div>
+      <div className="addStatusBox">
+        <div>
+          <label>追加ステータス</label>
+          <select value={newStatus} onChange={(event) => setNewStatus(event.target.value)}>
+            {additionalStatusCandidates.map((status) => <option key={status}>{status}</option>)}
+          </select>
+        </div>
+        <button className="primaryButton" onClick={addStatus}>追加する</button>
+      </div>
+    </section>
+  );
 }
 
 function GeneralSettings() {
