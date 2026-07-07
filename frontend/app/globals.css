@@ -109,6 +109,17 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .detailItem strong { font-size: 14px; word-break: break-word; }
 .drawerBlock { margin-top: 18px; }
 .drawerBlock select { width: 100%; }
+.blockHeader { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.blockHeader label { margin-bottom: 0; }
+.interviewBlock { border: 1px solid var(--line); border-radius: 16px; padding: 14px; background: #f8fafc; }
+.interviewForm { display: grid; gap: 10px; margin-top: 12px; }
+.slotRow { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 10px; }
+.slotRow input { min-width: 0; width: 100%; }
+.formActions { display: flex; justify-content: flex-end; align-items: center; gap: 10px; flex-wrap: wrap; }
+.formActions .primaryButton { margin-top: 0; }
+.successBox, .inlineError { margin-top: 10px; border-radius: 12px; padding: 10px 12px; font-size: 13px; font-weight: 700; }
+.successBox { background: var(--greenSoft); color: #047b36; }
+.inlineError { background: #fff5f5; color: #b42318; }
 .tagList { display: flex; gap: 8px; flex-wrap: wrap; }
 .tag { border-radius: 999px; padding: 6px 10px; background: #eef5ff; color: var(--blueDark); font-size: 12px; font-weight: 800; }
 .muted { color: var(--muted); }

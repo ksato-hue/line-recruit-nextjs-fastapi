@@ -13,6 +13,26 @@ export type Applicant = {
   tags?: string[] | string;
 };
 
+export type InterviewSlot = {
+  id: string | number;
+  applicant_id: string | number;
+  line_user_id?: string;
+  slot_datetime: string;
+  status?: string;
+  created_at?: string;
+  selected_at?: string;
+};
+
+export type InterviewSlotCreateRequest = {
+  slots: string[];
+};
+
+export type InterviewSlotCreateResponse = {
+  status: string;
+  applicant?: Applicant;
+  slots: InterviewSlot[];
+};
+
 export type Inquiry = {
   id: string | number;
   created_at?: string;

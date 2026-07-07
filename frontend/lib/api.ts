@@ -1,4 +1,4 @@
-import type { Applicant, Dashboard, Inquiry } from "../types";
+import type { Applicant, Dashboard, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse } from "../types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
@@ -35,6 +35,17 @@ export function getInquiries() {
 export function updateApplicant(id: Applicant["id"], data: Partial<Applicant>) {
   return request<Applicant>(`/api/applicants/${id}`, {
     method: "PATCH",
+    body: JSON.stringify(data)
+  });
+}
+
+export function getInterviewSlots(applicantId: Applicant["id"]) {
+  return request<InterviewSlot[]>(`/api/applicants/${applicantId}/interview-slots`);
+}
+
+export function createInterviewSlots(applicantId: Applicant["id"], data: InterviewSlotCreateRequest) {
+  return request<InterviewSlotCreateResponse>(`/api/applicants/${applicantId}/interview-slots`, {
+    method: "POST",
     body: JSON.stringify(data)
   });
 }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { getApplicants, getDashboard, getInquiries, updateApplicant } from "../lib/api";
+import { createInterviewSlots, getApplicants, getDashboard, getInquiries, updateApplicant } from "../lib/api";
 import type { Applicant, Dashboard, Inquiry } from "../types";
 
 const menuItems = [
@@ -125,6 +125,14 @@ export default function AdminPage() {
     }
   }
 
+  async function handleInterviewSent(updatedApplicant?: Applicant) {
+    if (updatedApplicant) {
+      setApplicants((current) => current.map((item) => item.id === updatedApplicant.id ? updatedApplicant : item));
+      setSelectedApplicant(updatedApplicant);
+    }
+    await loadData();
+  }
+
   return (
     <main className="appShell">
       <aside className="sidebar">
@@ -200,6 +208,7 @@ export default function AdminPage() {
           onClose={() => setSelectedApplicant(null)}
           onStatusChange={handleStatusChange}
           onMemoSave={handleMemoSave}
+          onInterviewSent={handleInterviewSent}
           isSaving={isSaving}
         />
       )}
@@ -343,16 +352,64 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
   );
 }
 
-function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatusChange, onMemoSave, isSaving }: {
+function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatusChange, onMemoSave, onInterviewSent, isSaving }: {
   applicant: Applicant;
   draftMemo: string;
   setDraftMemo: (value: string) => void;
   onClose: () => void;
   onStatusChange: (applicant: Applicant, status: string) => void;
   onMemoSave: () => void;
+  onInterviewSent: (updatedApplicant?: Applicant) => Promise<void>;
   isSaving: boolean;
 }) {
   const tags = normalizeTags(applicant.tags);
+  const [showInterviewForm, setShowInterviewForm] = useState(false);
+  const [interviewSlots, setInterviewSlots] = useState(["", "", ""]);
+  const [interviewNotice, setInterviewNotice] = useState<string | null>(null);
+  const [interviewError, setInterviewError] = useState<string | null>(null);
+  const [isSendingInterview, setIsSendingInterview] = useState(false);
+
+  useEffect(() => {
+    setShowInterviewForm(false);
+    setInterviewSlots(["", "", ""]);
+    setInterviewNotice(null);
+    setInterviewError(null);
+  }, [applicant.id]);
+
+  function updateInterviewSlot(index: number, value: string) {
+    setInterviewSlots((current) => current.map((slot, slotIndex) => slotIndex === index ? value : slot));
+  }
+
+  function addInterviewSlot() {
+    setInterviewSlots((current) => current.length >= 5 ? current : [...current, ""]);
+  }
+
+  function removeInterviewSlot(index: number) {
+    setInterviewSlots((current) => current.length <= 2 ? current : current.filter((_, slotIndex) => slotIndex !== index));
+  }
+
+  async function handleInterviewSubmit() {
+    const slots = interviewSlots.map((slot) => slot.trim()).filter(Boolean);
+    setInterviewNotice(null);
+    setInterviewError(null);
+    if (slots.length < 2 || slots.length > 5) {
+      setInterviewError("候補日は2〜5件入力してください");
+      return;
+    }
+
+    setIsSendingInterview(true);
+    try {
+      const result = await createInterviewSlots(applicant.id, { slots });
+      setInterviewNotice("面接候補日をLINE送信しました");
+      setShowInterviewForm(false);
+      await onInterviewSent(result.applicant);
+    } catch (err) {
+      setInterviewError(err instanceof Error ? err.message : "面接候補日の送信に失敗しました");
+    } finally {
+      setIsSendingInterview(false);
+    }
+  }
+
   return (
     <aside className="drawerBackdrop">
       <section className="drawer">
@@ -372,6 +429,40 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
           <Detail label="応募動機" value={applicant.motivation} />
           <Detail label="面接ステータス" value={applicant.interview_status} />
           <Detail label="面接日" value={applicant.interview_date} />
+        </div>
+
+        <div className="drawerBlock interviewBlock">
+          <div className="blockHeader">
+            <label>面接調整</label>
+            <button className="secondaryButton" onClick={() => setShowInterviewForm((value) => !value)}>
+              面接候補日をLINE送信
+            </button>
+          </div>
+          {interviewNotice && <div className="successBox">{interviewNotice}</div>}
+          {interviewError && <div className="inlineError">{interviewError}</div>}
+          {showInterviewForm && (
+            <div className="interviewForm">
+              {interviewSlots.map((slot, index) => (
+                <div className="slotRow" key={index}>
+                  <input
+                    value={slot}
+                    onChange={(event) => updateInterviewSlot(index, event.target.value)}
+                    placeholder={`候補日${index + 1} 例: 2026-07-10 10:00`}
+                  />
+                  <button className="textButton" onClick={() => removeInterviewSlot(index)} disabled={interviewSlots.length <= 2}>
+                    削除
+                  </button>
+                </div>
+              ))}
+              <div className="formActions">
+                <button className="secondaryButton" onClick={addInterviewSlot} disabled={interviewSlots.length >= 5}>候補日を追加</button>
+                <button className="primaryButton" onClick={handleInterviewSubmit} disabled={isSendingInterview || !applicant.line_user_id}>
+                  {isSendingInterview ? "LINE送信中..." : "LINE送信"}
+                </button>
+              </div>
+              {!applicant.line_user_id && <small className="muted">LINEユーザーIDがないため送信できません</small>}
+            </div>
+          )}
         </div>
 
         <div className="drawerBlock">
