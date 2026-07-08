@@ -22,15 +22,19 @@ body {
 }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
-.appShell { display: flex; min-height: 100vh; }
+.appShell { min-height: 100vh; }
 .sidebar {
   width: 260px;
   background: linear-gradient(180deg, #113b78, #0f2b58);
   color: white;
   padding: 24px 18px;
-  position: sticky;
+  position: fixed;
   top: 0;
+  left: 0;
+  bottom: 0;
   height: 100vh;
+  overflow-y: auto;
+  z-index: 20;
 }
 .brand { display: flex; gap: 12px; align-items: center; margin-bottom: 30px; }
 .brandButton { width: 100%; border: 0; color: inherit; background: transparent; text-align: left; padding: 0; }
@@ -48,7 +52,7 @@ button { cursor: pointer; }
   text-align: left; padding: 12px 14px;
 }
 .navItem:hover, .navItem.active { background: rgba(255,255,255,.14); color: #fff; }
-.content { flex: 1; padding: 28px; overflow: hidden; }
+.content { margin-left: 260px; padding: 28px; min-width: 0; }
 .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
 h1, h2 { margin: 0; }
 h1 { font-size: 28px; }
@@ -136,15 +140,26 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .timeline span { width: 10px; height: 10px; border-radius: 50%; background: var(--green); }
 .historyRow { display: grid; gap: 4px; }
 .historyRow span { color: #344054; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.logTypeGrid, .statusFlow, .branchGrid, .faqGrid { display: grid; gap: 12px; }
+.logTypeGrid, .branchGrid, .faqGrid { display: grid; gap: 12px; }
 .logTypeGrid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 .logType { background: #f8fafc; border: 1px solid var(--line); border-radius: 999px; padding: 10px 12px; color: #344054; font-weight: 700; }
-.statusFlow { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin-bottom: 18px; }
+.statusFlow { display: grid; gap: 14px; margin: 4px 0 18px; max-width: 760px; }
 .statusStep, .rootQuestion, .branchCard, .faqCategory {
   background: #f8fafc; border: 1px solid var(--line); border-radius: 16px; padding: 14px;
 }
-.statusStep { display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 10px; }
+.statusStep { position: relative; display: grid; grid-template-columns: 42px 1fr auto; align-items: center; gap: 12px; }
+.statusStep:not(:last-child)::after {
+  content: "";
+  position: absolute;
+  left: 28px;
+  bottom: -29px;
+  width: 2px;
+  height: 42px;
+  background: #cbd5e1;
+  z-index: 0;
+}
 .stepNumber { width: 30px; height: 30px; border-radius: 999px; display: inline-grid; place-items: center; background: var(--blue); color: white; font-weight: 800; }
+.statusStep .stepNumber { position: relative; z-index: 1; }
 .addStatusBox { display: flex; align-items: flex-end; gap: 12px; padding-top: 14px; border-top: 1px solid var(--line); }
 .addStatusBox label { display: block; color: var(--muted); font-size: 12px; font-weight: 800; margin-bottom: 7px; }
 .rootQuestion { display: flex; gap: 12px; align-items: center; margin-bottom: 14px; }
@@ -155,6 +170,12 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .faqCategory { display: grid; gap: 10px; }
 .faqItem { display: grid; grid-template-columns: 1fr auto; gap: 10px; align-items: start; border-top: 1px solid var(--line); padding-top: 10px; }
 .faqItem p { margin: 6px 0 0; color: var(--muted); line-height: 1.6; }
+.faqAddBox, .faqItemEditor { display: grid; gap: 10px; border: 1px solid var(--line); border-radius: 14px; background: #fff; padding: 12px; }
+.faqAddBox { margin-bottom: 16px; }
+.faqItemEditor { border-top: 1px solid var(--line); }
+.faqItemActions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+.checkLabel { display: inline-flex; align-items: center; gap: 8px; color: #344054; font-weight: 700; }
+.checkLabel input { min-width: 0; width: auto; }
 .stepGrid, .analyticsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .stepCard strong { display: block; margin-top: 8px; color: var(--blueDark); }
 .metricBox strong { display: block; font-size: 28px; color: var(--blueDark); margin-top: 6px; }
@@ -167,12 +188,14 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 }
 @media (max-width: 780px) {
   .appShell { display: block; }
-  .sidebar { position: relative; width: 100%; height: auto; }
-  .content { padding: 18px; }
+  .sidebar { position: relative; width: 100%; height: auto; max-height: none; }
+  .content { margin-left: 0; padding: 18px; }
   .kpiGrid { grid-template-columns: 1fr 1fr; }
   .toolbar { flex-direction: column; }
   input { min-width: auto; width: 100%; }
   .detailGrid, .stepGrid, .analyticsGrid { grid-template-columns: 1fr; }
-  .rowStatusEditor, .statusStep, .faqItem { grid-template-columns: 1fr; }
+  .rowStatusEditor, .faqItem { grid-template-columns: 1fr; }
+  .statusStep { grid-template-columns: 42px 1fr; }
+  .statusStep .textButton { grid-column: 2; justify-self: start; }
   .addStatusBox { align-items: stretch; flex-direction: column; }
 }

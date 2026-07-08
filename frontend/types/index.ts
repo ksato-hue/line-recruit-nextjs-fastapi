@@ -47,6 +47,38 @@ export type LineSendResponse = {
   message: string;
 };
 
+export type FAQ = {
+  id: string;
+  category_id: string;
+  category_name?: string;
+  question: string;
+  answer: string;
+  sort_order?: number;
+  is_active?: boolean;
+  is_default?: boolean;
+  created_at?: string;
+};
+
+export type FAQCategory = {
+  id: string;
+  name: string;
+  sort_order?: number;
+  is_active?: boolean;
+  is_default?: boolean;
+  created_at?: string;
+  faqs?: FAQ[];
+};
+
+export type FAQPayload = {
+  category_id: string;
+  question: string;
+  answer: string;
+  sort_order?: number;
+  is_active?: boolean;
+};
+
+export type FAQUpdatePayload = Partial<FAQPayload>;
+
 export type Inquiry = {
   id: string | number;
   created_at?: string;

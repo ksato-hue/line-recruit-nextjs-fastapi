@@ -1,4 +1,4 @@
-import type { Applicant, Dashboard, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse, LineSendRequest, LineSendResponse } from "../types";
+import type { Applicant, Dashboard, FAQ, FAQCategory, FAQPayload, FAQUpdatePayload, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse, LineSendRequest, LineSendResponse } from "../types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
@@ -53,6 +53,28 @@ export function createInterviewSlots(applicantId: Applicant["id"], data: Intervi
 export function sendLineMessage(data: LineSendRequest) {
   return request<LineSendResponse>("/api/line/send", {
     method: "POST",
+    body: JSON.stringify(data)
+  });
+}
+
+export function getFAQCategories() {
+  return request<FAQCategory[]>("/api/faq-categories");
+}
+
+export function getFAQs() {
+  return request<FAQCategory[]>("/api/faqs");
+}
+
+export function createFAQ(data: FAQPayload) {
+  return request<FAQ>("/api/faqs", {
+    method: "POST",
+    body: JSON.stringify(data)
+  });
+}
+
+export function updateFAQ(id: FAQ["id"], data: FAQUpdatePayload) {
+  return request<FAQ>(`/api/faqs/${id}`, {
+    method: "PATCH",
     body: JSON.stringify(data)
   });
 }

@@ -38,6 +38,44 @@ user_states = {}
 applicants = {}
 interview_confirmations = {}
 
+DEFAULT_FAQ_SEED = [
+    {
+        "name": "給与について",
+        "question": "給与はどのように決まりますか？",
+        "answer": "経験・スキル・希望職種をもとに面接時にご案内します。",
+    },
+    {
+        "name": "休日・休暇について",
+        "question": "年間休日を教えてください",
+        "answer": "職種や勤務形態により異なるため、面接時に詳細をご案内します。",
+    },
+    {
+        "name": "福利厚生について",
+        "question": "社会保険はありますか？",
+        "answer": "雇用条件に応じて各種社会保険を整備しています。",
+    },
+    {
+        "name": "働き方について",
+        "question": "車通勤はできますか？",
+        "answer": "勤務地や職種により異なります。詳細は面接時にご確認ください。",
+    },
+    {
+        "name": "仕事内容について",
+        "question": "未経験でも応募できますか？",
+        "answer": "未経験から応募可能な職種もあります。必要な経験やスキルは職種ごとに異なります。",
+    },
+    {
+        "name": "面接について",
+        "question": "面接は何回ありますか？",
+        "answer": "通常1〜2回を想定しています。職種により異なる場合があります。",
+    },
+    {
+        "name": "会社について",
+        "question": "会社の雰囲気を教えてください",
+        "answer": "職種や部署により異なりますが、働きやすい環境づくりを大切にしています。",
+    },
+]
+
 
 @app.get("/")
 def home():
@@ -167,6 +205,168 @@ def card_response(title, body, buttons=None):
         "body": body,
         "buttons": buttons
     }
+
+
+def _safe_execute(label: str, callback):
+    try:
+        return callback()
+    except Exception as exc:
+        print(f"{label} エラー:", exc)
+        return None
+
+
+def _default_faq_categories() -> list[dict[str, Any]]:
+    return [
+        {
+            "id": f"default-{index + 1}",
+            "name": item["name"],
+            "sort_order": index + 1,
+            "is_active": True,
+            "is_default": True,
+        }
+        for index, item in enumerate(DEFAULT_FAQ_SEED)
+    ]
+
+
+def _default_faq_rows(category_id: Optional[str] = None) -> list[dict[str, Any]]:
+    rows = []
+    for index, item in enumerate(DEFAULT_FAQ_SEED):
+        default_category_id = f"default-{index + 1}"
+        if category_id and category_id != default_category_id and category_id != item["name"]:
+            continue
+        rows.append({
+            "id": f"default-faq-{index + 1}",
+            "category_id": default_category_id,
+            "category_name": item["name"],
+            "question": item["question"],
+            "answer": item["answer"],
+            "sort_order": index + 1,
+            "is_active": True,
+            "is_default": True,
+        })
+    return rows
+
+
+def get_active_faq_categories() -> list[dict[str, Any]]:
+    result = _safe_execute(
+        "FAQカテゴリ取得",
+        lambda: (
+            supabase.table("faq_categories")
+            .select("*")
+            .eq("is_active", True)
+            .order("sort_order")
+            .execute()
+        ),
+    )
+    rows = result.data if result and result.data else []
+    return rows or _default_faq_categories()
+
+
+def get_faqs(category_id: Optional[str] = None, active_only: bool = True) -> list[dict[str, Any]]:
+    def fetch():
+        query = supabase.table("faqs").select("*").order("sort_order")
+        if active_only:
+            query = query.eq("is_active", True)
+        if category_id:
+            query = query.eq("category_id", category_id)
+        return query.execute()
+
+    result = _safe_execute("FAQ取得", fetch)
+    rows = result.data if result and result.data else []
+    if rows:
+        return rows
+    return _default_faq_rows(category_id)
+
+
+def get_faq_categories_with_faqs(active_only: bool = True) -> list[dict[str, Any]]:
+    if active_only:
+        categories = get_active_faq_categories()
+    else:
+        result = _safe_execute(
+            "FAQカテゴリ一覧取得",
+            lambda: supabase.table("faq_categories").select("*").order("sort_order").execute(),
+        )
+        categories = result.data if result and result.data else _default_faq_categories()
+
+    faqs = get_faqs(active_only=active_only)
+    grouped = []
+    for category in categories:
+        category_faqs = [
+            faq for faq in faqs
+            if faq.get("category_id") == category.get("id") or faq.get("category_name") == category.get("name")
+        ]
+        grouped.append({**category, "faqs": category_faqs})
+    return grouped
+
+
+def find_faq_category_by_name(name: str) -> Optional[dict[str, Any]]:
+    for category in get_active_faq_categories():
+        if category.get("name") == name:
+            return category
+    return None
+
+
+def find_faq_by_question(question: str, category_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+    for faq in get_faqs(category_id=category_id, active_only=True):
+        if faq.get("question") == question:
+            return faq
+    if category_id:
+        for faq in get_faqs(active_only=True):
+            if faq.get("question") == question:
+                return faq
+    return None
+
+
+def handle_db_faq_message(user_id: str, message: str) -> Optional[dict[str, Any]]:
+    state = user_states.get(user_id)
+
+    if message in ["よくある質問", "よくあるお問い合わせ"]:
+        categories = get_active_faq_categories()
+        if categories:
+            user_states[user_id] = "browsing_faq_categories"
+            return text_response(
+                "よくある質問です。\n知りたいカテゴリを選んでください。",
+                [category.get("name") for category in categories if category.get("name")][:13],
+            )
+        return None
+
+    if state == "browsing_faq_categories":
+        category = find_faq_category_by_name(message)
+        if not category:
+            user_states[user_id] = None
+            return None
+
+        faqs = get_faqs(category.get("id"), active_only=True)
+        if not faqs:
+            user_states[user_id] = None
+            return text_response(
+                "このカテゴリのFAQはまだ登録されていません。\n別のカテゴリを選ぶか、お問い合わせください。",
+                ["よくある質問", "お問い合わせ", "メニュー"],
+            )
+
+        user_states[user_id] = "browsing_faq_questions"
+        applicants[user_id] = {
+            **applicants.get(user_id, {}),
+            "faq_category_id": category.get("id"),
+        }
+        return text_response(
+            f"{category.get('name')}の質問を選んでください。",
+            [faq.get("question") for faq in faqs if faq.get("question")][:13],
+        )
+
+    if state == "browsing_faq_questions":
+        category_id = applicants.get(user_id, {}).get("faq_category_id")
+        faq = find_faq_by_question(message, category_id)
+        user_states[user_id] = None
+        if not faq:
+            return None
+        return card_response(
+            faq.get("question", "FAQ"),
+            faq.get("answer", ""),
+            ["よくある質問", "お問い合わせ", "メニュー"],
+        )
+
+    return None
 
 
 def _utc_now() -> str:
@@ -378,7 +578,13 @@ def handle_message(user_id, message):
         if interview_response:
             return interview_response
 
+    if state in [None, "browsing_faq_categories", "browsing_faq_questions"]:
+        faq_response = handle_db_faq_message(user_id, message)
+        if faq_response:
+            return faq_response
+
     if message in ["メニュー", "menu", "メニューに戻る"]:
+        user_states[user_id] = None
         return text_response("知りたい内容を選んでください。", main_menu())
 
     if message == "キャンセル":
@@ -1370,6 +1576,34 @@ class InterviewSlotCreate(BaseModel):
     interview_type: Optional[str] = "面接"
 
 
+class FAQCategoryPayload(BaseModel):
+    name: str
+    sort_order: Optional[int] = 0
+    is_active: Optional[bool] = True
+
+
+class FAQCategoryUpdatePayload(BaseModel):
+    name: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class FAQPayload(BaseModel):
+    category_id: str
+    question: str
+    answer: str
+    sort_order: Optional[int] = 0
+    is_active: Optional[bool] = True
+
+
+class FAQUpdatePayload(BaseModel):
+    category_id: Optional[str] = None
+    question: Optional[str] = None
+    answer: Optional[str] = None
+    sort_order: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
 def _safe_count(rows: list[dict[str, Any]], key: str, value: str) -> int:
     return len([row for row in rows if row.get(key) == value])
 
@@ -1550,6 +1784,96 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
         "slots": slots_result.data or [],
         "interview_type": interview_type,
     }
+
+
+@app.get("/api/faq-categories")
+def api_faq_categories():
+    return get_active_faq_categories()
+
+
+@app.post("/api/faq-categories")
+def api_create_faq_category(payload: FAQCategoryPayload):
+    if not payload.name.strip():
+        raise HTTPException(status_code=400, detail="カテゴリ名が必要です")
+
+    result = (
+        supabase.table("faq_categories")
+        .insert({
+            "name": payload.name.strip(),
+            "sort_order": payload.sort_order or 0,
+            "is_active": payload.is_active,
+        })
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+@app.patch("/api/faq-categories/{category_id}")
+def api_update_faq_category(category_id: str, payload: FAQCategoryUpdatePayload):
+    update_data = payload.model_dump(exclude_none=True)
+    if "name" in update_data:
+        update_data["name"] = update_data["name"].strip()
+    if not update_data:
+        raise HTTPException(status_code=400, detail="更新内容がありません")
+
+    result = (
+        supabase.table("faq_categories")
+        .update(update_data)
+        .eq("id", category_id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="FAQカテゴリが見つかりません")
+    return result.data[0]
+
+
+@app.get("/api/faqs")
+def api_faqs():
+    return get_faq_categories_with_faqs(active_only=False)
+
+
+@app.get("/api/faq-categories/{category_id}/faqs")
+def api_category_faqs(category_id: str):
+    return get_faqs(category_id=category_id, active_only=True)
+
+
+@app.post("/api/faqs")
+def api_create_faq(payload: FAQPayload):
+    if not payload.category_id or not payload.question.strip() or not payload.answer.strip():
+        raise HTTPException(status_code=400, detail="category_id、question、answer が必要です")
+
+    result = (
+        supabase.table("faqs")
+        .insert({
+            "category_id": payload.category_id,
+            "question": payload.question.strip(),
+            "answer": payload.answer.strip(),
+            "sort_order": payload.sort_order or 0,
+            "is_active": payload.is_active,
+        })
+        .execute()
+    )
+    return result.data[0] if result.data else {}
+
+
+@app.patch("/api/faqs/{faq_id}")
+def api_update_faq(faq_id: str, payload: FAQUpdatePayload):
+    update_data = payload.model_dump(exclude_none=True)
+    for key in ["question", "answer"]:
+        if key in update_data:
+            update_data[key] = update_data[key].strip()
+    if not update_data:
+        raise HTTPException(status_code=400, detail="更新内容がありません")
+
+    result = (
+        supabase.table("faqs")
+        .update(update_data)
+        .eq("id", faq_id)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="FAQが見つかりません")
+    return result.data[0]
 
 
 @app.get("/api/inquiries")

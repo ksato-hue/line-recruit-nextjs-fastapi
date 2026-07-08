@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createInterviewSlots, getApplicants, getDashboard, getInquiries, sendLineMessage, updateApplicant } from "../lib/api";
-import type { Applicant, Dashboard, Inquiry } from "../types";
+import { createFAQ, createInterviewSlots, getApplicants, getDashboard, getFAQs, getInquiries, sendLineMessage, updateApplicant, updateFAQ } from "../lib/api";
+import type { Applicant, Dashboard, FAQ, FAQCategory, Inquiry } from "../types";
 
 const menuItems = [
   "ダッシュボード",
@@ -19,9 +19,9 @@ const menuItems = [
   "設定"
 ];
 
-const defaultStatusFlow = ["新規応募", "応募途中", "応募完了", "面接調整中", "面接確定", "採用", "不採用"];
+const defaultStatusFlow = ["新規応募", "応募途中", "応募完了", "面接調整中", "面接確定", "採用 / 不採用"];
 const additionalStatusCandidates = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
-const statusOptions = [...defaultStatusFlow, ...additionalStatusCandidates, "離脱"];
+const statusOptions = ["新規応募", "応募途中", "応募完了", "面接調整中", "面接確定", ...additionalStatusCandidates, "採用", "不採用", "離脱"];
 const interviewTypeOptions = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
 
 function formatDate(value?: string) {
@@ -209,7 +209,7 @@ export default function AdminPage() {
             )}
 
             {activeMenu === "LINEメッセージ履歴" && (
-              <HistoryView applicants={applicants} inquiries={inquiries} />
+              <HistoryView applicants={applicants} />
             )}
 
             {activeMenu === "お問い合わせ" && <InquiriesView inquiries={inquiries} />}
@@ -643,7 +643,7 @@ function Detail({ label, value }: { label: string; value?: string }) {
   );
 }
 
-function HistoryView({ applicants, inquiries }: { applicants: Applicant[]; inquiries: Inquiry[] }) {
+function HistoryView({ applicants }: { applicants: Applicant[] }) {
   const logExamples = [
     "Bot自動送信: 応募開始案内",
     "Bot自動送信: 応募完了通知",
@@ -659,38 +659,23 @@ function HistoryView({ applicants, inquiries }: { applicants: Applicant[]; inqui
       <section className="panel">
         <h2>LINEメッセージ履歴</h2>
         <p className="sectionDescription">
-          LINEメッセージ履歴では、自動送信・手動送信・応募者返信の履歴を確認できます。お問い合わせ対応は「お問い合わせ」画面または inquiries テーブルで管理します。
+          LINEメッセージ履歴では、自動送信・手動送信・応募者返信の履歴を確認できます。
         </p>
         <div className="logTypeGrid">
           {logExamples.map((item) => <span className="logType" key={item}>{item}</span>)}
         </div>
       </section>
-      <section className="twoColumn">
-        <article className="panel">
-          <h2>応募者ごとの直近ログ</h2>
-          <div className="miniRows">
-            {applicants.slice(0, 8).map((applicant) => (
-              <div className="historyRow" key={applicant.id}>
-                <strong>{applicant.name || "応募者"}</strong>
-                <span>{applicant.interview_status || applicant.status || "応募情報登録"}</span>
-                <small>{formatDate(applicant.created_at)}</small>
-              </div>
-            ))}
-          </div>
-        </article>
-        <article className="panel">
-          <h2>お問い合わせは別管理</h2>
-          <p className="sectionDescription">この欄は確認用のサマリーです。対応状況の管理は inquiries 側で扱います。</p>
-          <div className="miniRows">
-            {inquiries.slice(0, 5).map((inquiry) => (
-              <div className="historyRow" key={inquiry.id}>
-                <strong>{inquiry.status || "未対応"}</strong>
-                <span>{inquiry.message || "-"}</span>
-                <small>{formatDate(inquiry.created_at)}</small>
-              </div>
-            ))}
-          </div>
-        </article>
+      <section className="panel">
+        <h2>応募者ごとの直近ログ</h2>
+        <div className="miniRows">
+          {applicants.slice(0, 8).map((applicant) => (
+            <div className="historyRow" key={applicant.id}>
+              <strong>{applicant.name || "応募者"}</strong>
+              <span>{applicant.interview_status || applicant.status || "応募情報登録"}</span>
+              <small>{formatDate(applicant.created_at)}</small>
+            </div>
+          ))}
+        </div>
       </section>
     </div>
   );
@@ -706,7 +691,7 @@ function InquiriesView({ inquiries }: { inquiries: Inquiry[] }) {
         </div>
         <span className="pill">{inquiries.length}件</span>
       </div>
-      <p className="sectionDescription">応募者からのお問い合わせ対応はここで確認します。LINEメッセージ履歴は会話ログ・送信ログの確認用です。</p>
+      <p className="sectionDescription">応募者からのお問い合わせ対応はここで確認します。</p>
       <div className="tableWrap">
         <table>
           <thead>
@@ -772,51 +757,95 @@ function QuestionTreeSettings() {
 }
 
 function FAQSettings() {
-  const faqCategories = [
-    {
-      category: "給与について",
-      items: [
-        { question: "給与はどのように決まりますか？", answer: "経験・スキル・希望職種をもとに面接時にご案内します。", published: true },
-        { question: "昇給はありますか？", answer: "評価や実績に応じて昇給の機会があります。", published: true }
-      ]
-    },
-    {
-      category: "休日・休暇について",
-      items: [
-        { question: "年間休日を教えてください", answer: "職種や勤務形態により異なるため、面接時に詳細をご案内します。", published: true }
-      ]
-    },
-    {
-      category: "福利厚生について",
-      items: [
-        { question: "社会保険はありますか？", answer: "雇用条件に応じて各種社会保険を整備しています。", published: true }
-      ]
-    },
-    {
-      category: "働き方について",
-      items: [
-        { question: "勤務時間は固定ですか？", answer: "職種により固定勤務・シフト勤務があります。", published: true }
-      ]
-    },
-    {
-      category: "仕事内容について",
-      items: [
-        { question: "未経験でも応募できますか？", answer: "未経験の方も応募可能です。研修やサポート体制をご案内します。", published: true }
-      ]
-    },
-    {
-      category: "面接について",
-      items: [
-        { question: "面接はオンラインですか？", answer: "オンラインまたは対面で調整可能です。候補日確定後に詳細をご連絡します。", published: true }
-      ]
-    },
-    {
-      category: "会社について",
-      items: [
-        { question: "会社情報を知りたいです", answer: "事業内容や働く環境について、面接前にもLINEでご案内できます。", published: false }
-      ]
+  const [categories, setCategories] = useState<FAQCategory[]>([]);
+  const [drafts, setDrafts] = useState<Record<string, FAQ>>({});
+  const [newFAQ, setNewFAQ] = useState({ category_id: "", question: "", answer: "", is_active: true });
+  const [isLoadingFAQ, setIsLoadingFAQ] = useState(true);
+  const [savingFAQId, setSavingFAQId] = useState<string | null>(null);
+  const [faqMessage, setFAQMessage] = useState<string | null>(null);
+  const [faqError, setFAQError] = useState<string | null>(null);
+
+  async function loadFAQs() {
+    setIsLoadingFAQ(true);
+    setFAQError(null);
+    try {
+      const data = await getFAQs();
+      setCategories(data);
+      setDrafts(() => {
+        const next: Record<string, FAQ> = {};
+        data.forEach((category) => {
+          category.faqs?.forEach((faq) => {
+            next[faq.id] = { ...faq, category_id: faq.category_id || category.id };
+          });
+        });
+        return next;
+      });
+      setNewFAQ((current) => ({ ...current, category_id: current.category_id || data[0]?.id || "" }));
+    } catch (err) {
+      setFAQError(err instanceof Error ? err.message : "FAQの取得に失敗しました");
+    } finally {
+      setIsLoadingFAQ(false);
     }
-  ];
+  }
+
+  useEffect(() => {
+    loadFAQs();
+  }, []);
+
+  function updateDraft(id: string, data: Partial<FAQ>) {
+    setDrafts((current) => ({ ...current, [id]: { ...current[id], ...data } }));
+  }
+
+  async function saveFAQ(faq: FAQ) {
+    const draft = drafts[faq.id];
+    if (!draft.question.trim() || !draft.answer.trim()) {
+      setFAQError("質問と回答を入力してください");
+      return;
+    }
+    setSavingFAQId(faq.id);
+    setFAQError(null);
+    setFAQMessage(null);
+    try {
+      await updateFAQ(faq.id, {
+        category_id: draft.category_id,
+        question: draft.question,
+        answer: draft.answer,
+        sort_order: draft.sort_order,
+        is_active: draft.is_active,
+      });
+      setFAQMessage("FAQを保存しました");
+      await loadFAQs();
+    } catch (err) {
+      setFAQError(err instanceof Error ? err.message : "FAQの保存に失敗しました。FAQテーブルが作成済みか確認してください。");
+    } finally {
+      setSavingFAQId(null);
+    }
+  }
+
+  async function addFAQ() {
+    if (!newFAQ.category_id || !newFAQ.question.trim() || !newFAQ.answer.trim()) {
+      setFAQError("カテゴリ、質問、回答を入力してください");
+      return;
+    }
+    setSavingFAQId("new");
+    setFAQError(null);
+    setFAQMessage(null);
+    try {
+      await createFAQ({
+        category_id: newFAQ.category_id,
+        question: newFAQ.question,
+        answer: newFAQ.answer,
+        is_active: newFAQ.is_active,
+      });
+      setFAQMessage("FAQを追加しました");
+      setNewFAQ((current) => ({ ...current, question: "", answer: "", is_active: true }));
+      await loadFAQs();
+    } catch (err) {
+      setFAQError(err instanceof Error ? err.message : "FAQの追加に失敗しました。FAQテーブルが作成済みか確認してください。");
+    } finally {
+      setSavingFAQId(null);
+    }
+  }
 
   return (
     <section className="panel">
@@ -825,28 +854,55 @@ function FAQSettings() {
           <p className="eyebrow">FAQ Data</p>
           <h2>FAQ設定</h2>
         </div>
-        <button className="primaryButton">FAQを追加</button>
+        <button className="secondaryButton" onClick={loadFAQs}>再読み込み</button>
       </div>
       <p className="sectionDescription">LINE BotのFAQ回答で使う想定のデータです。カテゴリごとに質問・回答・公開状態を管理します。</p>
+      {faqMessage && <div className="successBox listNotice">{faqMessage}</div>}
+      {faqError && <div className="inlineError listNotice">{faqError}</div>}
+      {isLoadingFAQ ? <div className="loadingCard">FAQを取得中...</div> : (
+        <>
+          <div className="faqAddBox">
+            <select value={newFAQ.category_id} onChange={(event) => setNewFAQ((current) => ({ ...current, category_id: event.target.value }))}>
+              {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
+            </select>
+            <input value={newFAQ.question} onChange={(event) => setNewFAQ((current) => ({ ...current, question: event.target.value }))} placeholder="新しい質問" />
+            <textarea value={newFAQ.answer} onChange={(event) => setNewFAQ((current) => ({ ...current, answer: event.target.value }))} placeholder="回答" />
+            <label className="checkLabel">
+              <input type="checkbox" checked={newFAQ.is_active} onChange={(event) => setNewFAQ((current) => ({ ...current, is_active: event.target.checked }))} />
+              公開
+            </label>
+            <button className="primaryButton" onClick={addFAQ} disabled={savingFAQId === "new"}>{savingFAQId === "new" ? "追加中..." : "FAQを追加"}</button>
+          </div>
       <div className="faqGrid">
-        {faqCategories.map((category) => (
-          <article className="faqCategory" key={category.category}>
+        {categories.map((category) => (
+          <article className="faqCategory" key={category.id}>
             <div className="branchHeader">
-              <strong>{category.category}</strong>
-              <button className="textButton">編集</button>
+              <strong>{category.name}</strong>
+              <span className={category.is_active === false ? "badge" : "badge badgeGreen"}>{category.is_active === false ? "非公開" : "公開"}</span>
             </div>
-            {category.items.map((item) => (
-              <div className="faqItem" key={item.question}>
-                <div>
-                  <strong>{item.question}</strong>
-                  <p>{item.answer}</p>
+            {(category.faqs || []).map((faq) => {
+              const draft = drafts[faq.id] || faq;
+              return (
+              <div className="faqItemEditor" key={faq.id}>
+                <input value={draft.question} onChange={(event) => updateDraft(faq.id, { question: event.target.value })} placeholder="質問" />
+                <textarea value={draft.answer} onChange={(event) => updateDraft(faq.id, { answer: event.target.value })} placeholder="回答" />
+                <div className="faqItemActions">
+                  <label className="checkLabel">
+                    <input type="checkbox" checked={draft.is_active !== false} onChange={(event) => updateDraft(faq.id, { is_active: event.target.checked })} />
+                    公開
+                  </label>
+                  <button className="secondaryButton compactButton" onClick={() => saveFAQ(faq)} disabled={savingFAQId === faq.id || faq.is_default}>
+                    {faq.is_default ? "DB未保存" : savingFAQId === faq.id ? "保存中..." : "保存"}
+                  </button>
                 </div>
-                <span className={item.published ? "badge badgeGreen" : "badge"}>{item.published ? "公開" : "非公開"}</span>
               </div>
-            ))}
+              );
+            })}
           </article>
         ))}
       </div>
+        </>
+      )}
     </section>
   );
 }
@@ -891,7 +947,7 @@ function AnalyticsView({ dashboard, applicants }: { dashboard: Dashboard | null;
 function StatusSettings() {
   const [customStatuses, setCustomStatuses] = useState<string[]>([]);
   const [newStatus, setNewStatus] = useState(additionalStatusCandidates[0]);
-  const flow = [...defaultStatusFlow, ...customStatuses];
+  const flow = [...defaultStatusFlow.slice(0, 5), ...customStatuses, defaultStatusFlow[5]];
 
   function addStatus() {
     const value = newStatus.trim();
@@ -907,7 +963,7 @@ function StatusSettings() {
           <h2>ステータス管理</h2>
         </div>
       </div>
-      <p className="sectionDescription">この順番で選考が進みます。追加したステータスもフロー上に表示されます。</p>
+      <p className="sectionDescription">この順番で選考フローが進みます。追加したステータスもフロー上に表示されます。</p>
       <div className="statusFlow">
         {flow.map((status, index) => (
           <article className="statusStep" key={`${status}-${index}`}>
