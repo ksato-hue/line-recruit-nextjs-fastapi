@@ -54,7 +54,7 @@ export type FAQ = {
   question: string;
   answer: string;
   sort_order?: number;
-  is_active?: boolean;
+  is_visible?: boolean;
   is_default?: boolean;
   created_at?: string;
 };
@@ -74,7 +74,7 @@ export type FAQPayload = {
   question: string;
   answer: string;
   sort_order?: number;
-  is_active?: boolean;
+  is_visible?: boolean;
 };
 
 export type FAQUpdatePayload = Partial<FAQPayload>;

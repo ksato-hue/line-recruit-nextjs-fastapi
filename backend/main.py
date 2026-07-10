@@ -38,43 +38,30 @@ user_states = {}
 applicants = {}
 interview_confirmations = {}
 
-DEFAULT_FAQ_SEED = [
-    {
-        "name": "給与について",
-        "question": "給与はどのように決まりますか？",
-        "answer": "経験・スキル・希望職種をもとに面接時にご案内します。",
-    },
-    {
-        "name": "休日・休暇について",
-        "question": "年間休日を教えてください",
-        "answer": "職種や勤務形態により異なるため、面接時に詳細をご案内します。",
-    },
-    {
-        "name": "福利厚生について",
-        "question": "社会保険はありますか？",
-        "answer": "雇用条件に応じて各種社会保険を整備しています。",
-    },
-    {
-        "name": "働き方について",
-        "question": "車通勤はできますか？",
-        "answer": "勤務地や職種により異なります。詳細は面接時にご確認ください。",
-    },
-    {
-        "name": "仕事内容について",
-        "question": "未経験でも応募できますか？",
-        "answer": "未経験から応募可能な職種もあります。必要な経験やスキルは職種ごとに異なります。",
-    },
-    {
-        "name": "面接について",
-        "question": "面接は何回ありますか？",
-        "answer": "通常1〜2回を想定しています。職種により異なる場合があります。",
-    },
-    {
-        "name": "会社について",
-        "question": "会社の雰囲気を教えてください",
-        "answer": "職種や部署により異なりますが、働きやすい環境づくりを大切にしています。",
-    },
+DEFAULT_FAQ_TEMPLATES = [
+    ("給与について", ["給与の決まり方", "初任給", "中途給与", "経験者優遇", "固定残業代", "残業代", "昇給", "賞与", "手当", "交通費", "モデル年収", "給与支払日"]),
+    ("勤務時間・働き方について", ["勤務時間", "休憩", "残業", "シフト", "フレックス", "リモート", "直行直帰", "副業", "服装", "髪型", "車通勤", "転勤", "出張"]),
+    ("休日・休暇について", ["年間休日", "週休2日", "土日祝休み", "希望休", "有給", "夏季休暇", "年末年始休暇", "育休", "介護休暇", "急な休み", "家庭都合の休み"]),
+    ("福利厚生について", ["社会保険", "退職金", "健康診断", "制服支給", "PC貸与", "社用車", "食事補助", "資格取得支援", "書籍補助", "社内イベント", "住宅補助", "寮・社宅"]),
+    ("仕事内容について", ["具体的な業務", "1日の流れ", "入社後すぐの仕事", "未経験でもできるか", "専門知識", "体力", "接客", "電話対応", "営業活動", "ノルマ", "チーム作業", "お客様対応", "PC作業", "現場作業", "運転業務", "キャリアアップ"]),
+    ("応募条件について", ["未経験可", "経験者のみか", "学歴", "新卒", "第二新卒", "中途", "ブランク", "主婦主夫", "フリーター", "年齢制限", "外国籍", "必要資格", "普通免許", "PCスキル", "職場見学", "再応募"]),
+    ("選考・面接について", ["応募後の流れ", "選考フロー", "面接回数", "カジュアル面談", "面接時間", "オンライン面接", "対面面接", "面接場所", "服装", "持ち物", "履歴書", "職務経歴書", "ポートフォリオ", "適性検査", "筆記試験", "面接日程変更", "合否連絡", "内定までの期間", "入社日相談"]),
+    ("入社後・研修について", ["入社後の流れ", "研修制度", "研修期間", "OJT", "マニュアル", "教育担当", "試用期間", "試用期間中の条件", "配属", "異動", "評価制度", "昇格", "キャリア面談"]),
+    ("職場環境・雰囲気について", ["職場の雰囲気", "社員数", "部署人数", "男女比", "年齢層", "平均年齢", "新卒中途比率", "未経験入社", "離職率", "平均勤続年数", "相談しやすさ", "社内イベント", "休憩スペース", "更衣室", "ロッカー", "喫煙所", "職場見学"]),
+    ("雇用形態について", ["正社員", "契約社員", "アルバイト", "パート", "業務委託", "正社員登用", "雇用期間", "契約更新", "短時間勤務", "週何日", "扶養内", "Wワーク"]),
+    ("勤務地・通勤について", ["勤務地", "勤務地選択", "配属先", "転勤", "異動", "最寄り駅", "車通勤", "駐車場", "ガソリン代", "自転車通勤", "バイク通勤", "交通費", "出張", "直行直帰"]),
+    ("会社について", ["会社概要", "事業内容", "会社の強み", "理念", "価値観", "今後の事業展開", "安定性", "お客様", "主要取引先", "設立年", "社員数", "拠点", "地域貢献", "SNS", "ホームページ"]),
+    ("応募・連絡について", ["応募方法", "LINE応募", "電話応募", "メール応募", "必要情報", "応募後の連絡", "連絡方法", "連絡可能時間", "応募キャンセル", "応募内容修正", "職種変更", "面接日程変更", "採用担当者への質問", "返信が来ない場合", "LINE通知停止", "個人情報の扱い"]),
+    ("新卒向け", ["新卒採用", "対象卒年", "文系可", "理系条件", "学部学科", "既卒", "内定時期", "入社前研修", "説明会", "インターン", "OB・OG訪問", "学校推薦", "成績証明書", "卒業見込み証明書", "入社前資格", "配属希望", "新卒離職率"]),
+    ("中途向け", ["中途採用", "異業種転職", "同業経験", "ブランク", "転職回数", "現職中応募", "入社時期相談", "前職給与考慮", "職務経歴書", "管理職経験", "キャリアチェンジ", "経験評価", "平日夜や土日の面接"]),
+    ("アルバイト・パート向け", ["アルバイト募集", "パート募集", "週何日", "1日何時間", "扶養内", "学生可", "主婦主夫可", "シニア可", "短期勤務", "長期前提", "シフト自由", "土日のみ", "平日のみ", "午前のみ", "午後のみ", "Wワーク", "正社員登用"]),
+    ("安全・衛生・労働環境", ["安全対策", "労災対策", "危険作業", "重いもの", "立ち仕事", "座り仕事", "空調", "夏場冬場の環境", "作業服", "保護具", "ヘルメット", "安全靴", "健康診断", "受動喫煙対策", "感染症対策"]),
 ]
+
+FAQ_PREPARING_MESSAGE = (
+    "よくある質問は現在準備中です。\n"
+    "確認したい内容がある場合は「お問い合わせ」からご連絡ください。"
+)
 
 
 @app.get("/")
@@ -219,31 +206,34 @@ def _default_faq_categories() -> list[dict[str, Any]]:
     return [
         {
             "id": f"default-{index + 1}",
-            "name": item["name"],
+            "name": category_name,
             "sort_order": index + 1,
             "is_active": True,
             "is_default": True,
         }
-        for index, item in enumerate(DEFAULT_FAQ_SEED)
+        for index, (category_name, _) in enumerate(DEFAULT_FAQ_TEMPLATES)
     ]
 
 
 def _default_faq_rows(category_id: Optional[str] = None) -> list[dict[str, Any]]:
     rows = []
-    for index, item in enumerate(DEFAULT_FAQ_SEED):
-        default_category_id = f"default-{index + 1}"
-        if category_id and category_id != default_category_id and category_id != item["name"]:
+    row_index = 1
+    for category_index, (category_name, questions) in enumerate(DEFAULT_FAQ_TEMPLATES):
+        default_category_id = f"default-{category_index + 1}"
+        if category_id and category_id != default_category_id and category_id != category_name:
             continue
-        rows.append({
-            "id": f"default-faq-{index + 1}",
-            "category_id": default_category_id,
-            "category_name": item["name"],
-            "question": item["question"],
-            "answer": item["answer"],
-            "sort_order": index + 1,
-            "is_active": True,
-            "is_default": True,
-        })
+        for question_index, question in enumerate(questions):
+            rows.append({
+                "id": f"default-faq-{row_index}",
+                "category_id": default_category_id,
+                "category_name": category_name,
+                "question": question,
+                "answer": "",
+                "sort_order": question_index + 1,
+                "is_visible": False,
+                "is_default": True,
+            })
+            row_index += 1
     return rows
 
 
@@ -262,24 +252,28 @@ def get_active_faq_categories() -> list[dict[str, Any]]:
     return rows or _default_faq_categories()
 
 
-def get_faqs(category_id: Optional[str] = None, active_only: bool = True) -> list[dict[str, Any]]:
+def is_public_faq(faq: dict[str, Any]) -> bool:
+    return bool(faq.get("is_visible")) and bool(str(faq.get("answer") or "").strip())
+
+
+def get_faqs(category_id: Optional[str] = None, public_only: bool = False) -> list[dict[str, Any]]:
     def fetch():
         query = supabase.table("faqs").select("*").order("sort_order")
-        if active_only:
-            query = query.eq("is_active", True)
+        if public_only:
+            query = query.eq("is_visible", True)
         if category_id:
             query = query.eq("category_id", category_id)
         return query.execute()
 
     result = _safe_execute("FAQ取得", fetch)
     rows = result.data if result and result.data else []
-    if rows:
-        return rows
-    return _default_faq_rows(category_id)
+    if public_only:
+        return [row for row in rows if is_public_faq(row)]
+    return rows or _default_faq_rows(category_id)
 
 
-def get_faq_categories_with_faqs(active_only: bool = True) -> list[dict[str, Any]]:
-    if active_only:
+def get_faq_categories_with_faqs(public_only: bool = False) -> list[dict[str, Any]]:
+    if public_only:
         categories = get_active_faq_categories()
     else:
         result = _safe_execute(
@@ -288,30 +282,35 @@ def get_faq_categories_with_faqs(active_only: bool = True) -> list[dict[str, Any
         )
         categories = result.data if result and result.data else _default_faq_categories()
 
-    faqs = get_faqs(active_only=active_only)
+    faqs = get_faqs(public_only=public_only)
     grouped = []
     for category in categories:
         category_faqs = [
             faq for faq in faqs
             if faq.get("category_id") == category.get("id") or faq.get("category_name") == category.get("name")
         ]
-        grouped.append({**category, "faqs": category_faqs})
+        if not public_only or category_faqs:
+            grouped.append({**category, "faqs": category_faqs})
     return grouped
 
 
+def get_public_faq_categories() -> list[dict[str, Any]]:
+    return get_faq_categories_with_faqs(public_only=True)
+
+
 def find_faq_category_by_name(name: str) -> Optional[dict[str, Any]]:
-    for category in get_active_faq_categories():
+    for category in get_public_faq_categories():
         if category.get("name") == name:
             return category
     return None
 
 
 def find_faq_by_question(question: str, category_id: Optional[str] = None) -> Optional[dict[str, Any]]:
-    for faq in get_faqs(category_id=category_id, active_only=True):
+    for faq in get_faqs(category_id=category_id, public_only=True):
         if faq.get("question") == question:
             return faq
     if category_id:
-        for faq in get_faqs(active_only=True):
+        for faq in get_faqs(public_only=True):
             if faq.get("question") == question:
                 return faq
     return None
@@ -321,14 +320,14 @@ def handle_db_faq_message(user_id: str, message: str) -> Optional[dict[str, Any]
     state = user_states.get(user_id)
 
     if message in ["よくある質問", "よくあるお問い合わせ"]:
-        categories = get_active_faq_categories()
+        categories = get_public_faq_categories()
         if categories:
             user_states[user_id] = "browsing_faq_categories"
             return text_response(
                 "よくある質問です。\n知りたいカテゴリを選んでください。",
                 [category.get("name") for category in categories if category.get("name")][:13],
             )
-        return None
+        return text_response(FAQ_PREPARING_MESSAGE, ["お問い合わせ", "メニュー"])
 
     if state == "browsing_faq_categories":
         category = find_faq_category_by_name(message)
@@ -336,13 +335,10 @@ def handle_db_faq_message(user_id: str, message: str) -> Optional[dict[str, Any]
             user_states[user_id] = None
             return None
 
-        faqs = get_faqs(category.get("id"), active_only=True)
+        faqs = get_faqs(category.get("id"), public_only=True)
         if not faqs:
             user_states[user_id] = None
-            return text_response(
-                "このカテゴリのFAQはまだ登録されていません。\n別のカテゴリを選ぶか、お問い合わせください。",
-                ["よくある質問", "お問い合わせ", "メニュー"],
-            )
+            return text_response(FAQ_PREPARING_MESSAGE, ["お問い合わせ", "メニュー"])
 
         user_states[user_id] = "browsing_faq_questions"
         applicants[user_id] = {
@@ -1593,7 +1589,7 @@ class FAQPayload(BaseModel):
     question: str
     answer: str
     sort_order: Optional[int] = 0
-    is_active: Optional[bool] = True
+    is_visible: Optional[bool] = False
 
 
 class FAQUpdatePayload(BaseModel):
@@ -1601,7 +1597,7 @@ class FAQUpdatePayload(BaseModel):
     question: Optional[str] = None
     answer: Optional[str] = None
     sort_order: Optional[int] = None
-    is_active: Optional[bool] = None
+    is_visible: Optional[bool] = None
 
 
 def _safe_count(rows: list[dict[str, Any]], key: str, value: str) -> int:
@@ -1829,18 +1825,20 @@ def api_update_faq_category(category_id: str, payload: FAQCategoryUpdatePayload)
 
 @app.get("/api/faqs")
 def api_faqs():
-    return get_faq_categories_with_faqs(active_only=False)
+    return get_faq_categories_with_faqs(public_only=False)
 
 
 @app.get("/api/faq-categories/{category_id}/faqs")
 def api_category_faqs(category_id: str):
-    return get_faqs(category_id=category_id, active_only=True)
+    return get_faqs(category_id=category_id, public_only=True)
 
 
 @app.post("/api/faqs")
 def api_create_faq(payload: FAQPayload):
-    if not payload.category_id or not payload.question.strip() or not payload.answer.strip():
-        raise HTTPException(status_code=400, detail="category_id、question、answer が必要です")
+    if not payload.category_id or not payload.question.strip():
+        raise HTTPException(status_code=400, detail="category_id と question が必要です")
+    if payload.is_visible and not payload.answer.strip():
+        raise HTTPException(status_code=400, detail="回答が空欄のFAQは公開できません")
 
     result = (
         supabase.table("faqs")
@@ -1849,7 +1847,7 @@ def api_create_faq(payload: FAQPayload):
             "question": payload.question.strip(),
             "answer": payload.answer.strip(),
             "sort_order": payload.sort_order or 0,
-            "is_active": payload.is_active,
+            "is_visible": payload.is_visible,
         })
         .execute()
     )
@@ -1862,6 +1860,17 @@ def api_update_faq(faq_id: str, payload: FAQUpdatePayload):
     for key in ["question", "answer"]:
         if key in update_data:
             update_data[key] = update_data[key].strip()
+    if update_data.get("is_visible") and not update_data.get("answer"):
+        current = (
+            supabase.table("faqs")
+            .select("*")
+            .eq("id", faq_id)
+            .execute()
+        )
+        current_answer = (current.data or [{}])[0].get("answer", "")
+        next_answer = update_data.get("answer", current_answer)
+        if not str(next_answer or "").strip():
+            raise HTTPException(status_code=400, detail="回答が空欄のFAQは公開できません")
     if not update_data:
         raise HTTPException(status_code=400, detail="更新内容がありません")
 

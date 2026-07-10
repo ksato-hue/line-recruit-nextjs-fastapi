@@ -759,7 +759,9 @@ function QuestionTreeSettings() {
 function FAQSettings() {
   const [categories, setCategories] = useState<FAQCategory[]>([]);
   const [drafts, setDrafts] = useState<Record<string, FAQ>>({});
-  const [newFAQ, setNewFAQ] = useState({ category_id: "", question: "", answer: "", is_active: true });
+  const [newFAQ, setNewFAQ] = useState({ category_id: "", question: "", answer: "", is_visible: false });
+  const [faqSearch, setFAQSearch] = useState("");
+  const [faqFilter, setFAQFilter] = useState("すべて");
   const [isLoadingFAQ, setIsLoadingFAQ] = useState(true);
   const [savingFAQId, setSavingFAQId] = useState<string | null>(null);
   const [faqMessage, setFAQMessage] = useState<string | null>(null);
@@ -798,8 +800,12 @@ function FAQSettings() {
 
   async function saveFAQ(faq: FAQ) {
     const draft = drafts[faq.id];
-    if (!draft.question.trim() || !draft.answer.trim()) {
-      setFAQError("質問と回答を入力してください");
+    if (!draft.question.trim()) {
+      setFAQError("質問を入力してください");
+      return;
+    }
+    if (draft.is_visible && !draft.answer.trim()) {
+      setFAQError("回答未入力のFAQは表示ONにできません");
       return;
     }
     setSavingFAQId(faq.id);
@@ -811,7 +817,7 @@ function FAQSettings() {
         question: draft.question,
         answer: draft.answer,
         sort_order: draft.sort_order,
-        is_active: draft.is_active,
+        is_visible: draft.is_visible,
       });
       setFAQMessage("FAQを保存しました");
       await loadFAQs();
@@ -823,8 +829,12 @@ function FAQSettings() {
   }
 
   async function addFAQ() {
-    if (!newFAQ.category_id || !newFAQ.question.trim() || !newFAQ.answer.trim()) {
-      setFAQError("カテゴリ、質問、回答を入力してください");
+    if (!newFAQ.category_id || !newFAQ.question.trim()) {
+      setFAQError("カテゴリと質問を入力してください");
+      return;
+    }
+    if (newFAQ.is_visible && !newFAQ.answer.trim()) {
+      setFAQError("回答未入力のFAQは表示ONにできません");
       return;
     }
     setSavingFAQId("new");
@@ -835,10 +845,10 @@ function FAQSettings() {
         category_id: newFAQ.category_id,
         question: newFAQ.question,
         answer: newFAQ.answer,
-        is_active: newFAQ.is_active,
+        is_visible: newFAQ.is_visible,
       });
       setFAQMessage("FAQを追加しました");
-      setNewFAQ((current) => ({ ...current, question: "", answer: "", is_active: true }));
+      setNewFAQ((current) => ({ ...current, question: "", answer: "", is_visible: false }));
       await loadFAQs();
     } catch (err) {
       setFAQError(err instanceof Error ? err.message : "FAQの追加に失敗しました。FAQテーブルが作成済みか確認してください。");
@@ -846,6 +856,27 @@ function FAQSettings() {
       setSavingFAQId(null);
     }
   }
+
+  function faqStatus(faq: FAQ) {
+    const hasAnswer = Boolean((faq.answer || "").trim());
+    if (hasAnswer && faq.is_visible) return "公開中";
+    if (hasAnswer) return "回答あり・非公開";
+    return "未設定";
+  }
+
+  function matchesFAQ(faq: FAQ) {
+    const draft = drafts[faq.id] || faq;
+    const keyword = faqSearch.trim();
+    const matchesKeyword = !keyword || [draft.question, draft.answer]
+      .filter(Boolean)
+      .some((value) => String(value).includes(keyword));
+    const status = faqStatus(draft);
+    return matchesKeyword && (faqFilter === "すべて" || status === faqFilter);
+  }
+
+  const filteredCategories = categories
+    .map((category) => ({ ...category, faqs: (category.faqs || []).filter(matchesFAQ) }))
+    .filter((category) => (category.faqs || []).length > 0 || !faqSearch.trim());
 
   return (
     <section className="panel">
@@ -861,6 +892,15 @@ function FAQSettings() {
       {faqError && <div className="inlineError listNotice">{faqError}</div>}
       {isLoadingFAQ ? <div className="loadingCard">FAQを取得中...</div> : (
         <>
+          <div className="toolbar">
+            <input value={faqSearch} onChange={(event) => setFAQSearch(event.target.value)} placeholder="質問・回答で検索" />
+            <select value={faqFilter} onChange={(event) => setFAQFilter(event.target.value)}>
+              <option>すべて</option>
+              <option>公開中</option>
+              <option>回答あり・非公開</option>
+              <option>未設定</option>
+            </select>
+          </div>
           <div className="faqAddBox">
             <select value={newFAQ.category_id} onChange={(event) => setNewFAQ((current) => ({ ...current, category_id: event.target.value }))}>
               {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
@@ -868,13 +908,23 @@ function FAQSettings() {
             <input value={newFAQ.question} onChange={(event) => setNewFAQ((current) => ({ ...current, question: event.target.value }))} placeholder="新しい質問" />
             <textarea value={newFAQ.answer} onChange={(event) => setNewFAQ((current) => ({ ...current, answer: event.target.value }))} placeholder="回答" />
             <label className="checkLabel">
-              <input type="checkbox" checked={newFAQ.is_active} onChange={(event) => setNewFAQ((current) => ({ ...current, is_active: event.target.checked }))} />
-              公開
+              <input
+                type="checkbox"
+                checked={newFAQ.is_visible}
+                onChange={(event) => {
+                  if (event.target.checked && !newFAQ.answer.trim()) {
+                    setFAQError("回答未入力のFAQは表示ONにできません");
+                    return;
+                  }
+                  setNewFAQ((current) => ({ ...current, is_visible: event.target.checked }));
+                }}
+              />
+              表示ON
             </label>
             <button className="primaryButton" onClick={addFAQ} disabled={savingFAQId === "new"}>{savingFAQId === "new" ? "追加中..." : "FAQを追加"}</button>
           </div>
       <div className="faqGrid">
-        {categories.map((category) => (
+        {filteredCategories.map((category) => (
           <article className="faqCategory" key={category.id}>
             <div className="branchHeader">
               <strong>{category.name}</strong>
@@ -882,14 +932,28 @@ function FAQSettings() {
             </div>
             {(category.faqs || []).map((faq) => {
               const draft = drafts[faq.id] || faq;
+              const status = faqStatus(draft);
               return (
               <div className="faqItemEditor" key={faq.id}>
+                <div className="faqStatusLine">
+                  <span className={status === "公開中" ? "badge badgeGreen" : status === "回答あり・非公開" ? "badge badgeBlue" : "badge"}>{status}</span>
+                </div>
                 <input value={draft.question} onChange={(event) => updateDraft(faq.id, { question: event.target.value })} placeholder="質問" />
                 <textarea value={draft.answer} onChange={(event) => updateDraft(faq.id, { answer: event.target.value })} placeholder="回答" />
                 <div className="faqItemActions">
                   <label className="checkLabel">
-                    <input type="checkbox" checked={draft.is_active !== false} onChange={(event) => updateDraft(faq.id, { is_active: event.target.checked })} />
-                    公開
+                    <input
+                      type="checkbox"
+                      checked={Boolean(draft.is_visible)}
+                      onChange={(event) => {
+                        if (event.target.checked && !draft.answer.trim()) {
+                          setFAQError("回答未入力のFAQは表示ONにできません");
+                          return;
+                        }
+                        updateDraft(faq.id, { is_visible: event.target.checked });
+                      }}
+                    />
+                    表示ON
                   </label>
                   <button className="secondaryButton compactButton" onClick={() => saveFAQ(faq)} disabled={savingFAQId === faq.id || faq.is_default}>
                     {faq.is_default ? "DB未保存" : savingFAQId === faq.id ? "保存中..." : "保存"}
