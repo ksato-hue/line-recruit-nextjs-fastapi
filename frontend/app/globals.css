@@ -25,8 +25,9 @@ button { cursor: pointer; }
 .appShell { min-height: 100vh; }
 .sidebar {
   width: 260px;
-  background: linear-gradient(180deg, #113b78, #0f2b58);
-  color: white;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  color: var(--text);
   padding: 24px 18px;
   position: fixed;
   top: 0;
@@ -37,21 +38,25 @@ button { cursor: pointer; }
   z-index: 20;
 }
 .brand { display: flex; gap: 12px; align-items: center; margin-bottom: 30px; }
-.brandButton { width: 100%; border: 0; color: inherit; background: transparent; text-align: left; padding: 0; }
+.brandButton { width: 100%; border: 0; color: inherit; background: transparent; text-align: left; padding: 0; border-radius: 14px; }
+.brandButton:hover { background: #f1f6fd; }
 .brandMark {
   width: 42px; height: 42px; border-radius: 14px;
   display: grid; place-items: center;
-  background: rgba(255,255,255,.16);
+  background: linear-gradient(135deg, var(--green), #04a648);
+  color: #fff;
   font-weight: 800;
 }
-.brand span { display: block; opacity: .72; font-size: 12px; margin-top: 4px; }
-.navList { display: grid; gap: 7px; }
+.brand span { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
+.navList { display: grid; gap: 6px; }
 .navItem {
   width: 100%; border: 0; border-radius: 13px;
-  background: transparent; color: rgba(255,255,255,.78);
-  text-align: left; padding: 12px 14px;
+  background: transparent; color: #44506a;
+  text-align: left; padding: 11px 14px;
+  font-weight: 600;
 }
-.navItem:hover, .navItem.active { background: rgba(255,255,255,.14); color: #fff; }
+.navItem:hover { background: #f1f6fd; color: var(--blueDark); }
+.navItem.active { background: #e7f1fe; color: var(--blueDark); font-weight: 800; }
 .content { margin-left: 260px; padding: 28px; min-width: 0; }
 .topbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 22px; }
 h1, h2 { margin: 0; }
@@ -136,8 +141,14 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .tag { border-radius: 999px; padding: 6px 10px; background: #eef5ff; color: var(--blueDark); font-size: 12px; font-weight: 800; }
 .muted { color: var(--muted); }
 .timeline { list-style: none; padding: 0; margin: 0; display: grid; gap: 10px; }
-.timeline li { display: flex; align-items: center; gap: 10px; color: #344054; }
-.timeline span { width: 10px; height: 10px; border-radius: 50%; background: var(--green); }
+.timeline li { display: flex; align-items: flex-start; gap: 10px; color: #344054; }
+.timeline span { width: 10px; height: 10px; border-radius: 50%; background: var(--green); flex-shrink: 0; margin-top: 5px; }
+.timelineDotIn { background: var(--blue) !important; }
+.timelineDotOut { background: var(--green) !important; }
+.timelineBody { min-width: 0; }
+.timelineBody small { display: block; color: var(--muted); margin-bottom: 2px; }
+.timelineBody p { margin: 0; font-size: 13px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
+.logMessageCell { max-width: 420px; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
 .historyRow { display: grid; gap: 4px; }
 .historyRow span { color: #344054; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .logTypeGrid, .branchGrid, .faqGrid { display: grid; gap: 12px; }

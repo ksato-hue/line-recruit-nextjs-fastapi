@@ -1,4 +1,4 @@
-import type { Applicant, Dashboard, FAQ, FAQCategory, FAQPayload, FAQUpdatePayload, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse, LineSendRequest, LineSendResponse } from "../types";
+import type { Applicant, Dashboard, FAQ, FAQCategory, FAQPayload, FAQUpdatePayload, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse, LineMessageLog, LineSendRequest, LineSendResponse } from "../types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
@@ -55,6 +55,13 @@ export function sendLineMessage(data: LineSendRequest) {
     method: "POST",
     body: JSON.stringify(data)
   });
+}
+
+export function getLineMessages(lineUserId?: string, limit = 100) {
+  const params = new URLSearchParams();
+  if (lineUserId) params.set("line_user_id", lineUserId);
+  params.set("limit", String(limit));
+  return request<LineMessageLog[]>(`/api/line-messages?${params.toString()}`);
 }
 
 export function getFAQCategories() {

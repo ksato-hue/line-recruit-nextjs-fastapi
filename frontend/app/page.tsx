@@ -1,8 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createFAQ, createInterviewSlots, getApplicants, getDashboard, getFAQs, getInquiries, sendLineMessage, updateApplicant, updateFAQ } from "../lib/api";
-import type { Applicant, Dashboard, FAQ, FAQCategory, Inquiry } from "../types";
+import { createFAQ, createInterviewSlots, getApplicants, getDashboard, getFAQs, getInquiries, getLineMessages, sendLineMessage, updateApplicant, updateFAQ } from "../lib/api";
+import type { Applicant, Dashboard, FAQ, FAQCategory, Inquiry, LineMessageLog } from "../types";
 
 const menuItems = [
   "ダッシュボード",
@@ -446,6 +446,18 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
   const [lineNotice, setLineNotice] = useState<string | null>(null);
   const [lineError, setLineError] = useState<string | null>(null);
   const [isSendingLine, setIsSendingLine] = useState(false);
+  const [applicantLogs, setApplicantLogs] = useState<LineMessageLog[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    setApplicantLogs([]);
+    if (applicant.line_user_id) {
+      getLineMessages(applicant.line_user_id, 20)
+        .then((data) => { if (!cancelled) setApplicantLogs(data); })
+        .catch(() => { if (!cancelled) setApplicantLogs([]); });
+    }
+    return () => { cancelled = true; };
+  }, [applicant.id, applicant.line_user_id]);
 
   useEffect(() => {
     setShowInterviewForm(false);
@@ -621,13 +633,22 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
         </div>
 
         <div className="drawerBlock">
-          <label>LINE履歴</label>
-          <ol className="timeline">
-            <li><span />応募開始</li>
-            <li><span />応募完了通知</li>
-            <li><span />1時間リマインド送信</li>
-            <li><span />面接候補日送信</li>
-          </ol>
+          <label>LINE履歴（直近{applicantLogs.length}件）</label>
+          {applicantLogs.length === 0 ? (
+            <span className="muted">まだLINE履歴がありません</span>
+          ) : (
+            <ol className="timeline">
+              {applicantLogs.map((log) => (
+                <li key={log.id}>
+                  <span className={log.direction === "inbound" ? "timelineDotIn" : "timelineDotOut"} />
+                  <div className="timelineBody">
+                    <small>{formatDate(log.created_at)}・{directionLabel(log.direction)}</small>
+                    <p>{log.message}</p>
+                  </div>
+                </li>
+              ))}
+            </ol>
+          )}
         </div>
       </section>
     </aside>
@@ -643,41 +664,112 @@ function Detail({ label, value }: { label: string; value?: string }) {
   );
 }
 
+function directionLabel(direction?: string) {
+  if (direction === "inbound") return "受信";
+  if (direction === "outbound") return "送信";
+  return direction || "-";
+}
+
+function messageTypeLabel(type?: string) {
+  const labels: Record<string, string> = {
+    reply: "応募者メッセージ",
+    bot: "Bot自動送信",
+    manual: "手動送信",
+    interview_slots: "面接候補日送信"
+  };
+  return labels[type || ""] || type || "-";
+}
+
 function HistoryView({ applicants }: { applicants: Applicant[] }) {
-  const logExamples = [
-    "Bot自動送信: 応募開始案内",
-    "Bot自動送信: 応募完了通知",
-    "管理画面送信: 面接候補日送信",
-    "応募者返信: 候補日選択",
-    "Bot自動送信: 面接日程確定",
-    "リマインド送信ログ",
-    "採用/不採用通知ログ"
-  ];
+  const [logs, setLogs] = useState<LineMessageLog[]>([]);
+  const [logSearch, setLogSearch] = useState("");
+  const [isLoadingLogs, setIsLoadingLogs] = useState(true);
+  const [logError, setLogError] = useState<string | null>(null);
+
+  const nameByLineUserId = useMemo(() => {
+    const map: Record<string, string> = {};
+    applicants.forEach((applicant) => {
+      if (applicant.line_user_id) map[applicant.line_user_id] = applicant.name || "";
+    });
+    return map;
+  }, [applicants]);
+
+  async function loadLogs() {
+    setIsLoadingLogs(true);
+    setLogError(null);
+    try {
+      const data = await getLineMessages(undefined, 200);
+      setLogs(data);
+    } catch (err) {
+      setLogError(err instanceof Error ? err.message : "履歴の取得に失敗しました");
+    } finally {
+      setIsLoadingLogs(false);
+    }
+  }
+
+  useEffect(() => {
+    loadLogs();
+  }, []);
+
+  const filteredLogs = logs.filter((log) => {
+    const keyword = logSearch.trim();
+    if (!keyword) return true;
+    return [log.message, log.line_user_id, nameByLineUserId[log.line_user_id || ""]]
+      .filter(Boolean)
+      .some((value) => String(value).includes(keyword));
+  });
 
   return (
-    <div className="gridStack">
-      <section className="panel">
-        <h2>LINEメッセージ履歴</h2>
-        <p className="sectionDescription">
-          LINEメッセージ履歴では、自動送信・手動送信・応募者返信の履歴を確認できます。
-        </p>
-        <div className="logTypeGrid">
-          {logExamples.map((item) => <span className="logType" key={item}>{item}</span>)}
+    <section className="panel">
+      <div className="panelHeader">
+        <div>
+          <p className="eyebrow">Messages</p>
+          <h2>LINEメッセージ履歴</h2>
         </div>
-      </section>
-      <section className="panel">
-        <h2>応募者ごとの直近ログ</h2>
-        <div className="miniRows">
-          {applicants.slice(0, 8).map((applicant) => (
-            <div className="historyRow" key={applicant.id}>
-              <strong>{applicant.name || "応募者"}</strong>
-              <span>{applicant.interview_status || applicant.status || "応募情報登録"}</span>
-              <small>{formatDate(applicant.created_at)}</small>
-            </div>
-          ))}
+        <button className="secondaryButton" onClick={loadLogs}>再読み込み</button>
+      </div>
+      <p className="sectionDescription">
+        Bot自動送信・管理画面からの手動送信・応募者からの受信メッセージの履歴を確認できます。
+      </p>
+      {logError && <div className="inlineError listNotice">{logError}</div>}
+      <div className="toolbar">
+        <input value={logSearch} onChange={(event) => setLogSearch(event.target.value)} placeholder="メッセージ・名前・LINEユーザーIDで検索" />
+      </div>
+      {isLoadingLogs ? (
+        <div className="loadingCard">履歴を取得中...</div>
+      ) : filteredLogs.length === 0 ? (
+        <p className="muted">まだメッセージ履歴がありません。</p>
+      ) : (
+        <div className="tableWrap">
+          <table>
+            <thead>
+              <tr>
+                <th>日時</th>
+                <th>応募者</th>
+                <th>方向</th>
+                <th>種別</th>
+                <th>内容</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filteredLogs.map((log) => (
+                <tr key={log.id}>
+                  <td>{formatDate(log.created_at)}</td>
+                  <td>{nameByLineUserId[log.line_user_id || ""] || log.line_user_id || "-"}</td>
+                  <td>
+                    <span className={log.direction === "inbound" ? "badge badgeBlue" : "badge badgeGreen"}>
+                      {directionLabel(log.direction)}
+                    </span>
+                  </td>
+                  <td>{messageTypeLabel(log.message_type)}</td>
+                  <td className="logMessageCell">{log.message || "-"}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
-      </section>
-    </div>
+      )}
+    </section>
   );
 }
 
@@ -762,6 +854,7 @@ function FAQSettings() {
   const [newFAQ, setNewFAQ] = useState({ category_id: "", question: "", answer: "", is_visible: false });
   const [faqSearch, setFAQSearch] = useState("");
   const [faqFilter, setFAQFilter] = useState("すべて");
+  const [faqCategoryFilter, setFAQCategoryFilter] = useState("すべて");
   const [isLoadingFAQ, setIsLoadingFAQ] = useState(true);
   const [savingFAQId, setSavingFAQId] = useState<string | null>(null);
   const [faqMessage, setFAQMessage] = useState<string | null>(null);
@@ -875,8 +968,9 @@ function FAQSettings() {
   }
 
   const filteredCategories = categories
+    .filter((category) => faqCategoryFilter === "すべて" || category.name === faqCategoryFilter)
     .map((category) => ({ ...category, faqs: (category.faqs || []).filter(matchesFAQ) }))
-    .filter((category) => (category.faqs || []).length > 0 || !faqSearch.trim());
+    .filter((category) => (category.faqs || []).length > 0 || (!faqSearch.trim() && faqFilter === "すべて"));
 
   return (
     <section className="panel">
@@ -887,14 +981,21 @@ function FAQSettings() {
         </div>
         <button className="secondaryButton" onClick={loadFAQs}>再読み込み</button>
       </div>
-      <p className="sectionDescription">LINE BotのFAQ回答で使う想定のデータです。カテゴリごとに質問・回答・公開状態を管理します。</p>
+      <p className="sectionDescription">
+        LINEには、回答が入力されていて、表示ONになっているFAQだけが表示されます。<br />
+        カテゴリごとに質問・回答・公開状態を管理します。
+      </p>
       {faqMessage && <div className="successBox listNotice">{faqMessage}</div>}
       {faqError && <div className="inlineError listNotice">{faqError}</div>}
       {isLoadingFAQ ? <div className="loadingCard">FAQを取得中...</div> : (
         <>
           <div className="toolbar">
             <input value={faqSearch} onChange={(event) => setFAQSearch(event.target.value)} placeholder="質問・回答で検索" />
-            <select value={faqFilter} onChange={(event) => setFAQFilter(event.target.value)}>
+            <select value={faqCategoryFilter} onChange={(event) => setFAQCategoryFilter(event.target.value)} aria-label="カテゴリで絞り込み">
+              <option>すべて</option>
+              {categories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}
+            </select>
+            <select value={faqFilter} onChange={(event) => setFAQFilter(event.target.value)} aria-label="ステータスで絞り込み">
               <option>すべて</option>
               <option>公開中</option>
               <option>回答あり・非公開</option>

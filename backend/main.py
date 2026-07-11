@@ -37,6 +37,9 @@ LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 user_states = {}
 applicants = {}
 interview_confirmations = {}
+faq_sessions = {}
+
+FAQ_QUESTIONS_PER_PAGE = 10
 
 DEFAULT_FAQ_TEMPLATES = [
     ("給与について", ["給与の決まり方", "初任給", "中途給与", "経験者優遇", "固定残業代", "残業代", "昇給", "賞与", "手当", "交通費", "モデル年収", "給与支払日"]),
@@ -87,6 +90,10 @@ async def webhook(request: Request):
 
         response = handle_message(user_id, message)
 
+        outbound_text = response.get("text") or response.get("body") or ""
+        if outbound_text:
+            try_insert_line_message_log(user_id, outbound_text, "outbound", "bot")
+
         if reply_token and LINE_ACCESS_TOKEN:
             reply_response(reply_token, response)
 
@@ -95,78 +102,6 @@ async def webhook(request: Request):
 
 def main_menu():
     return ["応募する", "採用の流れについて", "よくある質問", "お問い合わせ"]
-
-
-def faq_menu():
-    return [
-        "給与について",
-        "休日・休暇について",
-        "福利厚生について",
-        "働き方について",
-        "仕事内容について",
-        "面接について",
-        "会社について"
-    ]
-
-
-def salary_menu():
-    return [
-        "新卒初任給",
-        "中途給与",
-        "昇給について",
-        "賞与について",
-        "モデル年収",
-        "よくある質問"
-    ]
-
-
-def holiday_menu():
-    return [
-        "年間休日",
-        "有給休暇",
-        "育児休暇",
-        "夏季休暇",
-        "年末年始休暇",
-        "慶弔休暇",
-        "介護休暇",
-        "よくある質問"
-    ]
-
-
-def welfare_menu():
-    return [
-        "社会保険",
-        "退職金制度",
-        "通勤手当",
-        "住宅手当",
-        "資格取得支援",
-        "健康診断",
-        "制服支給",
-        "よくある質問"
-    ]
-
-
-def workstyle_menu():
-    return [
-        "残業時間について",
-        "休日出勤について",
-        "シフトについて",
-        "転勤について",
-        "車通勤について",
-        "よくある質問"
-    ]
-
-
-def job_menu():
-    return [
-        "仕事内容",
-        "1日の流れ",
-        "未経験応募",
-        "研修制度",
-        "必要資格",
-        "配属先について",
-        "よくある質問"
-    ]
 
 
 def cancel_menu():
@@ -316,10 +251,53 @@ def find_faq_by_question(question: str, category_id: Optional[str] = None) -> Op
     return None
 
 
+def _show_faq_questions(user_id: str, category: dict[str, Any]) -> dict[str, Any]:
+    faqs = get_faqs(category.get("id"), public_only=True)
+    if not faqs:
+        user_states[user_id] = None
+        faq_sessions.pop(user_id, None)
+        return text_response(FAQ_PREPARING_MESSAGE, ["お問い合わせ", "メニュー"])
+
+    user_states[user_id] = "browsing_faq_questions"
+    faq_sessions[user_id] = {
+        "category_name": category.get("name") or "よくある質問",
+        "faqs": faqs,
+        "page": 0,
+    }
+    return _faq_question_list_response(user_id)
+
+
+def _faq_question_list_response(user_id: str) -> dict[str, Any]:
+    session = faq_sessions.get(user_id) or {}
+    faqs = session.get("faqs") or []
+    page = session.get("page", 0)
+    start = page * FAQ_QUESTIONS_PER_PAGE
+    page_faqs = faqs[start:start + FAQ_QUESTIONS_PER_PAGE]
+    has_next = start + FAQ_QUESTIONS_PER_PAGE < len(faqs)
+
+    lines = [
+        f"{start + index + 1}. {faq.get('question')}"
+        for index, faq in enumerate(page_faqs)
+    ]
+    body = (
+        f"{session.get('category_name')}の質問を番号で選んでください。\n\n"
+        + "\n".join(lines)
+    )
+    if has_next:
+        body += "\n\n「次へ」で続きの質問を表示します。"
+
+    buttons = [str(start + index + 1) for index in range(len(page_faqs))]
+    if has_next:
+        buttons.append("次へ")
+    buttons += ["よくある質問", "メニュー"]
+    return text_response(body, buttons)
+
+
 def handle_db_faq_message(user_id: str, message: str) -> Optional[dict[str, Any]]:
     state = user_states.get(user_id)
 
     if message in ["よくある質問", "よくあるお問い合わせ"]:
+        faq_sessions.pop(user_id, None)
         categories = get_public_faq_categories()
         if categories:
             user_states[user_id] = "browsing_faq_categories"
@@ -327,38 +305,51 @@ def handle_db_faq_message(user_id: str, message: str) -> Optional[dict[str, Any]
                 "よくある質問です。\n知りたいカテゴリを選んでください。",
                 [category.get("name") for category in categories if category.get("name")][:13],
             )
+        user_states[user_id] = None
         return text_response(FAQ_PREPARING_MESSAGE, ["お問い合わせ", "メニュー"])
 
-    if state == "browsing_faq_categories":
+    if state in [None, "browsing_faq_categories"]:
         category = find_faq_category_by_name(message)
-        if not category:
+        if category:
+            return _show_faq_questions(user_id, category)
+        if state == "browsing_faq_categories":
             user_states[user_id] = None
             return None
-
-        faqs = get_faqs(category.get("id"), public_only=True)
-        if not faqs:
-            user_states[user_id] = None
-            return text_response(FAQ_PREPARING_MESSAGE, ["お問い合わせ", "メニュー"])
-
-        user_states[user_id] = "browsing_faq_questions"
-        applicants[user_id] = {
-            **applicants.get(user_id, {}),
-            "faq_category_id": category.get("id"),
-        }
-        return text_response(
-            f"{category.get('name')}の質問を選んでください。",
-            [faq.get("question") for faq in faqs if faq.get("question")][:13],
-        )
 
     if state == "browsing_faq_questions":
-        category_id = applicants.get(user_id, {}).get("faq_category_id")
-        faq = find_faq_by_question(message, category_id)
-        user_states[user_id] = None
-        if not faq:
+        session = faq_sessions.get(user_id) or {}
+        faqs = session.get("faqs") or []
+
+        if message in ["次へ", "次の質問"]:
+            if (session.get("page", 0) + 1) * FAQ_QUESTIONS_PER_PAGE < len(faqs):
+                session["page"] = session.get("page", 0) + 1
+                faq_sessions[user_id] = session
+            return _faq_question_list_response(user_id)
+
+        selected = None
+        if message.strip().isdigit():
+            index = int(message.strip()) - 1
+            if 0 <= index < len(faqs):
+                selected = faqs[index]
+        if not selected:
+            for faq in faqs:
+                if faq.get("question") == message:
+                    selected = faq
+                    break
+
+        if not selected:
+            category = find_faq_category_by_name(message)
+            if category:
+                return _show_faq_questions(user_id, category)
+            user_states[user_id] = None
+            faq_sessions.pop(user_id, None)
             return None
+
+        user_states[user_id] = None
+        faq_sessions.pop(user_id, None)
         return card_response(
-            faq.get("question", "FAQ"),
-            faq.get("answer", ""),
+            selected.get("question", "FAQ"),
+            selected.get("answer", ""),
             ["よくある質問", "お問い合わせ", "メニュー"],
         )
 
@@ -782,303 +773,6 @@ def handle_message(user_id, message):
             "4. 面接\n"
             "5. 採用可否のご連絡",
             main_menu()
-        )
-
-    if message in ["よくある質問", "よくあるお問い合わせ"]:
-        return text_response(
-            "よくある質問です。\n知りたい項目を選んでください。",
-            faq_menu()
-        )
-
-    if message == "給与について":
-        return text_response(
-            "給与について、知りたい内容を選んでください。",
-            salary_menu()
-        )
-
-    if message == "新卒初任給":
-        return card_response(
-            "新卒初任給",
-            "新卒の場合の初任給は、職種や雇用形態により異なります。\n\n"
-            "詳細は募集要項または面接時にご案内いたします。",
-            salary_menu()
-        )
-
-    if message == "中途給与":
-        return card_response(
-            "中途給与",
-            "中途採用の場合は、これまでのご経験・スキル・希望職種をもとに決定します。\n\n"
-            "面接時にこれまでのご経験を伺ったうえでご案内いたします。",
-            salary_menu()
-        )
-
-    if message == "昇給について":
-        return card_response(
-            "昇給について",
-            "昇給は、勤務実績・評価・会社規定に基づいて決定します。\n\n"
-            "入社後の成長や役割に応じて給与が変わる場合があります。",
-            salary_menu()
-        )
-
-    if message == "賞与について":
-        return card_response(
-            "賞与について",
-            "賞与の有無や支給時期は、会社規定・業績・雇用条件により異なります。\n\n"
-            "詳細は面接時にご案内いたします。",
-            salary_menu()
-        )
-
-    if message == "モデル年収":
-        return card_response(
-            "モデル年収",
-            "入社1年目・3年目・5年目などのモデル年収は、職種やキャリアによって異なります。\n\n"
-            "具体的なイメージは面接時にご確認ください。",
-            salary_menu()
-        )
-
-    if message == "休日・休暇について":
-        return text_response(
-            "休日・休暇について、知りたい内容を選んでください。",
-            holiday_menu()
-        )
-
-    if message == "年間休日":
-        return card_response(
-            "年間休日",
-            "年間休日は職種や勤務形態により異なります。\n\n"
-            "詳しい休日数は募集要項または面接時にご案内いたします。",
-            holiday_menu()
-        )
-
-    if message == "有給休暇":
-        return card_response(
-            "有給休暇",
-            "有給休暇は法定に基づき付与されます。\n\n"
-            "取得しやすさや運用については面接時にご確認いただけます。",
-            holiday_menu()
-        )
-
-    if message == "育児休暇":
-        return card_response(
-            "育児休暇",
-            "育児休暇制度があります。\n\n"
-            "取得条件や実績については面接時にご案内いたします。",
-            holiday_menu()
-        )
-
-    if message == "夏季休暇":
-        return card_response(
-            "夏季休暇",
-            "夏季休暇の有無や日数は、会社カレンダーや勤務形態により異なります。\n\n"
-            "詳細は面接時にご案内いたします。",
-            holiday_menu()
-        )
-
-    if message == "年末年始休暇":
-        return card_response(
-            "年末年始休暇",
-            "年末年始休暇の有無や日数は、会社カレンダーや勤務形態により異なります。\n\n"
-            "詳細は面接時にご案内いたします。",
-            holiday_menu()
-        )
-
-    if message == "慶弔休暇":
-        return card_response(
-            "慶弔休暇",
-            "慶弔休暇については、会社規定に基づき取得できる場合があります。\n\n"
-            "詳細は面接時にご確認ください。",
-            holiday_menu()
-        )
-
-    if message == "介護休暇":
-        return card_response(
-            "介護休暇",
-            "介護休暇制度については、法定および会社規定に基づき運用されます。\n\n"
-            "詳細は面接時にご確認ください。",
-            holiday_menu()
-        )
-
-    if message == "福利厚生について":
-        return text_response(
-            "福利厚生について、知りたい内容を選んでください。",
-            welfare_menu()
-        )
-
-    if message == "社会保険":
-        return card_response(
-            "社会保険",
-            "社会保険は、雇用条件に応じて加入となります。\n\n"
-            "健康保険・厚生年金・雇用保険・労災保険などが対象です。",
-            welfare_menu()
-        )
-
-    if message == "退職金制度":
-        return card_response(
-            "退職金制度",
-            "退職金制度の有無や条件は、会社規定により異なります。\n\n"
-            "詳細は面接時にご確認ください。",
-            welfare_menu()
-        )
-
-    if message == "通勤手当":
-        return card_response(
-            "通勤手当",
-            "通勤手当は会社規定に基づき支給される場合があります。\n\n"
-            "車通勤や公共交通機関利用など、通勤方法によって異なります。",
-            welfare_menu()
-        )
-
-    if message == "住宅手当":
-        return card_response(
-            "住宅手当",
-            "住宅手当の有無や支給条件は、会社規定により異なります。\n\n"
-            "詳細は面接時にご確認ください。",
-            welfare_menu()
-        )
-
-    if message == "資格取得支援":
-        return card_response(
-            "資格取得支援",
-            "業務に関連する資格取得を支援する制度がある場合があります。\n\n"
-            "対象資格や補助内容は面接時にご確認ください。",
-            welfare_menu()
-        )
-
-    if message == "健康診断":
-        return card_response(
-            "健康診断",
-            "健康診断は会社規定に基づき実施されます。\n\n"
-            "詳細は入社時または面接時にご案内いたします。",
-            welfare_menu()
-        )
-
-    if message == "制服支給":
-        return card_response(
-            "制服支給",
-            "制服の有無や支給条件は職種により異なります。\n\n"
-            "詳細は面接時にご案内いたします。",
-            welfare_menu()
-        )
-
-    if message == "働き方について":
-        return text_response(
-            "働き方について、知りたい内容を選んでください。",
-            workstyle_menu()
-        )
-
-    if message == "残業時間について":
-        return card_response(
-            "残業時間",
-            "残業時間は職種や時期により異なります。\n\n"
-            "詳しい状況は面接時にご案内いたします。",
-            workstyle_menu()
-        )
-
-    if message == "休日出勤について":
-        return card_response(
-            "休日出勤",
-            "休日出勤の有無は職種や繁忙期により異なります。\n\n"
-            "発生する場合の扱いについては面接時にご確認ください。",
-            workstyle_menu()
-        )
-
-    if message == "シフトについて":
-        return card_response(
-            "シフト",
-            "シフト制か固定勤務かは職種により異なります。\n\n"
-            "勤務時間や曜日については面接時にご案内いたします。",
-            workstyle_menu()
-        )
-
-    if message == "転勤について":
-        return card_response(
-            "転勤",
-            "転勤の有無は職種や会社方針により異なります。\n\n"
-            "詳細は面接時にご確認ください。",
-            workstyle_menu()
-        )
-
-    if message == "車通勤について":
-        return card_response(
-            "車通勤",
-            "車通勤の可否や駐車場の有無は勤務地により異なります。\n\n"
-            "詳細は面接時にご確認ください。",
-            workstyle_menu()
-        )
-
-    if message == "仕事内容について":
-        return text_response(
-            "仕事内容について、知りたい内容を選んでください。",
-            job_menu()
-        )
-
-    if message == "仕事内容":
-        return card_response(
-            "仕事内容",
-            "仕事内容は希望職種により異なります。\n\n"
-            "具体的な業務内容は募集要項または面接時にご案内いたします。",
-            job_menu()
-        )
-
-    if message == "1日の流れ":
-        return card_response(
-            "1日の流れ",
-            "1日の流れは職種や配属先により異なります。\n\n"
-            "実際の働き方については面接時にご案内いたします。",
-            job_menu()
-        )
-
-    if message == "未経験応募":
-        return card_response(
-            "未経験応募",
-            "未経験から応募可能な職種もあります。\n\n"
-            "必要な経験やスキルは職種ごとに異なります。",
-            job_menu()
-        )
-
-    if message == "研修制度":
-        return card_response(
-            "研修制度",
-            "入社後の研修やサポート体制は職種により異なります。\n\n"
-            "詳細は面接時にご確認ください。",
-            job_menu()
-        )
-
-    if message == "必要資格":
-        return card_response(
-            "必要資格",
-            "必要資格は職種により異なります。\n\n"
-            "必須資格・歓迎資格については募集要項または面接時にご案内いたします。",
-            job_menu()
-        )
-
-    if message == "配属先について":
-        return card_response(
-            "配属先",
-            "配属先は希望職種・適性・募集状況をもとに決定します。\n\n"
-            "詳細は面接時にご案内いたします。",
-            job_menu()
-        )
-
-    if message == "面接について":
-        return card_response(
-            "面接について",
-            "■面接回数\n通常1〜2回を想定しています。\n\n"
-            "■所要時間\n30分〜1時間程度です。\n\n"
-            "■服装\n私服またはオフィスカジュアルで問題ありません。\n\n"
-            "■持ち物\n履歴書・職務経歴書などをお願いする場合があります。\n\n"
-            "■合否連絡\n面接後、担当者よりご連絡いたします。",
-            faq_menu()
-        )
-
-    if message == "会社について":
-        return card_response(
-            "会社について",
-            "■会社概要\n地域に根ざした事業を展開しています。\n\n"
-            "■職場の雰囲気\n職種や部署により異なりますが、働きやすい環境づくりを大切にしています。\n\n"
-            "■社員構成\n年齢層・男女比・社員数などは面接時にご確認いただけます。\n\n"
-            "■大切にしていること\nお客様や地域に貢献できる仕事を大切にしています。",
-            faq_menu()
         )
 
     return card_response(
@@ -1883,6 +1577,24 @@ def api_update_faq(faq_id: str, payload: FAQUpdatePayload):
     if not result.data:
         raise HTTPException(status_code=404, detail="FAQが見つかりません")
     return result.data[0]
+
+
+@app.get("/api/line-messages")
+def api_line_messages(line_user_id: Optional[str] = None, limit: int = 100):
+    try:
+        query = (
+            supabase.table("line_message_logs")
+            .select("*")
+            .order("created_at", desc=True)
+            .limit(min(max(limit, 1), 300))
+        )
+        if line_user_id:
+            query = query.eq("line_user_id", line_user_id)
+        result = query.execute()
+        return result.data or []
+    except Exception as exc:
+        print("line_message_logs 取得エラー:", exc)
+        return []
 
 
 @app.get("/api/inquiries")

@@ -79,6 +79,15 @@ export type FAQPayload = {
 
 export type FAQUpdatePayload = Partial<FAQPayload>;
 
+export type LineMessageLog = {
+  id: string | number;
+  created_at?: string;
+  line_user_id?: string;
+  message?: string;
+  direction?: string;
+  message_type?: string;
+};
+
 export type Inquiry = {
   id: string | number;
   created_at?: string;
