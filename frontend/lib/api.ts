@@ -1,9 +1,29 @@
-import type { Applicant, Dashboard, FAQ, FAQCategory, FAQPayload, FAQUpdatePayload, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse, LineMessageLog, LineSendRequest, LineSendResponse } from "../types";
+import type { AppSettings, Applicant, Dashboard, FAQ, FAQCategory, FAQPayload, FAQSetting, FAQSettingUpdatePayload, FAQUpdatePayload, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse, LineMessageLog, LineSendRequest, LineSendResponse, QuestionTree } from "../types";
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE_URL}${path}`, {
+    ...init,
+    headers: {
+      "Content-Type": "application/json",
+      ...(init?.headers || {})
+    },
+    cache: "no-store"
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(text || `API error: ${response.status}`);
+  }
+
+  return response.json();
+}
+
+// 管理系の更新APIは同一オリジンのNext.jsプロキシ(/api/admin/*)経由で呼びます。
+// 管理キーはサーバー側でのみ付与されるため、ブラウザには露出しません。
+async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(`/api/admin${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -83,5 +103,38 @@ export function updateFAQ(id: FAQ["id"], data: FAQUpdatePayload) {
   return request<FAQ>(`/api/faqs/${id}`, {
     method: "PATCH",
     body: JSON.stringify(data)
+  });
+}
+
+export function getFAQSettings() {
+  return request<FAQSetting[]>("/api/faq-settings");
+}
+
+export function updateFAQSetting(faqKey: string, data: FAQSettingUpdatePayload) {
+  return adminRequest<FAQSetting>(`/faq-settings/${faqKey}`, {
+    method: "PATCH",
+    body: JSON.stringify(data)
+  });
+}
+
+export function getSettings() {
+  return request<AppSettings>("/api/settings");
+}
+
+export function updateSettings(data: Partial<AppSettings>) {
+  return adminRequest<AppSettings>("/settings", {
+    method: "PATCH",
+    body: JSON.stringify(data)
+  });
+}
+
+export function getQuestionTree() {
+  return request<QuestionTree>("/api/question-tree");
+}
+
+export function updateQuestionTree(tree: QuestionTree) {
+  return adminRequest<QuestionTree>("/question-tree", {
+    method: "PATCH",
+    body: JSON.stringify(tree)
   });
 }

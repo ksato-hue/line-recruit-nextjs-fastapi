@@ -1,10 +1,11 @@
 from fastapi.responses import HTMLResponse
 from supabase import create_client
-from fastapi import FastAPI, Request, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Optional
 from datetime import datetime, timezone
+import json
 import os
 import requests
 
@@ -34,12 +35,24 @@ app.add_middleware(
 
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 
+COMPANY_ID = os.getenv("COMPANY_ID", "default")
+ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
+
+
+def require_admin(x_admin_key: Optional[str] = Header(default=None)) -> None:
+    """ADMIN_API_KEY が設定されている場合のみ、管理系の更新APIに X-Admin-Key を要求します。"""
+    if ADMIN_API_KEY and x_admin_key != ADMIN_API_KEY:
+        raise HTTPException(status_code=401, detail="管理APIキーが不正です")
+
+
 user_states = {}
 applicants = {}
 interview_confirmations = {}
 faq_sessions = {}
+application_tree_sessions = {}
 
-FAQ_QUESTIONS_PER_PAGE = 10
+FAQ_QUESTIONS_PER_PAGE = 9
+FAQ_CATEGORIES_PER_PAGE = 10
 
 DEFAULT_FAQ_TEMPLATES = [
     ("給与について", ["給与の決まり方", "初任給", "中途給与", "経験者優遇", "固定残業代", "残業代", "昇給", "賞与", "手当", "交通費", "モデル年収", "給与支払日"]),
@@ -65,6 +78,110 @@ FAQ_PREPARING_MESSAGE = (
     "よくある質問は現在準備中です。"
     "確認したい内容がある場合はお問い合わせからご連絡ください。"
 )
+
+FAQ_TEMPLATES_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "..", "shared", "faq_templates.json"
+)
+
+
+def _load_faq_templates() -> list[dict[str, Any]]:
+    try:
+        with open(FAQ_TEMPLATES_PATH, encoding="utf-8") as file:
+            data = json.load(file)
+        categories = sorted(data, key=lambda c: c.get("sort_order", 0))
+        for category in categories:
+            category["questions"] = sorted(
+                category.get("questions") or [],
+                key=lambda q: q.get("sort_order", 0),
+            )
+        return categories
+    except Exception as exc:
+        print("FAQテンプレート読み込みエラー:", exc)
+        return []
+
+
+FAQ_TEMPLATES = _load_faq_templates()
+FAQ_TEMPLATE_KEYS = {
+    question.get("faq_key")
+    for category in FAQ_TEMPLATES
+    for question in category.get("questions", [])
+    if question.get("faq_key")
+}
+
+DEFAULT_APP_SETTINGS: dict[str, Any] = {
+    "company_name": "",
+    "recruiter_name": "",
+    "line_bot_name": "",
+    "application_complete_message": (
+        "ありがとうございます！\n応募内容を確定しました。\n\n担当者よりご連絡いたします。"
+    ),
+    "interview_slots_message": (
+        "面接候補日をお送りします。\nご都合の良い日時を選択してください。"
+    ),
+    "interview_confirmed_message": "面接日程を確定しました。",
+    "faq_preparing_message": FAQ_PREPARING_MESSAGE,
+    "notification_email": "",
+    "application_enabled": True,
+}
+
+APPLICATION_CLOSED_MESSAGE = (
+    "現在、応募の受付を一時停止しています。\n"
+    "ご質問がある場合はお問い合わせからご連絡ください。"
+)
+
+# DBに設定がない場合の初期ツリー。従来のLINE応募フロー（職種選択→応募動機）をそのまま再現します。
+DEFAULT_QUESTION_TREE: dict[str, Any] = {
+    "root_question": "希望職種を選択してください",
+    "choices": [
+        {"label": "SNS運用", "questions": ["応募動機を一言で入力してください"]},
+        {"label": "Web制作", "questions": ["応募動機を一言で入力してください"]},
+        {"label": "営業", "questions": ["応募動機を一言で入力してください"]},
+        {"label": "社内事務", "questions": ["応募動機を一言で入力してください"]},
+        {"label": "その他", "questions": ["希望職種を入力してください", "応募動機を一言で入力してください"]},
+    ],
+}
+
+
+def get_app_settings() -> dict[str, Any]:
+    settings = dict(DEFAULT_APP_SETTINGS)
+    result = _safe_execute(
+        "app_settings取得",
+        lambda: (
+            supabase.table("app_settings")
+            .select("key,value")
+            .eq("company_id", COMPANY_ID)
+            .execute()
+        ),
+    )
+    for row in (result.data if result and result.data else []):
+        key = row.get("key")
+        if key in DEFAULT_APP_SETTINGS and row.get("value") is not None:
+            settings[key] = row["value"]
+    return settings
+
+
+def get_faq_preparing_message() -> str:
+    value = get_app_settings().get("faq_preparing_message")
+    return str(value or FAQ_PREPARING_MESSAGE)
+
+
+def get_question_tree_for_bot() -> dict[str, Any]:
+    """会社ごとの質問ツリーを取得します。未設定なら従来フロー相当の初期ツリーを返します。"""
+    result = _safe_execute(
+        "question_tree取得",
+        lambda: (
+            supabase.table("question_tree_settings")
+            .select("tree")
+            .eq("company_id", COMPANY_ID)
+            .execute()
+        ),
+    )
+    if result and result.data:
+        tree = result.data[0].get("tree") or {}
+        choices = [c for c in (tree.get("choices") or []) if c.get("label")]
+        if tree.get("root_question") and choices:
+            return {"root_question": tree["root_question"], "choices": choices}
+    return DEFAULT_QUESTION_TREE
 
 
 @app.get("/")
@@ -251,16 +368,68 @@ def find_faq_by_question(question: str, category_id: Optional[str] = None) -> Op
     return None
 
 
+def get_visible_faq_settings() -> dict[str, dict[str, Any]]:
+    """faq_settings から公開中（is_visible=true かつ answer 非空）の設定だけ取得します。"""
+    result = _safe_execute(
+        "faq_settings取得",
+        lambda: (
+            supabase.table("faq_settings")
+            .select("faq_key,answer,is_visible")
+            .eq("company_id", COMPANY_ID)
+            .eq("is_visible", True)
+            .execute()
+        ),
+    )
+    rows = result.data if result and result.data else []
+    return {
+        row["faq_key"]: row
+        for row in rows
+        if row.get("faq_key") and str(row.get("answer") or "").strip()
+    }
+
+
+def get_public_faq_structure() -> list[dict[str, Any]]:
+    """静的テンプレとfaq_settingsをマージし、公開中FAQがあるカテゴリだけ返します。"""
+    settings = get_visible_faq_settings()
+    if not settings:
+        return []
+    structure = []
+    for category in FAQ_TEMPLATES:
+        questions = [
+            {
+                "faq_key": question["faq_key"],
+                "question": question.get("question", ""),
+                "answer": settings[question["faq_key"]]["answer"],
+            }
+            for question in category.get("questions", [])
+            if question.get("faq_key") in settings
+        ]
+        if questions:
+            structure.append({
+                "category_key": category.get("category_key"),
+                "category_label": category.get("category_label"),
+                "questions": questions,
+            })
+    return structure
+
+
+def _find_public_faq_category(name: str) -> Optional[dict[str, Any]]:
+    for category in get_public_faq_structure():
+        if category.get("category_label") == name:
+            return category
+    return None
+
+
 def _show_faq_questions(user_id: str, category: dict[str, Any]) -> dict[str, Any]:
-    faqs = get_faqs(category.get("id"), public_only=True)
+    faqs = category.get("questions") or []
     if not faqs:
         user_states[user_id] = None
         faq_sessions.pop(user_id, None)
-        return text_response(FAQ_PREPARING_MESSAGE, ["お問い合わせ", "メニュー"])
+        return text_response(get_faq_preparing_message(), ["お問い合わせ", "メニュー"])
 
     user_states[user_id] = "browsing_faq_questions"
     faq_sessions[user_id] = {
-        "category_name": category.get("name") or "よくある質問",
+        "category_name": category.get("category_label") or "よくある質問",
         "faqs": faqs,
         "page": 0,
     }
@@ -273,6 +442,7 @@ def _faq_question_list_response(user_id: str) -> dict[str, Any]:
     page = session.get("page", 0)
     start = page * FAQ_QUESTIONS_PER_PAGE
     page_faqs = faqs[start:start + FAQ_QUESTIONS_PER_PAGE]
+    has_prev = page > 0
     has_next = start + FAQ_QUESTIONS_PER_PAGE < len(faqs)
 
     lines = [
@@ -287,9 +457,46 @@ def _faq_question_list_response(user_id: str) -> dict[str, Any]:
         body += "\n\n「次へ」で続きの質問を表示します。"
 
     buttons = [str(start + index + 1) for index in range(len(page_faqs))]
+    if has_prev:
+        buttons.append("前へ")
     if has_next:
         buttons.append("次へ")
     buttons += ["よくある質問", "メニュー"]
+    return text_response(body, buttons)
+
+
+def _start_faq_category_browsing(user_id: str) -> Optional[dict[str, Any]]:
+    categories = get_public_faq_structure()
+    labels = [category.get("category_label") for category in categories if category.get("category_label")]
+    if not labels:
+        user_states[user_id] = None
+        faq_sessions.pop(user_id, None)
+        return None
+    user_states[user_id] = "browsing_faq_categories"
+    faq_sessions[user_id] = {"mode": "categories", "labels": labels, "page": 0}
+    return _faq_category_list_response(user_id)
+
+
+def _faq_category_list_response(user_id: str) -> dict[str, Any]:
+    session = faq_sessions.get(user_id) or {}
+    labels = session.get("labels") or []
+    page = session.get("page", 0)
+    start = page * FAQ_CATEGORIES_PER_PAGE
+    page_labels = labels[start:start + FAQ_CATEGORIES_PER_PAGE]
+    has_prev = page > 0
+    has_next = start + FAQ_CATEGORIES_PER_PAGE < len(labels)
+
+    body = "よくある質問です。\n知りたいカテゴリを選んでください。"
+    if has_prev or has_next:
+        total_pages = (len(labels) + FAQ_CATEGORIES_PER_PAGE - 1) // FAQ_CATEGORIES_PER_PAGE
+        body += f"\n（{page + 1} / {total_pages}ページ）"
+
+    buttons = list(page_labels)
+    if has_prev:
+        buttons.append("前へ")
+    if has_next:
+        buttons.append("次へ")
+    buttons.append("メニュー")
     return text_response(body, buttons)
 
 
@@ -298,18 +505,28 @@ def handle_db_faq_message(user_id: str, message: str) -> Optional[dict[str, Any]
 
     if message in ["よくある質問", "よくあるお問い合わせ"]:
         faq_sessions.pop(user_id, None)
-        categories = get_public_faq_categories()
-        if categories:
-            user_states[user_id] = "browsing_faq_categories"
-            return text_response(
-                "よくある質問です。\n知りたいカテゴリを選んでください。",
-                [category.get("name") for category in categories if category.get("name")][:13],
-            )
-        user_states[user_id] = None
-        return text_response(FAQ_PREPARING_MESSAGE, ["お問い合わせ", "メニュー"])
+        response = _start_faq_category_browsing(user_id)
+        if response:
+            return response
+        return text_response(get_faq_preparing_message(), ["お問い合わせ", "メニュー"])
+
+    if state == "browsing_faq_categories" and message in ["次へ", "前へ"]:
+        session = faq_sessions.get(user_id) or {}
+        if not session.get("labels"):
+            response = _start_faq_category_browsing(user_id)
+            if response:
+                return response
+            return text_response(get_faq_preparing_message(), ["お問い合わせ", "メニュー"])
+        page = session.get("page", 0)
+        if message == "次へ" and (page + 1) * FAQ_CATEGORIES_PER_PAGE < len(session["labels"]):
+            session["page"] = page + 1
+        if message == "前へ" and page > 0:
+            session["page"] = page - 1
+        faq_sessions[user_id] = session
+        return _faq_category_list_response(user_id)
 
     if state in [None, "browsing_faq_categories"]:
-        category = find_faq_category_by_name(message)
+        category = _find_public_faq_category(message)
         if category:
             return _show_faq_questions(user_id, category)
         if state == "browsing_faq_categories":
@@ -320,10 +537,13 @@ def handle_db_faq_message(user_id: str, message: str) -> Optional[dict[str, Any]
         session = faq_sessions.get(user_id) or {}
         faqs = session.get("faqs") or []
 
-        if message in ["次へ", "次の質問"]:
-            if (session.get("page", 0) + 1) * FAQ_QUESTIONS_PER_PAGE < len(faqs):
-                session["page"] = session.get("page", 0) + 1
-                faq_sessions[user_id] = session
+        if message in ["次へ", "前へ", "次の質問"]:
+            page = session.get("page", 0)
+            if message in ["次へ", "次の質問"] and (page + 1) * FAQ_QUESTIONS_PER_PAGE < len(faqs):
+                session["page"] = page + 1
+            if message == "前へ" and page > 0:
+                session["page"] = page - 1
+            faq_sessions[user_id] = session
             return _faq_question_list_response(user_id)
 
         selected = None
@@ -338,7 +558,7 @@ def handle_db_faq_message(user_id: str, message: str) -> Optional[dict[str, Any]
                     break
 
         if not selected:
-            category = find_faq_category_by_name(message)
+            category = _find_public_faq_category(message)
             if category:
                 return _show_faq_questions(user_id, category)
             user_states[user_id] = None
@@ -453,8 +673,12 @@ def _finish_interview_confirmation(user_id: str) -> dict[str, Any]:
     user_states[user_id] = None
     interview_confirmations.pop(user_id, None)
 
+    confirmed_message = str(
+        get_app_settings().get("interview_confirmed_message")
+        or DEFAULT_APP_SETTINGS["interview_confirmed_message"]
+    )
     return text_response(
-        "面接日程を確定しました。\n\n"
+        f"{confirmed_message}\n\n"
         "■面接種別\n"
         f"{interview_type}\n\n"
         "■面接日時\n"
@@ -553,6 +777,42 @@ def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict
         )
 
 
+def _application_confirmation(user_id: str) -> dict[str, Any]:
+    """質問ツリーの回答をまとめて確認画面を返し、applicants に job / motivation を反映します。"""
+    session = application_tree_sessions.get(user_id) or {}
+    data = applicants.get(user_id, {})
+    tree = session.get("tree") or {}
+    choice_label = (session.get("choice") or {}).get("label") or data.get("job", "")
+    answers = session.get("answers") or []
+
+    if len(answers) == 1:
+        motivation = answers[0].get("answer", "")
+    else:
+        motivation = "\n".join(
+            f"■{item.get('question')}\n{item.get('answer')}" for item in answers
+        )
+
+    data["job"] = choice_label
+    data["motivation"] = motivation
+    applicants[user_id] = data
+    user_states[user_id] = "confirming"
+
+    body = (
+        "【応募内容の確認】\n\n"
+        "以下の内容でお間違いないかご確認ください。\n\n"
+        f"■お名前\n{data.get('name', '')}\n\n"
+        f"■電話番号\n{data.get('phone', '')}\n\n"
+        f"■{tree.get('root_question', '選択内容')}\n{choice_label}\n\n"
+    )
+    for item in answers:
+        body += f"■{item.get('question')}\n{item.get('answer')}\n\n"
+    body += (
+        "内容を修正したい場合は「修正」を選択してください。\n"
+        "問題なければ「確認」を選択してください。"
+    )
+    return text_response(body, confirm_menu())
+
+
 def handle_message(user_id, message):
     state = user_states.get(user_id)
 
@@ -577,12 +837,16 @@ def handle_message(user_id, message):
     if message == "キャンセル":
         user_states[user_id] = None
         applicants[user_id] = {}
+        application_tree_sessions.pop(user_id, None)
         return text_response(
             "【入力をキャンセルしました】\n必要な場合は、もう一度メニューから選択してください。",
             main_menu()
         )
 
     if message in ["応募", "応募する"]:
+        if not get_app_settings().get("application_enabled", True):
+            return text_response(APPLICATION_CLOSED_MESSAGE, ["お問い合わせ", "メニュー"])
+
         if user_id in applicants and applicants[user_id]:
             data = applicants[user_id]
             user_states[user_id] = "confirming"
@@ -613,6 +877,7 @@ def handle_message(user_id, message):
     if message == "修正":
         user_states[user_id] = "waiting_name"
         applicants[user_id] = {}
+        application_tree_sessions.pop(user_id, None)
 
         return text_response(
             "応募内容を修正します。\n\n"
@@ -635,13 +900,12 @@ def handle_message(user_id, message):
             }).execute()
             print("Supabase保存成功")
 
-            return card_response(
-                "応募完了",
-                "ありがとうございます！\n"
-                "応募内容を確定しました。\n\n"
-                "担当者よりご連絡いたします。",
-                main_menu()
+            application_tree_sessions.pop(user_id, None)
+            complete_message = str(
+                get_app_settings().get("application_complete_message")
+                or DEFAULT_APP_SETTINGS["application_complete_message"]
             )
+            return card_response("応募完了", complete_message, main_menu())
 
         return text_response(
             "まだ応募情報がありません。\n「応募する」から応募を開始してください。",
@@ -661,75 +925,78 @@ def handle_message(user_id, message):
 
     if state == "waiting_phone":
         applicants[user_id]["phone"] = message
-        user_states[user_id] = "waiting_job"
+        tree = get_question_tree_for_bot()
+        application_tree_sessions[user_id] = {"tree": tree, "answers": []}
+        user_states[user_id] = "applying_tree_choice"
 
+        labels = [choice.get("label") for choice in tree.get("choices", []) if choice.get("label")][:12]
         return text_response(
             "【応募情報入力中】\n\n"
             f"■お名前\n{applicants[user_id]['name']}\n\n"
             f"■電話番号\n{applicants[user_id]['phone']}\n\n"
-            "次に、希望職種を選択してください。",
-            [
-                "SNS運用",
-                "Web制作",
-                "営業",
-                "社内事務",
-                "その他",
-                "キャンセル"
-            ]
+            f"次に、{tree.get('root_question')}",
+            labels + ["キャンセル"]
         )
 
-    if state == "waiting_job":
-        if message == "その他":
-            user_states[user_id] = "waiting_other_job"
-
+    if state == "applying_tree_choice":
+        session = application_tree_sessions.get(user_id)
+        if not session:
+            session = {"tree": get_question_tree_for_bot(), "answers": []}
+            application_tree_sessions[user_id] = session
+        tree = session["tree"]
+        choice = next(
+            (c for c in tree.get("choices", []) if c.get("label") == message),
+            None,
+        )
+        if not choice:
+            labels = [c.get("label") for c in tree.get("choices", []) if c.get("label")][:12]
             return text_response(
-                "希望職種を入力してください。",
-                cancel_menu()
+                f"{tree.get('root_question')}\n選択肢から選んでください。",
+                labels + ["キャンセル"]
             )
 
-        applicants[user_id]["job"] = message
-        user_states[user_id] = "waiting_motivation"
+        session["choice"] = choice
+        session["question_index"] = 0
+        session["answers"] = []
+        applicants[user_id]["job"] = choice.get("label")
 
+        questions = [str(q) for q in (choice.get("questions") or []) if str(q or "").strip()]
+        session["questions"] = questions
+        if not questions:
+            return _application_confirmation(user_id)
+
+        user_states[user_id] = "applying_tree_question"
         return text_response(
-            "【応募情報入力中】\n\n"
-            f"■お名前\n{applicants[user_id]['name']}\n\n"
-            f"■電話番号\n{applicants[user_id]['phone']}\n\n"
-            f"■希望職種\n{applicants[user_id]['job']}\n\n"
-            "最後に、応募動機を一言で入力してください。\n",
+            "【応募情報入力中】\n\n" + questions[0],
             cancel_menu()
         )
 
-    if state == "waiting_other_job":
-        applicants[user_id]["job"] = message
-        user_states[user_id] = "waiting_motivation"
+    if state == "applying_tree_question":
+        session = application_tree_sessions.get(user_id)
+        if not session or not session.get("choice"):
+            user_states[user_id] = None
+            application_tree_sessions.pop(user_id, None)
+            return text_response(
+                "応募情報の入力状態がリセットされました。\nお手数ですが「応募する」からやり直してください。",
+                main_menu()
+            )
 
-        return text_response(
-            "【応募情報入力中】\n\n"
-            f"■お名前\n{applicants[user_id]['name']}\n\n"
-            f"■電話番号\n{applicants[user_id]['phone']}\n\n"
-            f"■希望職種\n{applicants[user_id]['job']}\n\n"
-            "次に、応募動機を入力してください。",
-            cancel_menu()
-        )
+        questions = session.get("questions") or []
+        index = session.get("question_index", 0)
+        if index < len(questions):
+            session.setdefault("answers", []).append({
+                "question": questions[index],
+                "answer": message,
+            })
+            index += 1
+            session["question_index"] = index
 
-    if state == "waiting_motivation":
-        applicants[user_id]["motivation"] = message
-        user_states[user_id] = "confirming"
-
-        data = applicants[user_id]
-        print("応募者情報:", data)
-
-        return text_response(
-            "【応募内容の確認】\n\n"
-            "以下の内容でお間違いないかご確認ください。\n\n"
-            f"■お名前\n{data['name']}\n\n"
-            f"■電話番号\n{data['phone']}\n\n"
-            f"■希望職種\n{data['job']}\n\n"
-            f"■応募動機\n{data['motivation']}\n\n"
-            "内容を修正したい場合は「修正」を選択してください。\n"
-            "問題なければ「確認」を選択してください。",
-            confirm_menu()
-        )
+        if index < len(questions):
+            return text_response(
+                "【応募情報入力中】\n\n" + questions[index],
+                cancel_menu()
+            )
+        return _application_confirmation(user_id)
 
     if message == "お問い合わせ":
         user_states[user_id] = "waiting_inquiry"
@@ -1455,11 +1722,11 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
             .eq("id", applicant_id)
             .execute()
         )
-        message = (
-            f"{interview_type}の日程調整のご連絡です。\n"
-            "面接候補日をお送りします。\n"
-            "ご都合の良い日時を選択してください。"
+        slots_message = str(
+            get_app_settings().get("interview_slots_message")
+            or DEFAULT_APP_SETTINGS["interview_slots_message"]
         )
+        message = f"{interview_type}の日程調整のご連絡です。\n{slots_message}"
         push_line_message(line_user_id, message, slot_values)
         try_insert_line_message_log(line_user_id, message, "outbound", "interview_slots")
     except HTTPException:
@@ -1482,7 +1749,7 @@ def api_faq_categories():
 
 
 @app.post("/api/faq-categories")
-def api_create_faq_category(payload: FAQCategoryPayload):
+def api_create_faq_category(payload: FAQCategoryPayload, _: None = Depends(require_admin)):
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="カテゴリ名が必要です")
 
@@ -1499,7 +1766,7 @@ def api_create_faq_category(payload: FAQCategoryPayload):
 
 
 @app.patch("/api/faq-categories/{category_id}")
-def api_update_faq_category(category_id: str, payload: FAQCategoryUpdatePayload):
+def api_update_faq_category(category_id: str, payload: FAQCategoryUpdatePayload, _: None = Depends(require_admin)):
     update_data = payload.model_dump(exclude_none=True)
     if "name" in update_data:
         update_data["name"] = update_data["name"].strip()
@@ -1528,7 +1795,7 @@ def api_category_faqs(category_id: str):
 
 
 @app.post("/api/faqs")
-def api_create_faq(payload: FAQPayload):
+def api_create_faq(payload: FAQPayload, _: None = Depends(require_admin)):
     if not payload.category_id or not payload.question.strip():
         raise HTTPException(status_code=400, detail="category_id と question が必要です")
     if payload.is_visible and not payload.answer.strip():
@@ -1549,7 +1816,7 @@ def api_create_faq(payload: FAQPayload):
 
 
 @app.patch("/api/faqs/{faq_id}")
-def api_update_faq(faq_id: str, payload: FAQUpdatePayload):
+def api_update_faq(faq_id: str, payload: FAQUpdatePayload, _: None = Depends(require_admin)):
     update_data = payload.model_dump(exclude_none=True)
     for key in ["question", "answer"]:
         if key in update_data:
@@ -1577,6 +1844,162 @@ def api_update_faq(faq_id: str, payload: FAQUpdatePayload):
     if not result.data:
         raise HTTPException(status_code=404, detail="FAQが見つかりません")
     return result.data[0]
+
+
+class FAQSettingPayload(BaseModel):
+    answer: Optional[str] = None
+    is_visible: Optional[bool] = None
+
+
+@app.get("/api/faq-settings")
+def api_faq_settings():
+    """faq_settings の設定値のみ返します。質問文は shared/faq_templates.json が正です。"""
+    result = _safe_execute(
+        "faq_settings一覧取得",
+        lambda: (
+            supabase.table("faq_settings")
+            .select("*")
+            .eq("company_id", COMPANY_ID)
+            .execute()
+        ),
+    )
+    return (result.data if result and result.data else [])
+
+
+@app.patch("/api/faq-settings/{faq_key}")
+def api_update_faq_setting(faq_key: str, payload: FAQSettingPayload, _: None = Depends(require_admin)):
+    if FAQ_TEMPLATE_KEYS and faq_key not in FAQ_TEMPLATE_KEYS:
+        raise HTTPException(status_code=404, detail="faq_key がテンプレートに存在しません")
+    if payload.answer is None and payload.is_visible is None:
+        raise HTTPException(status_code=400, detail="更新内容がありません")
+
+    current: dict[str, Any] = {}
+    current_result = _safe_execute(
+        "faq_settings現在値取得",
+        lambda: (
+            supabase.table("faq_settings")
+            .select("*")
+            .eq("company_id", COMPANY_ID)
+            .eq("faq_key", faq_key)
+            .execute()
+        ),
+    )
+    if current_result and current_result.data:
+        current = current_result.data[0]
+
+    answer = payload.answer if payload.answer is not None else str(current.get("answer") or "")
+    answer = answer.strip()
+    is_visible = payload.is_visible if payload.is_visible is not None else bool(current.get("is_visible"))
+
+    if is_visible and not answer:
+        raise HTTPException(status_code=400, detail="回答が空欄のFAQは公開できません")
+
+    row = {
+        "company_id": COMPANY_ID,
+        "faq_key": faq_key,
+        "answer": answer,
+        "is_visible": is_visible,
+        "updated_at": _utc_now(),
+    }
+    try:
+        result = supabase.table("faq_settings").upsert(row, on_conflict="company_id,faq_key").execute()
+    except Exception as exc:
+        print("faq_settings保存エラー:", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="FAQ設定の保存に失敗しました。faq_settings テーブルが作成済みか確認してください。",
+        ) from exc
+    return (result.data or [row])[0]
+
+
+@app.get("/api/settings")
+def api_get_settings():
+    return get_app_settings()
+
+
+@app.patch("/api/settings")
+def api_update_settings(payload: dict[str, Any], _: None = Depends(require_admin)):
+    if not payload:
+        raise HTTPException(status_code=400, detail="更新内容がありません")
+
+    unknown_keys = [key for key in payload if key not in DEFAULT_APP_SETTINGS]
+    if unknown_keys:
+        raise HTTPException(status_code=400, detail=f"不明な設定キーです: {', '.join(unknown_keys)}")
+
+    if "application_enabled" in payload and not isinstance(payload["application_enabled"], bool):
+        raise HTTPException(status_code=400, detail="application_enabled は true / false で指定してください")
+    for key, value in payload.items():
+        if key != "application_enabled" and not isinstance(value, str):
+            raise HTTPException(status_code=400, detail=f"{key} は文字列で指定してください")
+
+    now = _utc_now()
+    rows = [
+        {"company_id": COMPANY_ID, "key": key, "value": value, "updated_at": now}
+        for key, value in payload.items()
+    ]
+    try:
+        supabase.table("app_settings").upsert(rows, on_conflict="company_id,key").execute()
+    except Exception as exc:
+        print("app_settings保存エラー:", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="設定の保存に失敗しました。app_settings テーブルが作成済みか確認してください。",
+        ) from exc
+    return get_app_settings()
+
+
+def _validate_question_tree(tree: dict[str, Any]) -> dict[str, Any]:
+    if not isinstance(tree, dict):
+        raise HTTPException(status_code=400, detail="ツリーの形式が不正です")
+
+    root_question = str(tree.get("root_question") or "").strip()
+    if not root_question:
+        raise HTTPException(status_code=400, detail="最初の質問を入力してください")
+
+    choices = tree.get("choices")
+    if not isinstance(choices, list) or not choices:
+        raise HTTPException(status_code=400, detail="選択肢を1つ以上設定してください")
+    if len(choices) > 10:
+        raise HTTPException(status_code=400, detail="選択肢は10件以内にしてください")
+
+    normalized_choices = []
+    for choice in choices:
+        if not isinstance(choice, dict):
+            raise HTTPException(status_code=400, detail="選択肢の形式が不正です")
+        label = str(choice.get("label") or "").strip()
+        if not label:
+            raise HTTPException(status_code=400, detail="選択肢名を入力してください")
+        questions = [
+            str(question).strip()
+            for question in (choice.get("questions") or [])
+            if str(question or "").strip()
+        ]
+        normalized_choices.append({"label": label, "questions": questions})
+
+    return {"root_question": root_question, "choices": normalized_choices}
+
+
+@app.get("/api/question-tree")
+def api_get_question_tree():
+    return get_question_tree_for_bot()
+
+
+@app.patch("/api/question-tree")
+def api_update_question_tree(payload: dict[str, Any], _: None = Depends(require_admin)):
+    tree = _validate_question_tree(payload)
+    try:
+        supabase.table("question_tree_settings").upsert({
+            "company_id": COMPANY_ID,
+            "tree": tree,
+            "updated_at": _utc_now(),
+        }, on_conflict="company_id").execute()
+    except Exception as exc:
+        print("question_tree保存エラー:", exc)
+        raise HTTPException(
+            status_code=500,
+            detail="質問ツリーの保存に失敗しました。question_tree_settings テーブルが作成済みか確認してください。",
+        ) from exc
+    return tree
 
 
 @app.get("/api/line-messages")

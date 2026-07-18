@@ -1,8 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createFAQ, createInterviewSlots, getApplicants, getDashboard, getFAQs, getInquiries, getLineMessages, sendLineMessage, updateApplicant, updateFAQ } from "../lib/api";
-import type { Applicant, Dashboard, FAQ, FAQCategory, Inquiry, LineMessageLog } from "../types";
+import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getInquiries, getLineMessages, getQuestionTree, getSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings } from "../lib/api";
+import type { AppSettings, Applicant, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree } from "../types";
+import faqTemplatesJson from "../../shared/faq_templates.json";
+
+const faqTemplates = faqTemplatesJson as FAQTemplateCategory[];
 
 const menuItems = [
   "ダッシュボード",
@@ -815,257 +818,352 @@ function ReminderSettings() {
 }
 
 function QuestionTreeSettings() {
-  const branches = [
-    { type: "新卒", questions: ["学校名", "卒業予定年", "希望職種", "志望動機", "勤務開始可能時期"] },
-    { type: "社会人", questions: ["現在の職種", "経験年数", "希望職種", "転職希望時期", "志望動機"] },
-    { type: "その他", questions: ["現在の状況", "希望職種", "働き方の希望", "志望動機"] }
-  ];
+  const [tree, setTree] = useState<QuestionTree | null>(null);
+  const [isLoadingTree, setIsLoadingTree] = useState(true);
+  const [isSavingTree, setIsSavingTree] = useState(false);
+  const [treeMessage, setTreeMessage] = useState<string | null>(null);
+  const [treeError, setTreeError] = useState<string | null>(null);
+
+  async function loadTree() {
+    setIsLoadingTree(true);
+    setTreeError(null);
+    try {
+      const data = await getQuestionTree();
+      setTree(data);
+    } catch (err) {
+      setTreeError(err instanceof Error ? err.message : "質問ツリーの取得に失敗しました");
+    } finally {
+      setIsLoadingTree(false);
+    }
+  }
+
+  useEffect(() => {
+    loadTree();
+  }, []);
+
+  function updateChoice(choiceIndex: number, updater: (choice: QuestionTree["choices"][number]) => QuestionTree["choices"][number]) {
+    setTree((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        choices: current.choices.map((choice, index) => index === choiceIndex ? updater(choice) : choice)
+      };
+    });
+  }
+
+  function updateQuestion(choiceIndex: number, questionIndex: number, value: string) {
+    updateChoice(choiceIndex, (choice) => ({
+      ...choice,
+      questions: choice.questions.map((question, index) => index === questionIndex ? value : question)
+    }));
+  }
+
+  function addQuestion(choiceIndex: number) {
+    updateChoice(choiceIndex, (choice) => ({ ...choice, questions: [...choice.questions, ""] }));
+  }
+
+  function removeQuestion(choiceIndex: number, questionIndex: number) {
+    updateChoice(choiceIndex, (choice) => ({
+      ...choice,
+      questions: choice.questions.filter((_, index) => index !== questionIndex)
+    }));
+  }
+
+  function moveQuestion(choiceIndex: number, questionIndex: number, delta: number) {
+    updateChoice(choiceIndex, (choice) => {
+      const target = questionIndex + delta;
+      if (target < 0 || target >= choice.questions.length) return choice;
+      const questions = [...choice.questions];
+      [questions[questionIndex], questions[target]] = [questions[target], questions[questionIndex]];
+      return { ...choice, questions };
+    });
+  }
+
+  function addChoice() {
+    setTree((current) => {
+      if (!current) return current;
+      if (current.choices.length >= 10) return current;
+      return { ...current, choices: [...current.choices, { label: "新しい選択肢", questions: [] }] };
+    });
+  }
+
+  function removeChoice(choiceIndex: number) {
+    setTree((current) => {
+      if (!current || current.choices.length <= 1) return current;
+      return { ...current, choices: current.choices.filter((_, index) => index !== choiceIndex) };
+    });
+  }
+
+  async function saveTree() {
+    if (!tree) return;
+    setTreeMessage(null);
+    setTreeError(null);
+    if (!tree.root_question.trim()) {
+      setTreeError("最初の質問を入力してください");
+      return;
+    }
+    if (tree.choices.some((choice) => !choice.label.trim())) {
+      setTreeError("選択肢名をすべて入力してください");
+      return;
+    }
+    setIsSavingTree(true);
+    try {
+      const cleaned: QuestionTree = {
+        root_question: tree.root_question.trim(),
+        choices: tree.choices.map((choice) => ({
+          label: choice.label.trim(),
+          questions: choice.questions.map((question) => question.trim()).filter(Boolean)
+        }))
+      };
+      const saved = await updateQuestionTree(cleaned);
+      setTree(saved);
+      setTreeMessage("質問ツリーを保存しました");
+    } catch (err) {
+      setTreeError(err instanceof Error ? err.message : "質問ツリーの保存に失敗しました");
+    } finally {
+      setIsSavingTree(false);
+    }
+  }
 
   return (
     <section className="panel">
-      <div className="panelHeader"><h2>質問ツリー設定</h2><button className="primaryButton">質問を追加</button></div>
-      <div className="rootQuestion">
-        <span className="stepNumber">1</span>
+      <div className="panelHeader">
         <div>
-          <strong>現在のご状況を教えてください</strong>
-          <small>選択肢: 新卒 / 社会人 / その他</small>
+          <p className="eyebrow">Question Tree</p>
+          <h2>質問ツリー設定</h2>
+        </div>
+        <div className="headerActions">
+          <button className="secondaryButton" onClick={addChoice} disabled={!tree || tree.choices.length >= 10}>選択肢を追加</button>
+          <button className="primaryButton" onClick={saveTree} disabled={isSavingTree || !tree}>
+            {isSavingTree ? "保存中..." : "保存する"}
+          </button>
         </div>
       </div>
-      <div className="branchGrid">
-        {branches.map((branch) => (
-          <article className="branchCard" key={branch.type}>
-            <div className="branchHeader">
-              <strong>{branch.type}</strong>
-              <button className="textButton">編集</button>
+      <p className="sectionDescription">
+        このツリーはLINEの応募フローで実際に使われます。「応募する」→ お名前 → 電話番号のあとに、最初の質問 → 選択肢 → 分岐ごとの質問の順で進みます。保存するとすぐLINE側に反映されます。
+      </p>
+      {treeMessage && <div className="successBox listNotice">{treeMessage}</div>}
+      {treeError && <div className="inlineError listNotice">{treeError}</div>}
+      {isLoadingTree || !tree ? (
+        <div className="loadingCard">質問ツリーを取得中...</div>
+      ) : (
+        <>
+          <div className="rootQuestion">
+            <span className="stepNumber">1</span>
+            <div className="rootQuestionBody">
+              <label className="fieldLabel">最初の質問</label>
+              <input value={tree.root_question} onChange={(event) => setTree((current) => current ? { ...current, root_question: event.target.value } : current)} placeholder="最初の質問" />
+              <small>選択肢: {tree.choices.map((choice) => choice.label || "（未入力）").join(" / ")}</small>
             </div>
-            <ol>
-              {branch.questions.map((question) => <li key={question}>{question}</li>)}
-            </ol>
-          </article>
-        ))}
-      </div>
+          </div>
+          <div className="branchGrid">
+            {tree.choices.map((choice, choiceIndex) => (
+              <article className="branchCard" key={choiceIndex}>
+                <div className="branchHeader">
+                  <input className="branchLabelInput" value={choice.label} onChange={(event) => updateChoice(choiceIndex, (current) => ({ ...current, label: event.target.value }))} placeholder="選択肢名" />
+                  <button className="textButton dangerText" onClick={() => removeChoice(choiceIndex)} disabled={tree.choices.length <= 1}>分岐を削除</button>
+                </div>
+                <div className="treeQuestionList">
+                  {choice.questions.map((question, questionIndex) => (
+                    <div className="treeQuestionRow" key={questionIndex}>
+                      <span className="treeQuestionNumber">{questionIndex + 1}</span>
+                      <input value={question} onChange={(event) => updateQuestion(choiceIndex, questionIndex, event.target.value)} placeholder="質問文" />
+                      <button className="miniIconButton" onClick={() => moveQuestion(choiceIndex, questionIndex, -1)} disabled={questionIndex === 0} aria-label="上へ">↑</button>
+                      <button className="miniIconButton" onClick={() => moveQuestion(choiceIndex, questionIndex, 1)} disabled={questionIndex === choice.questions.length - 1} aria-label="下へ">↓</button>
+                      <button className="miniIconButton" onClick={() => removeQuestion(choiceIndex, questionIndex)} aria-label="削除">×</button>
+                    </div>
+                  ))}
+                  {choice.questions.length === 0 && <span className="muted">質問がまだありません</span>}
+                </div>
+                <button className="secondaryButton compactButton" onClick={() => addQuestion(choiceIndex)}>質問を追加</button>
+              </article>
+            ))}
+          </div>
+        </>
+      )}
     </section>
   );
 }
 
+type FAQDraft = { answer: string; is_visible: boolean };
+
+function faqDraftStatus(draft: FAQDraft) {
+  const hasAnswer = Boolean(draft.answer.trim());
+  if (hasAnswer && draft.is_visible) return "公開中";
+  if (hasAnswer) return "回答あり・非公開";
+  return "未設定";
+}
+
 function FAQSettings() {
-  const [categories, setCategories] = useState<FAQCategory[]>([]);
-  const [drafts, setDrafts] = useState<Record<string, FAQ>>({});
-  const [newFAQ, setNewFAQ] = useState({ category_id: "", question: "", answer: "", is_visible: false });
+  const [drafts, setDrafts] = useState<Record<string, FAQDraft>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [faqSearch, setFAQSearch] = useState("");
-  const [faqFilter, setFAQFilter] = useState("すべて");
   const [faqCategoryFilter, setFAQCategoryFilter] = useState("すべて");
+  const [faqStatusFilter, setFAQStatusFilter] = useState("すべて");
   const [isLoadingFAQ, setIsLoadingFAQ] = useState(true);
-  const [savingFAQId, setSavingFAQId] = useState<string | null>(null);
+  const [savingFAQKey, setSavingFAQKey] = useState<string | null>(null);
   const [faqMessage, setFAQMessage] = useState<string | null>(null);
   const [faqError, setFAQError] = useState<string | null>(null);
 
-  async function loadFAQs() {
+  async function loadFAQSettings() {
     setIsLoadingFAQ(true);
     setFAQError(null);
     try {
-      const data = await getFAQs();
-      setCategories(data);
-      setDrafts(() => {
-        const next: Record<string, FAQ> = {};
-        data.forEach((category) => {
-          category.faqs?.forEach((faq) => {
-            next[faq.id] = { ...faq, category_id: faq.category_id || category.id };
-          });
+      const settings = await getFAQSettings();
+      const settingByKey: Record<string, FAQSetting> = {};
+      settings.forEach((setting) => { settingByKey[setting.faq_key] = setting; });
+      const next: Record<string, FAQDraft> = {};
+      faqTemplates.forEach((category) => {
+        category.questions.forEach((question) => {
+          const saved = settingByKey[question.faq_key];
+          next[question.faq_key] = {
+            answer: saved?.answer || "",
+            is_visible: Boolean(saved?.is_visible)
+          };
         });
-        return next;
       });
-      setNewFAQ((current) => ({ ...current, category_id: current.category_id || data[0]?.id || "" }));
+      setDrafts(next);
     } catch (err) {
-      setFAQError(err instanceof Error ? err.message : "FAQの取得に失敗しました");
+      setFAQError(err instanceof Error ? err.message : "FAQ設定の取得に失敗しました");
     } finally {
       setIsLoadingFAQ(false);
     }
   }
 
   useEffect(() => {
-    loadFAQs();
+    loadFAQSettings();
   }, []);
 
-  function updateDraft(id: string, data: Partial<FAQ>) {
-    setDrafts((current) => ({ ...current, [id]: { ...current[id], ...data } }));
+  function updateDraft(faqKey: string, data: Partial<FAQDraft>) {
+    setDrafts((current) => ({ ...current, [faqKey]: { ...current[faqKey], ...data } }));
   }
 
-  async function saveFAQ(faq: FAQ) {
-    const draft = drafts[faq.id];
-    if (!draft.question.trim()) {
-      setFAQError("質問を入力してください");
-      return;
-    }
+  async function saveFAQ(faqKey: string) {
+    const draft = drafts[faqKey];
+    if (!draft) return;
     if (draft.is_visible && !draft.answer.trim()) {
-      setFAQError("回答未入力のFAQは表示ONにできません");
+      setFAQError("回答が空欄のFAQは表示ONにできません");
       return;
     }
-    setSavingFAQId(faq.id);
+    setSavingFAQKey(faqKey);
     setFAQError(null);
     setFAQMessage(null);
     try {
-      await updateFAQ(faq.id, {
-        category_id: draft.category_id,
-        question: draft.question,
-        answer: draft.answer,
-        sort_order: draft.sort_order,
-        is_visible: draft.is_visible,
-      });
-      setFAQMessage("FAQを保存しました");
-      await loadFAQs();
+      const saved = await updateFAQSetting(faqKey, { answer: draft.answer, is_visible: draft.is_visible });
+      setDrafts((current) => ({ ...current, [faqKey]: { answer: saved.answer, is_visible: saved.is_visible } }));
+      setFAQMessage("保存しました");
     } catch (err) {
-      setFAQError(err instanceof Error ? err.message : "FAQの保存に失敗しました。FAQテーブルが作成済みか確認してください。");
+      setFAQError(err instanceof Error ? err.message : "FAQ設定の保存に失敗しました");
     } finally {
-      setSavingFAQId(null);
+      setSavingFAQKey(null);
     }
   }
 
-  async function addFAQ() {
-    if (!newFAQ.category_id || !newFAQ.question.trim()) {
-      setFAQError("カテゴリと質問を入力してください");
-      return;
-    }
-    if (newFAQ.is_visible && !newFAQ.answer.trim()) {
-      setFAQError("回答未入力のFAQは表示ONにできません");
-      return;
-    }
-    setSavingFAQId("new");
-    setFAQError(null);
-    setFAQMessage(null);
-    try {
-      await createFAQ({
-        category_id: newFAQ.category_id,
-        question: newFAQ.question,
-        answer: newFAQ.answer,
-        is_visible: newFAQ.is_visible,
+  const hasActiveFilter = Boolean(faqSearch.trim()) || faqCategoryFilter !== "すべて" || faqStatusFilter !== "すべて";
+
+  const visibleCategories = faqTemplates
+    .filter((category) => faqCategoryFilter === "すべて" || category.category_label === faqCategoryFilter)
+    .map((category) => {
+      const questions = category.questions.filter((question) => {
+        const draft = drafts[question.faq_key] || { answer: "", is_visible: false };
+        const keyword = faqSearch.trim();
+        const matchesKeyword = !keyword || question.question.includes(keyword) || draft.answer.includes(keyword);
+        const matchesStatus = faqStatusFilter === "すべて" || faqDraftStatus(draft) === faqStatusFilter;
+        return matchesKeyword && matchesStatus;
       });
-      setFAQMessage("FAQを追加しました");
-      setNewFAQ((current) => ({ ...current, question: "", answer: "", is_visible: false }));
-      await loadFAQs();
-    } catch (err) {
-      setFAQError(err instanceof Error ? err.message : "FAQの追加に失敗しました。FAQテーブルが作成済みか確認してください。");
-    } finally {
-      setSavingFAQId(null);
-    }
-  }
-
-  function faqStatus(faq: FAQ) {
-    const hasAnswer = Boolean((faq.answer || "").trim());
-    if (hasAnswer && faq.is_visible) return "公開中";
-    if (hasAnswer) return "回答あり・非公開";
-    return "未設定";
-  }
-
-  function matchesFAQ(faq: FAQ) {
-    const draft = drafts[faq.id] || faq;
-    const keyword = faqSearch.trim();
-    const matchesKeyword = !keyword || [draft.question, draft.answer]
-      .filter(Boolean)
-      .some((value) => String(value).includes(keyword));
-    const status = faqStatus(draft);
-    return matchesKeyword && (faqFilter === "すべて" || status === faqFilter);
-  }
-
-  const filteredCategories = categories
-    .filter((category) => faqCategoryFilter === "すべて" || category.name === faqCategoryFilter)
-    .map((category) => ({ ...category, faqs: (category.faqs || []).filter(matchesFAQ) }))
-    .filter((category) => (category.faqs || []).length > 0 || (!faqSearch.trim() && faqFilter === "すべて"));
+      return { ...category, questions };
+    })
+    .filter((category) => category.questions.length > 0 || !hasActiveFilter);
 
   return (
     <section className="panel">
       <div className="panelHeader">
         <div>
-          <p className="eyebrow">FAQ Data</p>
+          <p className="eyebrow">FAQ Tree</p>
           <h2>FAQ設定</h2>
         </div>
-        <button className="secondaryButton" onClick={loadFAQs}>再読み込み</button>
+        <button className="secondaryButton" onClick={loadFAQSettings}>再読み込み</button>
       </div>
       <p className="sectionDescription">
         LINEには、回答が入力されていて、表示ONになっているFAQだけが表示されます。<br />
-        カテゴリごとに質問・回答・公開状態を管理します。
+        質問テンプレはアプリ側で管理し、回答と表示ON/OFFだけを保存します。
       </p>
       {faqMessage && <div className="successBox listNotice">{faqMessage}</div>}
       {faqError && <div className="inlineError listNotice">{faqError}</div>}
-      {isLoadingFAQ ? <div className="loadingCard">FAQを取得中...</div> : (
+      {isLoadingFAQ ? (
+        <div className="loadingCard">FAQ設定を取得中...</div>
+      ) : (
         <>
           <div className="toolbar">
             <input value={faqSearch} onChange={(event) => setFAQSearch(event.target.value)} placeholder="質問・回答で検索" />
             <select value={faqCategoryFilter} onChange={(event) => setFAQCategoryFilter(event.target.value)} aria-label="カテゴリで絞り込み">
               <option>すべて</option>
-              {categories.map((category) => <option key={category.id} value={category.name}>{category.name}</option>)}
+              {faqTemplates.map((category) => <option key={category.category_key} value={category.category_label}>{category.category_label}</option>)}
             </select>
-            <select value={faqFilter} onChange={(event) => setFAQFilter(event.target.value)} aria-label="ステータスで絞り込み">
+            <select value={faqStatusFilter} onChange={(event) => setFAQStatusFilter(event.target.value)} aria-label="ステータスで絞り込み">
               <option>すべて</option>
               <option>公開中</option>
               <option>回答あり・非公開</option>
               <option>未設定</option>
             </select>
           </div>
-          <div className="faqAddBox">
-            <select value={newFAQ.category_id} onChange={(event) => setNewFAQ((current) => ({ ...current, category_id: event.target.value }))}>
-              {categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
-            </select>
-            <input value={newFAQ.question} onChange={(event) => setNewFAQ((current) => ({ ...current, question: event.target.value }))} placeholder="新しい質問" />
-            <textarea value={newFAQ.answer} onChange={(event) => setNewFAQ((current) => ({ ...current, answer: event.target.value }))} placeholder="回答" />
-            <label className="checkLabel">
-              <input
-                type="checkbox"
-                checked={newFAQ.is_visible}
-                onChange={(event) => {
-                  if (event.target.checked && !newFAQ.answer.trim()) {
-                    setFAQError("回答未入力のFAQは表示ONにできません");
-                    return;
-                  }
-                  setNewFAQ((current) => ({ ...current, is_visible: event.target.checked }));
-                }}
-              />
-              表示ON
-            </label>
-            <button className="primaryButton" onClick={addFAQ} disabled={savingFAQId === "new"}>{savingFAQId === "new" ? "追加中..." : "FAQを追加"}</button>
-          </div>
-      <div className="faqGrid">
-        {filteredCategories.map((category) => (
-          <article className="faqCategory" key={category.id}>
-            <div className="branchHeader">
-              <strong>{category.name}</strong>
-              <span className={category.is_active === false ? "badge" : "badge badgeGreen"}>{category.is_active === false ? "非公開" : "公開"}</span>
-            </div>
-            {(category.faqs || []).map((faq) => {
-              const draft = drafts[faq.id] || faq;
-              const status = faqStatus(draft);
+          <div className="faqTree">
+            {visibleCategories.map((category) => {
+              const isOpen = hasActiveFilter || Boolean(expanded[category.category_key]);
+              const publicCount = category.questions.filter((question) => faqDraftStatus(drafts[question.faq_key] || { answer: "", is_visible: false }) === "公開中").length;
               return (
-              <div className="faqItemEditor" key={faq.id}>
-                <div className="faqStatusLine">
-                  <span className={status === "公開中" ? "badge badgeGreen" : status === "回答あり・非公開" ? "badge badgeBlue" : "badge"}>{status}</span>
-                </div>
-                <input value={draft.question} onChange={(event) => updateDraft(faq.id, { question: event.target.value })} placeholder="質問" />
-                <textarea value={draft.answer} onChange={(event) => updateDraft(faq.id, { answer: event.target.value })} placeholder="回答" />
-                <div className="faqItemActions">
-                  <label className="checkLabel">
-                    <input
-                      type="checkbox"
-                      checked={Boolean(draft.is_visible)}
-                      onChange={(event) => {
-                        if (event.target.checked && !draft.answer.trim()) {
-                          setFAQError("回答未入力のFAQは表示ONにできません");
-                          return;
-                        }
-                        updateDraft(faq.id, { is_visible: event.target.checked });
-                      }}
-                    />
-                    表示ON
-                  </label>
-                  <button className="secondaryButton compactButton" onClick={() => saveFAQ(faq)} disabled={savingFAQId === faq.id || faq.is_default}>
-                    {faq.is_default ? "DB未保存" : savingFAQId === faq.id ? "保存中..." : "保存"}
+                <article className="faqTreeCategory" key={category.category_key}>
+                  <button className="faqTreeHeader" onClick={() => setExpanded((current) => ({ ...current, [category.category_key]: !current[category.category_key] }))}>
+                    <span className="faqTreeCaret">{isOpen ? "▾" : "▸"}</span>
+                    <strong>{category.category_label}</strong>
+                    <span className="faqTreeCount">公開中 {publicCount} / 全 {category.questions.length}</span>
                   </button>
-                </div>
-              </div>
+                  {isOpen && (
+                    <div className="faqTreeChildren">
+                      {category.questions.map((question) => {
+                        const draft = drafts[question.faq_key] || { answer: "", is_visible: false };
+                        const status = faqDraftStatus(draft);
+                        return (
+                          <div className="faqQuestionCard" key={question.faq_key}>
+                            <div className="faqQuestionHead">
+                              <span className={status === "公開中" ? "badge badgeGreen" : status === "回答あり・非公開" ? "badge badgeBlue" : "badge"}>{status}</span>
+                              <strong>{question.question}</strong>
+                            </div>
+                            <textarea
+                              value={draft.answer}
+                              onChange={(event) => updateDraft(question.faq_key, { answer: event.target.value })}
+                              placeholder="回答を入力してください"
+                            />
+                            <div className="faqItemActions">
+                              <label className="checkLabel">
+                                <input
+                                  type="checkbox"
+                                  checked={draft.is_visible}
+                                  onChange={(event) => {
+                                    if (event.target.checked && !draft.answer.trim()) {
+                                      setFAQError("回答が空欄のFAQは表示ONにできません");
+                                      return;
+                                    }
+                                    updateDraft(question.faq_key, { is_visible: event.target.checked });
+                                  }}
+                                />
+                                表示ON
+                              </label>
+                              <button className="secondaryButton compactButton" onClick={() => saveFAQ(question.faq_key)} disabled={savingFAQKey === question.faq_key}>
+                                {savingFAQKey === question.faq_key ? "保存中..." : "保存"}
+                              </button>
+                            </div>
+                          </div>
+                        );
+                      })}
+                      {category.questions.length === 0 && <span className="muted">条件に一致するFAQがありません</span>}
+                    </div>
+                  )}
+                </article>
               );
             })}
-          </article>
-        ))}
-      </div>
+            {visibleCategories.length === 0 && <p className="muted">条件に一致するFAQがありません。</p>}
+          </div>
         </>
       )}
     </section>
@@ -1151,8 +1249,111 @@ function StatusSettings() {
   );
 }
 
+const settingsFields: { key: keyof AppSettings; label: string; type: "text" | "textarea"; helper?: string }[] = [
+  { key: "company_name", label: "会社名", type: "text" },
+  { key: "recruiter_name", label: "採用担当者名", type: "text" },
+  { key: "line_bot_name", label: "LINE Botの表示名", type: "text" },
+  { key: "notification_email", label: "通知先メールアドレス", type: "text" },
+  { key: "application_complete_message", label: "応募完了メッセージ", type: "textarea", helper: "応募内容の確定後にLINEへ送るメッセージです。" },
+  { key: "interview_slots_message", label: "面接候補日送信メッセージ", type: "textarea", helper: "候補日と一緒にLINEへ送る案内文です。" },
+  { key: "interview_confirmed_message", label: "面接確定メッセージ", type: "textarea", helper: "面接日程確定時の先頭メッセージです。" },
+  { key: "faq_preparing_message", label: "FAQ準備中メッセージ", type: "textarea", helper: "公開中のFAQが1つもないときに返すメッセージです。" }
+];
+
 function GeneralSettings() {
-  return <StaticCards title="設定" items={["会社情報", "求人情報", "LINE連携", "管理者アカウント", "通知設定"]} />;
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [isLoadingSettings, setIsLoadingSettings] = useState(true);
+  const [isSavingSettings, setIsSavingSettings] = useState(false);
+  const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
+  const [settingsError, setSettingsError] = useState<string | null>(null);
+
+  async function loadSettings() {
+    setIsLoadingSettings(true);
+    setSettingsError(null);
+    try {
+      const data = await getSettings();
+      setSettings(data);
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : "設定の取得に失敗しました");
+    } finally {
+      setIsLoadingSettings(false);
+    }
+  }
+
+  useEffect(() => {
+    loadSettings();
+  }, []);
+
+  function updateField(key: keyof AppSettings, value: string | boolean) {
+    setSettings((current) => current ? ({ ...current, [key]: value } as AppSettings) : current);
+  }
+
+  async function saveSettings() {
+    if (!settings) return;
+    setSettingsMessage(null);
+    setSettingsError(null);
+    setIsSavingSettings(true);
+    try {
+      const saved = await updateSettings(settings);
+      setSettings(saved);
+      setSettingsMessage("設定を保存しました");
+    } catch (err) {
+      setSettingsError(err instanceof Error ? err.message : "設定の保存に失敗しました");
+    } finally {
+      setIsSavingSettings(false);
+    }
+  }
+
+  return (
+    <section className="panel">
+      <div className="panelHeader">
+        <div>
+          <p className="eyebrow">Settings</p>
+          <h2>設定</h2>
+        </div>
+        <button className="primaryButton" onClick={saveSettings} disabled={isSavingSettings || !settings}>
+          {isSavingSettings ? "保存中..." : "保存する"}
+        </button>
+      </div>
+      <p className="sectionDescription">会社情報とLINEで送る自動メッセージを設定します。保存するとLINE Botに反映されます。</p>
+      {settingsMessage && <div className="successBox listNotice">{settingsMessage}</div>}
+      {settingsError && <div className="inlineError listNotice">{settingsError}</div>}
+      {isLoadingSettings || !settings ? (
+        <div className="loadingCard">設定を取得中...</div>
+      ) : (
+        <div className="settingsForm">
+          <div className="settingsField settingsToggle">
+            <label className="checkLabel">
+              <input
+                type="checkbox"
+                checked={settings.application_enabled}
+                onChange={(event) => updateField("application_enabled", event.target.checked)}
+              />
+              応募受付を有効にする
+            </label>
+            <small className="muted">OFFにすると、LINEで「応募する」を押した人に受付停止メッセージを返します。</small>
+          </div>
+          {settingsFields.map((field) => (
+            <div className="settingsField" key={field.key}>
+              <label className="fieldLabel">{field.label}</label>
+              {field.type === "textarea" ? (
+                <textarea
+                  value={String(settings[field.key] ?? "")}
+                  onChange={(event) => updateField(field.key, event.target.value)}
+                />
+              ) : (
+                <input
+                  value={String(settings[field.key] ?? "")}
+                  onChange={(event) => updateField(field.key, event.target.value)}
+                />
+              )}
+              {field.helper && <small className="muted">{field.helper}</small>}
+            </div>
+          ))}
+        </div>
+      )}
+    </section>
+  );
 }
 
 function StaticCards({ title, items }: { title: string; items: string[] }) {

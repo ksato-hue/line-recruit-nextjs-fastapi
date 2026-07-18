@@ -187,6 +187,38 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .faqItemActions { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 .checkLabel { display: inline-flex; align-items: center; gap: 8px; color: #344054; font-weight: 700; }
 .checkLabel input { min-width: 0; width: auto; }
+.headerActions { display: flex; gap: 10px; align-items: center; }
+.headerActions .primaryButton { margin-top: 0; }
+.rootQuestion .rootQuestionBody { flex: 1; display: grid; gap: 8px; }
+.rootQuestionBody input { min-width: 0; width: 100%; }
+.fieldLabel { display: block; color: var(--muted); font-size: 12px; font-weight: 800; }
+.branchLabelInput { min-width: 0; flex: 1; font-weight: 800; }
+.dangerText { color: #b42318; white-space: nowrap; }
+.dangerText:disabled { opacity: .4; cursor: default; }
+.treeQuestionList { display: grid; gap: 8px; margin-bottom: 10px; }
+.treeQuestionRow { display: grid; grid-template-columns: 26px 1fr auto auto auto; gap: 6px; align-items: center; }
+.treeQuestionRow input { min-width: 0; width: 100%; padding: 9px 11px; }
+.treeQuestionNumber { width: 24px; height: 24px; border-radius: 999px; display: inline-grid; place-items: center; background: #e7f1fe; color: var(--blueDark); font-size: 12px; font-weight: 800; }
+.miniIconButton { width: 32px; height: 32px; border-radius: 10px; border: 1px solid var(--line); background: #fff; color: #44506a; font-weight: 800; }
+.miniIconButton:disabled { opacity: .35; cursor: default; }
+.faqTree { display: grid; gap: 12px; }
+.faqTreeCategory { border: 1px solid var(--line); border-radius: 16px; background: #fff; overflow: hidden; }
+.faqTreeHeader { width: 100%; display: flex; align-items: center; gap: 10px; border: 0; background: #f8fafc; padding: 14px 16px; text-align: left; }
+.faqTreeHeader:hover { background: #f1f6fd; }
+.faqTreeHeader strong { flex: 1; }
+.faqTreeCaret { color: var(--blue); font-size: 14px; width: 16px; }
+.faqTreeCount { color: var(--muted); font-size: 12px; font-weight: 700; white-space: nowrap; }
+.faqTreeChildren { display: grid; gap: 12px; padding: 14px 16px 16px 34px; border-top: 1px solid var(--line); position: relative; }
+.faqTreeChildren::before { content: ""; position: absolute; top: 14px; bottom: 16px; left: 22px; width: 2px; background: #dbe4ef; }
+.faqQuestionCard { display: grid; gap: 10px; border: 1px solid var(--line); border-radius: 14px; background: #fff; padding: 12px; position: relative; }
+.faqQuestionCard::before { content: ""; position: absolute; top: 22px; left: -12px; width: 12px; height: 2px; background: #dbe4ef; }
+.faqQuestionHead { display: flex; align-items: flex-start; gap: 10px; flex-wrap: wrap; }
+.faqQuestionHead strong { flex: 1; min-width: 200px; line-height: 1.6; }
+.settingsForm { display: grid; gap: 16px; max-width: 720px; }
+.settingsField { display: grid; gap: 7px; }
+.settingsField input { min-width: 0; width: 100%; }
+.settingsField textarea { min-height: 90px; }
+.settingsToggle { border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 14px; }
 .stepGrid, .analyticsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .stepCard strong { display: block; margin-top: 8px; color: var(--blueDark); }
 .metricBox strong { display: block; font-size: 28px; color: var(--blueDark); margin-top: 6px; }
@@ -209,4 +241,8 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   .statusStep { grid-template-columns: 42px 1fr; }
   .statusStep .textButton { grid-column: 2; justify-self: start; }
   .addStatusBox { align-items: stretch; flex-direction: column; }
+  .faqTreeChildren { padding-left: 16px; }
+  .faqTreeChildren::before, .faqQuestionCard::before { display: none; }
+  .headerActions { flex-wrap: wrap; justify-content: flex-end; }
+  .settingsForm { max-width: none; }
 }

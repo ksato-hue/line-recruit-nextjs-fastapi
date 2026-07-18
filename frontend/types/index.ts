@@ -79,6 +79,53 @@ export type FAQPayload = {
 
 export type FAQUpdatePayload = Partial<FAQPayload>;
 
+export type FAQTemplateQuestion = {
+  faq_key: string;
+  question: string;
+  sort_order?: number;
+};
+
+export type FAQTemplateCategory = {
+  category_key: string;
+  category_label: string;
+  sort_order?: number;
+  questions: FAQTemplateQuestion[];
+};
+
+export type FAQSetting = {
+  faq_key: string;
+  answer: string;
+  is_visible: boolean;
+  updated_at?: string;
+};
+
+export type FAQSettingUpdatePayload = {
+  answer?: string;
+  is_visible?: boolean;
+};
+
+export type AppSettings = {
+  company_name: string;
+  recruiter_name: string;
+  line_bot_name: string;
+  application_complete_message: string;
+  interview_slots_message: string;
+  interview_confirmed_message: string;
+  faq_preparing_message: string;
+  notification_email: string;
+  application_enabled: boolean;
+};
+
+export type QuestionTreeChoice = {
+  label: string;
+  questions: string[];
+};
+
+export type QuestionTree = {
+  root_question: string;
+  choices: QuestionTreeChoice[];
+};
+
 export type LineMessageLog = {
   id: string | number;
   created_at?: string;
