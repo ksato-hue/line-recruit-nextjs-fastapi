@@ -11,7 +11,6 @@ const topMenuItems = [
   "ダッシュボード",
   "応募者一覧",
   "お問い合わせ",
-  "面接関連",
   "簡易分析",
   "設定"
 ];
@@ -227,7 +226,6 @@ export default function AdminPage() {
             {activeMenu === "質問ツリー設定" && <QuestionTreeSettings />}
             {activeMenu === "FAQ設定" && <FAQSettings />}
             {activeMenu === "リマインド・メッセージテンプレート" && <MessageAndReminderSettings />}
-            {activeMenu === "面接関連" && <InterviewDateSettings applicants={applicants} onSelectApplicant={setSelectedApplicant} />}
             {activeMenu === "簡易分析" && <AnalyticsView dashboard={dashboard} applicants={applicants} statuses={statuses} />}
             {activeMenu === "ステータス設定" && <StatusSettings statuses={statuses} onSaved={async (saved) => { setStatuses(saved); await loadData(); }} />}
             {activeMenu === "基本設定" && <GeneralSettings />}
@@ -345,6 +343,7 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
   onStatusSave: (applicant: Applicant, status: string) => Promise<void>;
   statusOptions: string[];
 }) {
+  const filterOptions = Array.from(new Set([...statusOptions, "面接調整中", "面接確定"]));
   const [statusDrafts, setStatusDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
   const [rowMessage, setRowMessage] = useState<string | null>(null);
@@ -388,7 +387,7 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="名前・電話番号・職種で検索" />
         <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
           <option>すべて</option>
-          {statusOptions.map((status) => <option key={status}>{status}</option>)}
+          {filterOptions.map((status) => <option key={status}>{status}</option>)}
         </select>
       </div>
       {rowMessage && <div className={rowMessage.includes("失敗") ? "inlineError listNotice" : "successBox listNotice"}>{rowMessage}</div>}
@@ -400,7 +399,8 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
               <th>電話番号</th>
               <th>希望職種</th>
               <th>応募ステータス</th>
-              <th>面接</th>
+              <th>面接状況</th>
+              <th>面接日時</th>
               <th>最終接触</th>
               <th>操作</th>
             </tr>
@@ -426,7 +426,8 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
                     </button>
                   </div>
                 </td>
-                <td>{applicant.interview_status || applicant.interview_date || "-"}</td>
+                <td>{applicant.interview_status || "未設定"}</td>
+                <td>{applicant.interview_date ? formatDate(applicant.interview_date) : "-"}</td>
                 <td>{formatDate(applicant.created_at)}</td>
                 <td><button className="textButton" onClick={() => onSelectApplicant(applicant)}>詳細を見る</button></td>
               </tr>
