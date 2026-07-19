@@ -56,7 +56,7 @@
 採用担当者
   └─ Next.js frontend
        ├─ FastAPI REST API
-       └─ Next.js管理APIプロキシ（一部の設定更新）
+       └─ Next.js管理APIプロキシ（全管理API）
 
 shared/faq_templates.json
   ├─ frontendのFAQ設定画面
@@ -260,7 +260,7 @@ shared/faq_templates.json
 - SupabaseはRLSまたは同等の制御で企業間のアクセスを分離すること
 - 入力検証、レート制限、依存関係の脆弱性管理を行うこと
 
-現在は一部設定更新のみ任意の管理APIキーで保護され、管理画面認証、Webhook署名検証、全API認可は未実装である。
+現在はLINE Webhook署名検証と、全管理APIに対するfail-closedの共有キー認証を実装している。共有キーはNext.jsサーバーからのみ付与し、ブラウザへ公開しない。ただし、この共有キーは採用担当者本人を識別するログイン機能ではなく、利用者認証・役割別認可は未実装である。
 
 ### 7.2 個人情報保護
 
@@ -341,11 +341,11 @@ shared/faq_templates.json
 | `SUPABASE_URL` | backend | Supabase URL | 必須 |
 | `SUPABASE_KEY` | backend | Supabase APIキー | anon/service roleの使い分けを明文化する必要がある |
 | `LINE_ACCESS_TOKEN` | backend | LINE Messaging API | 必須 |
-| `ADMIN_ORIGIN` | backend | 管理画面オリジン想定 | 現在CORS設定へ反映されていない |
-| `COMPANY_ID` | backend | 現在の企業識別子 | `.env.example`未記載 |
-| `ADMIN_API_KEY` | backend / frontend server | 一部設定更新APIの共有キー | `.env.example`未記載。未設定時の扱いに課題あり |
-| `NEXT_PUBLIC_API_BASE_URL` | frontend | ブラウザから呼ぶbackend URL | 公開変数 |
-| `BACKEND_API_BASE_URL` | frontend server | 管理APIプロキシのbackend URL | サンプル未記載 |
+| `LINE_CHANNEL_SECRET` | backend | LINE Webhook署名検証 | 必須。未設定時はWebhookを拒否 |
+| `ADMIN_ORIGIN` | backend | CORSで許可する管理画面オリジン | 未設定時はオリジンを許可しない |
+| `COMPANY_ID` | backend | 現在の企業識別子 | 既存データは`default`を前提とする |
+| `ADMIN_API_KEY` | backend / frontend server | 全管理APIのサーバー間共有キー | 必須。`NEXT_PUBLIC_`を付けない |
+| `BACKEND_API_BASE_URL` | frontend server | 管理APIプロキシのbackend URL | 必須。ブラウザはbackendを直接呼ばない |
 
 ### 9.2 今後の方針
 
@@ -403,7 +403,7 @@ shared/faq_templates.json
 
 | 項目 | 状況 | 補足 |
 |---|---|---|
-| LINE Webhook | 一部実装 | テキストメッセージを処理。署名検証と友だち追加処理なし |
+| LINE Webhook | 一部実装 | 署名検証後にテキストメッセージを処理。友だち追加処理なし |
 | LINE内応募 | 実装済み | 確認、修正、キャンセル、DB保存あり |
 | 応募途中永続化 | 未実装 | プロセスメモリのみ |
 | 問い合わせ | 基本実装済み | 保存と一覧。対応管理は未実装 |
@@ -418,9 +418,9 @@ shared/faq_templates.json
 | 合否通知 | 未実装 | 画面上の構想のみ |
 | 簡易分析 | 一部実装 | 現在値集計のみ |
 | BI連携 | 未実装 | 外部BIなし |
-| 認証・認可 | 未実装 | 一部APIキーのみ |
+| 認証・認可 | 一部実装 | 全管理APIのサーバー間共有キーあり。利用者ログイン・役割認可なし |
 | マルチテナント | 未実装 | 設定系の一部に固定企業IDあり |
-| DBマイグレーション | 未実装 | Supabase DDLがリポジトリにない |
+| DBマイグレーション | 一部実装 | 設定テーブル、`company_id`、索引、更新時刻トリガーを追加。RLSは未決定 |
 
 ## 13. 未実装事項
 
@@ -430,24 +430,20 @@ shared/faq_templates.json
 - 3日、1時間、24時間リマインドの定期実行
 - メール通知、合否通知、通知失敗管理
 - 管理画面ログインと企業・役割別権限
-- LINE Webhook署名検証
 - 完全な企業データ分離
-- Supabaseマイグレーション、RLS、制約
+- Supabase RLSと認証方式に対応したポリシー
 - Googleカレンダー、AI、ATS、外部BI連携
 - 管理画面に表示される一部設定の保存・実処理
 
 ## 14. 既知の課題
 
 - 会話状態がインメモリで、再起動と水平スケールに対応できない
-- 管理APIの多くが認証されていない
-- 管理APIキー未設定時に一部保護が無効になる
-- CORSが全オリジン許可である
-- Webhookリクエストやメッセージが標準出力へ出る
+- 管理API共有キーは利用者ログインの代替にならず、Next.js管理プロキシ自体への利用者認証がない
 - LINE/DB操作にトランザクション、冪等性、十分なタイムアウト・再試行がない
 - FAQの新旧データ方式が併存する
 - 企業IDが全データへ適用されていない
-- README、環境変数サンプル、DBスキーマが実装へ追随していない
-- 依存関係lockfileと`.gitignore`がなく、再現性と生成物管理に課題がある
+- RLSと全業務クエリの企業スコープ強制が未実装である
+- 現在固定しているNext.js依存関係にnpm auditの既知脆弱性があり、安全な更新にはメジャーバージョン移行検証が必要である
 
 ## 15. 完了条件
 
@@ -486,4 +482,3 @@ shared/faq_templates.json
 | リマインド | 条件と経過時間に基づく自動フォローメッセージ |
 | マルチテナント | 複数企業が同一サービスを利用しつつ、データと設定が分離される構成 |
 | MVP | 価値と運用可能性を検証するための最小限の製品範囲 |
-

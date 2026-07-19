@@ -11,10 +11,11 @@ cp .env.local.example .env.local
 npm run dev
 ```
 
-`.env.local` の `NEXT_PUBLIC_API_BASE_URL` は FastAPI のURLに合わせてください。
+`.env.local`にはNext.jsサーバー専用のbackend URLと管理キーを設定してください。管理キーに`NEXT_PUBLIC_`を付けないでください。
 
 ```env
-NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
+BACKEND_API_BASE_URL=http://localhost:8000
+ADMIN_API_KEY=replace_with_the_same_long_random_secret_as_backend
 ```
 
 ## 画面

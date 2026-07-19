@@ -5,13 +5,18 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Optional
 from datetime import datetime, timezone
+import base64
+import hashlib
+import hmac
 import json
+import logging
 import os
 import requests
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 
 supabase = create_client(
     SUPABASE_URL,
@@ -20,29 +25,65 @@ supabase = create_client(
 
 app = FastAPI(title="LINE Recruit API")
 
-ADMIN_ORIGIN = os.getenv(
-    "ADMIN_ORIGIN",
-    "https://line-recruit-admin.onrender.com"
-)
+ADMIN_ORIGIN = os.getenv("ADMIN_ORIGIN", "").strip().rstrip("/")
+ALLOWED_ADMIN_ORIGINS = [ADMIN_ORIGIN] if ADMIN_ORIGIN else []
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=ALLOWED_ADMIN_ORIGINS,
     allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Admin-Key"],
 )
-
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 
 COMPANY_ID = os.getenv("COMPANY_ID", "default")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
+logger = logging.getLogger("line_recruit")
+
+
+def _anonymous_id(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()[:12]
+
+
+def _log_event(
+    event: str,
+    result: str,
+    *,
+    subject_id: Optional[str] = None,
+    http_status: Optional[int] = None,
+    error: Optional[BaseException] = None,
+) -> None:
+    record: dict[str, Any] = {"event": event, "result": result}
+    anonymous_id = _anonymous_id(subject_id)
+    if anonymous_id:
+        record["subject_id"] = anonymous_id
+    if http_status is not None:
+        record["http_status"] = http_status
+    if error is not None:
+        record["error"] = type(error).__name__
+    logger.info(json.dumps(record, ensure_ascii=False, separators=(",", ":")))
 
 
 def require_admin(x_admin_key: Optional[str] = Header(default=None)) -> None:
-    """ADMIN_API_KEY が設定されている場合のみ、管理系の更新APIに X-Admin-Key を要求します。"""
-    if ADMIN_API_KEY and x_admin_key != ADMIN_API_KEY:
+    """管理APIは共有キーが両側に設定され、一致する場合だけ許可します。"""
+    if not ADMIN_API_KEY:
+        raise HTTPException(status_code=503, detail="管理API認証が設定されていません")
+    if not x_admin_key or not hmac.compare_digest(x_admin_key, ADMIN_API_KEY):
         raise HTTPException(status_code=401, detail="管理APIキーが不正です")
+
+
+def _verify_line_signature(raw_body: bytes, signature: Optional[str]) -> None:
+    if not LINE_CHANNEL_SECRET:
+        raise HTTPException(status_code=503, detail="LINE Webhook認証が設定されていません")
+    if not signature:
+        raise HTTPException(status_code=401, detail="LINE署名がありません")
+    expected = base64.b64encode(
+        hmac.new(LINE_CHANNEL_SECRET.encode("utf-8"), raw_body, hashlib.sha256).digest()
+    ).decode("ascii")
+    if not hmac.compare_digest(signature, expected):
+        raise HTTPException(status_code=401, detail="LINE署名が不正です")
 
 
 user_states = {}
@@ -96,7 +137,7 @@ def _load_faq_templates() -> list[dict[str, Any]]:
             )
         return categories
     except Exception as exc:
-        print("FAQテンプレート読み込みエラー:", exc)
+        _log_event("faq_templates.load", "error", error=exc)
         return []
 
 
@@ -191,8 +232,13 @@ def home():
 
 @app.post("/webhook")
 async def webhook(request: Request):
-    body = await request.json()
-    print(body)
+    raw_body = await request.body()
+    _verify_line_signature(raw_body, request.headers.get("X-Line-Signature"))
+    try:
+        body = json.loads(raw_body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        _log_event("line.webhook", "invalid_json", http_status=400, error=exc)
+        raise HTTPException(status_code=400, detail="Webhook本文が不正です") from exc
 
     for event in body.get("events", []):
         if event.get("type") != "message":
@@ -202,7 +248,7 @@ async def webhook(request: Request):
         message = event.get("message", {}).get("text", "")
         reply_token = event.get("replyToken")
 
-        print("受信メッセージ:", message)
+        _log_event("line.message.received", "accepted", subject_id=user_id)
         try_insert_line_message_log(user_id, message, "inbound", "reply")
 
         response = handle_message(user_id, message)
@@ -214,6 +260,7 @@ async def webhook(request: Request):
         if reply_token and LINE_ACCESS_TOKEN:
             reply_response(reply_token, response)
 
+    _log_event("line.webhook", "processed", http_status=200)
     return {"status": "ok"}
 
 
@@ -250,7 +297,7 @@ def _safe_execute(label: str, callback):
     try:
         return callback()
     except Exception as exc:
-        print(f"{label} エラー:", exc)
+        _log_event("database.operation", "error", error=exc)
         return None
 
 
@@ -728,7 +775,7 @@ def handle_interview_confirmation(user_id: str, message: str) -> Optional[dict[s
             return _reset_interview_confirmation(user_id)
         return text_response("面接日程を確定する場合は「確定する」、変更する場合は「選び直す」を選択してください。", ["確定する", "選び直す"])
     except Exception as exc:
-        print("面接候補日確定処理エラー:", exc)
+        _log_event("interview.confirm", "error", subject_id=user_id, error=exc)
         user_states[user_id] = None
         interview_confirmations.pop(user_id, None)
         return text_response(
@@ -747,7 +794,7 @@ def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict
         selected_datetime = selected_slot.get("slot_datetime")
         selected_slot_id = selected_slot.get("id")
         if not applicant_id or not selected_datetime or not selected_slot_id:
-            print("interview_slots の必要な値が不足しています:", selected_slot)
+            _log_event("interview.slot.select", "invalid_record", subject_id=user_id)
             return None
 
         (
@@ -770,7 +817,7 @@ def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict
             ["確定する", "選び直す"]
         )
     except Exception as exc:
-        print("面接候補日選択処理エラー:", exc)
+        _log_event("interview.slot.select", "error", subject_id=user_id, error=exc)
         return text_response(
             "面接候補日の確認中にエラーが発生しました。\n"
             "恐れ入りますが、担当者からの連絡をお待ちください。"
@@ -898,7 +945,7 @@ def handle_message(user_id, message):
                 "motivation": data.get("motivation"),
                 "status": "新規応募"
             }).execute()
-            print("Supabase保存成功")
+            _log_event("application.save", "success", subject_id=user_id)
 
             application_tree_sessions.pop(user_id, None)
             complete_message = str(
@@ -1011,17 +1058,13 @@ def handle_message(user_id, message):
         inquiry_text = message
         user_states[user_id] = None
 
-        print("お問い合わせ内容:", {
-            "user_id": user_id,
-            "message": inquiry_text
-        })
         supabase.table("inquiries").insert({
             "line_user_id": user_id,
             "message": inquiry_text,
             "status": "未対応"
         }).execute()
         
-        print("お問い合わせをSupabaseに保存しました")
+        _log_event("inquiry.save", "success", subject_id=user_id)
 
         return card_response(
             "お問い合わせ受付完了",
@@ -1087,9 +1130,8 @@ def reply_message(reply_token, text, buttons=None):
         "messages": [message]
     }
 
-    response = requests.post(url, headers=headers, json=payload)
-    print("LINE reply status:", response.status_code)
-    print(response.text)
+    response = requests.post(url, headers=headers, json=payload, timeout=10)
+    _log_event("line.reply", "success" if response.ok else "error", http_status=response.status_code)
 
 
 def reply_flex_card(reply_token, title, body, buttons=None):
@@ -1142,9 +1184,8 @@ def reply_flex_card(reply_token, title, body, buttons=None):
         "messages": [message]
     }
 
-    response = requests.post(url, headers=headers, json=payload)
-    print("LINE flex card status:", response.status_code)
-    print(response.text)
+    response = requests.post(url, headers=headers, json=payload, timeout=10)
+    _log_event("line.flex_reply", "success" if response.ok else "error", http_status=response.status_code)
 
 
 def make_quick_reply(buttons):
@@ -1188,12 +1229,16 @@ def push_line_message(line_user_id: str, text: str, buttons: Optional[list[str]]
         },
         timeout=10,
     )
-    print("LINE push status:", response.status_code)
-    print(response.text)
+    _log_event(
+        "line.push",
+        "success" if response.ok else "error",
+        subject_id=line_user_id,
+        http_status=response.status_code,
+    )
     if response.status_code >= 400:
         raise HTTPException(
             status_code=502,
-            detail=f"LINE送信に失敗しました: {response.text}"
+            detail="LINE送信に失敗しました"
         )
 
 
@@ -1206,15 +1251,15 @@ def try_insert_line_message_log(line_user_id: str, message: str, direction: str,
             "message_type": message_type,
         }).execute()
     except Exception as exc:
-        print("line_message_logs への保存をスキップしました:", exc)
+        _log_event("line_message_log.save", "error", subject_id=line_user_id, error=exc)
 
-@app.get("/applicants")
+@app.get("/applicants", dependencies=[Depends(require_admin)])
 def get_applicants():
     result = supabase.table("applicants").select("*").execute()
     return result.data
 
 
-@app.get("/applicants-view", response_class=HTMLResponse)
+@app.get("/applicants-view", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 def applicants_view():
 
     result = supabase.table("applicants").select("*").execute()
@@ -1379,7 +1424,7 @@ def applicants_view():
     return html
 
 
-@app.get("/applicant/{applicant_id}", response_class=HTMLResponse)
+@app.get("/applicant/{applicant_id}", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 def applicant_detail(applicant_id: str):
 
     result = (
@@ -1471,7 +1516,7 @@ def applicant_detail(applicant_id: str):
     """
 
 
-@app.get("/inquiries-view", response_class=HTMLResponse)
+@app.get("/inquiries-view", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 def inquiries_view():
 
     result = (
@@ -1531,6 +1576,16 @@ class ApplicantUpdate(BaseModel):
 class InterviewSlotCreate(BaseModel):
     slots: list[str]
     interview_type: Optional[str] = "面接"
+
+
+class InterviewSlotUpdate(BaseModel):
+    slot_datetime: Optional[str] = None
+    status: Optional[str] = None
+    interview_type: Optional[str] = None
+
+
+class InquiryUpdate(BaseModel):
+    status: str
 
 
 class FAQCategoryPayload(BaseModel):
@@ -1597,7 +1652,7 @@ def _insert_interview_slots(rows: list[dict[str, Any]]) -> Any:
     except Exception as exc:
         if not any("interview_type" in row for row in rows):
             raise
-        print("interview_type カラムなしで interview_slots 登録を再試行します:", exc)
+        _log_event("interview_slots.insert", "retry_without_interview_type", error=exc)
         fallback_rows = [
             {key: value for key, value in row.items() if key != "interview_type"}
             for row in rows
@@ -1610,7 +1665,7 @@ def api_health():
     return {"status": "ok", "service": "line-recruit-api"}
 
 
-@app.get("/api/dashboard")
+@app.get("/api/dashboard", dependencies=[Depends(require_admin)])
 def api_dashboard():
     applicants_result = supabase.table("applicants").select("*").execute()
     inquiries_result = supabase.table("inquiries").select("*").execute()
@@ -1640,7 +1695,7 @@ def api_dashboard():
     }
 
 
-@app.get("/api/applicants")
+@app.get("/api/applicants", dependencies=[Depends(require_admin)])
 def api_applicants():
     result = (
         supabase.table("applicants")
@@ -1651,7 +1706,7 @@ def api_applicants():
     return result.data or []
 
 
-@app.get("/api/applicants/{applicant_id}")
+@app.get("/api/applicants/{applicant_id}", dependencies=[Depends(require_admin)])
 def api_applicant_detail(applicant_id: str):
     result = (
         supabase.table("applicants")
@@ -1664,7 +1719,7 @@ def api_applicant_detail(applicant_id: str):
     return result.data[0]
 
 
-@app.patch("/api/applicants/{applicant_id}")
+@app.patch("/api/applicants/{applicant_id}", dependencies=[Depends(require_admin)])
 def api_update_applicant(applicant_id: str, payload: ApplicantUpdate):
     update_data = payload.model_dump(exclude_none=True)
     if not update_data:
@@ -1681,7 +1736,7 @@ def api_update_applicant(applicant_id: str, payload: ApplicantUpdate):
     return result.data[0]
 
 
-@app.get("/api/applicants/{applicant_id}/interview-slots")
+@app.get("/api/applicants/{applicant_id}/interview-slots", dependencies=[Depends(require_admin)])
 def api_get_interview_slots(applicant_id: str):
     _get_applicant_or_404(applicant_id)
     result = (
@@ -1694,7 +1749,7 @@ def api_get_interview_slots(applicant_id: str):
     return result.data or []
 
 
-@app.post("/api/applicants/{applicant_id}/interview-slots")
+@app.post("/api/applicants/{applicant_id}/interview-slots", dependencies=[Depends(require_admin)])
 def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
     slot_values = _normalize_slot_values(payload.slots)
     interview_type = (payload.interview_type or "面接").strip() or "面接"
@@ -1732,7 +1787,7 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
     except HTTPException:
         raise
     except Exception as exc:
-        print("面接候補日作成エラー:", exc)
+        _log_event("interview_slots.create", "error", error=exc)
         raise HTTPException(status_code=500, detail="面接候補日の作成または送信に失敗しました") from exc
 
     return {
@@ -1743,13 +1798,29 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
     }
 
 
-@app.get("/api/faq-categories")
+@app.patch("/api/interview-slots/{slot_id}", dependencies=[Depends(require_admin)])
+def api_update_interview_slot(slot_id: str, payload: InterviewSlotUpdate):
+    update_data = payload.model_dump(exclude_none=True)
+    if "slot_datetime" in update_data:
+        update_data["slot_datetime"] = update_data["slot_datetime"].strip().replace("T", " ")
+    for key in ["status", "interview_type"]:
+        if key in update_data:
+            update_data[key] = update_data[key].strip()
+    if not update_data or any(value == "" for value in update_data.values()):
+        raise HTTPException(status_code=400, detail="有効な更新内容がありません")
+    result = supabase.table("interview_slots").update(update_data).eq("id", slot_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="面接候補が見つかりません")
+    return result.data[0]
+
+
+@app.get("/api/faq-categories", dependencies=[Depends(require_admin)])
 def api_faq_categories():
     return get_active_faq_categories()
 
 
-@app.post("/api/faq-categories")
-def api_create_faq_category(payload: FAQCategoryPayload, _: None = Depends(require_admin)):
+@app.post("/api/faq-categories", dependencies=[Depends(require_admin)])
+def api_create_faq_category(payload: FAQCategoryPayload):
     if not payload.name.strip():
         raise HTTPException(status_code=400, detail="カテゴリ名が必要です")
 
@@ -1765,8 +1836,8 @@ def api_create_faq_category(payload: FAQCategoryPayload, _: None = Depends(requi
     return result.data[0] if result.data else {}
 
 
-@app.patch("/api/faq-categories/{category_id}")
-def api_update_faq_category(category_id: str, payload: FAQCategoryUpdatePayload, _: None = Depends(require_admin)):
+@app.patch("/api/faq-categories/{category_id}", dependencies=[Depends(require_admin)])
+def api_update_faq_category(category_id: str, payload: FAQCategoryUpdatePayload):
     update_data = payload.model_dump(exclude_none=True)
     if "name" in update_data:
         update_data["name"] = update_data["name"].strip()
@@ -1784,18 +1855,18 @@ def api_update_faq_category(category_id: str, payload: FAQCategoryUpdatePayload,
     return result.data[0]
 
 
-@app.get("/api/faqs")
+@app.get("/api/faqs", dependencies=[Depends(require_admin)])
 def api_faqs():
     return get_faq_categories_with_faqs(public_only=False)
 
 
-@app.get("/api/faq-categories/{category_id}/faqs")
+@app.get("/api/faq-categories/{category_id}/faqs", dependencies=[Depends(require_admin)])
 def api_category_faqs(category_id: str):
     return get_faqs(category_id=category_id, public_only=True)
 
 
-@app.post("/api/faqs")
-def api_create_faq(payload: FAQPayload, _: None = Depends(require_admin)):
+@app.post("/api/faqs", dependencies=[Depends(require_admin)])
+def api_create_faq(payload: FAQPayload):
     if not payload.category_id or not payload.question.strip():
         raise HTTPException(status_code=400, detail="category_id と question が必要です")
     if payload.is_visible and not payload.answer.strip():
@@ -1815,8 +1886,8 @@ def api_create_faq(payload: FAQPayload, _: None = Depends(require_admin)):
     return result.data[0] if result.data else {}
 
 
-@app.patch("/api/faqs/{faq_id}")
-def api_update_faq(faq_id: str, payload: FAQUpdatePayload, _: None = Depends(require_admin)):
+@app.patch("/api/faqs/{faq_id}", dependencies=[Depends(require_admin)])
+def api_update_faq(faq_id: str, payload: FAQUpdatePayload):
     update_data = payload.model_dump(exclude_none=True)
     for key in ["question", "answer"]:
         if key in update_data:
@@ -1851,7 +1922,7 @@ class FAQSettingPayload(BaseModel):
     is_visible: Optional[bool] = None
 
 
-@app.get("/api/faq-settings")
+@app.get("/api/faq-settings", dependencies=[Depends(require_admin)])
 def api_faq_settings():
     """faq_settings の設定値のみ返します。質問文は shared/faq_templates.json が正です。"""
     result = _safe_execute(
@@ -1866,8 +1937,8 @@ def api_faq_settings():
     return (result.data if result and result.data else [])
 
 
-@app.patch("/api/faq-settings/{faq_key}")
-def api_update_faq_setting(faq_key: str, payload: FAQSettingPayload, _: None = Depends(require_admin)):
+@app.patch("/api/faq-settings/{faq_key}", dependencies=[Depends(require_admin)])
+def api_update_faq_setting(faq_key: str, payload: FAQSettingPayload):
     if FAQ_TEMPLATE_KEYS and faq_key not in FAQ_TEMPLATE_KEYS:
         raise HTTPException(status_code=404, detail="faq_key がテンプレートに存在しません")
     if payload.answer is None and payload.is_visible is None:
@@ -1904,7 +1975,7 @@ def api_update_faq_setting(faq_key: str, payload: FAQSettingPayload, _: None = D
     try:
         result = supabase.table("faq_settings").upsert(row, on_conflict="company_id,faq_key").execute()
     except Exception as exc:
-        print("faq_settings保存エラー:", exc)
+        _log_event("faq_settings.save", "error", error=exc)
         raise HTTPException(
             status_code=500,
             detail="FAQ設定の保存に失敗しました。faq_settings テーブルが作成済みか確認してください。",
@@ -1912,13 +1983,13 @@ def api_update_faq_setting(faq_key: str, payload: FAQSettingPayload, _: None = D
     return (result.data or [row])[0]
 
 
-@app.get("/api/settings")
+@app.get("/api/settings", dependencies=[Depends(require_admin)])
 def api_get_settings():
     return get_app_settings()
 
 
-@app.patch("/api/settings")
-def api_update_settings(payload: dict[str, Any], _: None = Depends(require_admin)):
+@app.patch("/api/settings", dependencies=[Depends(require_admin)])
+def api_update_settings(payload: dict[str, Any]):
     if not payload:
         raise HTTPException(status_code=400, detail="更新内容がありません")
 
@@ -1940,7 +2011,7 @@ def api_update_settings(payload: dict[str, Any], _: None = Depends(require_admin
     try:
         supabase.table("app_settings").upsert(rows, on_conflict="company_id,key").execute()
     except Exception as exc:
-        print("app_settings保存エラー:", exc)
+        _log_event("app_settings.save", "error", error=exc)
         raise HTTPException(
             status_code=500,
             detail="設定の保存に失敗しました。app_settings テーブルが作成済みか確認してください。",
@@ -1979,13 +2050,13 @@ def _validate_question_tree(tree: dict[str, Any]) -> dict[str, Any]:
     return {"root_question": root_question, "choices": normalized_choices}
 
 
-@app.get("/api/question-tree")
+@app.get("/api/question-tree", dependencies=[Depends(require_admin)])
 def api_get_question_tree():
     return get_question_tree_for_bot()
 
 
-@app.patch("/api/question-tree")
-def api_update_question_tree(payload: dict[str, Any], _: None = Depends(require_admin)):
+@app.patch("/api/question-tree", dependencies=[Depends(require_admin)])
+def api_update_question_tree(payload: dict[str, Any]):
     tree = _validate_question_tree(payload)
     try:
         supabase.table("question_tree_settings").upsert({
@@ -1994,7 +2065,7 @@ def api_update_question_tree(payload: dict[str, Any], _: None = Depends(require_
             "updated_at": _utc_now(),
         }, on_conflict="company_id").execute()
     except Exception as exc:
-        print("question_tree保存エラー:", exc)
+        _log_event("question_tree.save", "error", error=exc)
         raise HTTPException(
             status_code=500,
             detail="質問ツリーの保存に失敗しました。question_tree_settings テーブルが作成済みか確認してください。",
@@ -2002,7 +2073,7 @@ def api_update_question_tree(payload: dict[str, Any], _: None = Depends(require_
     return tree
 
 
-@app.get("/api/line-messages")
+@app.get("/api/line-messages", dependencies=[Depends(require_admin)])
 def api_line_messages(line_user_id: Optional[str] = None, limit: int = 100):
     try:
         query = (
@@ -2016,11 +2087,11 @@ def api_line_messages(line_user_id: Optional[str] = None, limit: int = 100):
         result = query.execute()
         return result.data or []
     except Exception as exc:
-        print("line_message_logs 取得エラー:", exc)
+        _log_event("line_message_logs.list", "error", error=exc)
         return []
 
 
-@app.get("/api/inquiries")
+@app.get("/api/inquiries", dependencies=[Depends(require_admin)])
 def api_inquiries():
     result = (
         supabase.table("inquiries")
@@ -2031,7 +2102,18 @@ def api_inquiries():
     return result.data or []
 
 
-@app.post("/api/line/send")
+@app.patch("/api/inquiries/{inquiry_id}", dependencies=[Depends(require_admin)])
+def api_update_inquiry(inquiry_id: str, payload: InquiryUpdate):
+    status = payload.status.strip()
+    if not status:
+        raise HTTPException(status_code=400, detail="status が必要です")
+    result = supabase.table("inquiries").update({"status": status}).eq("id", inquiry_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
+    return result.data[0]
+
+
+@app.post("/api/line/send", dependencies=[Depends(require_admin)])
 def api_line_send(payload: dict[str, Any]):
     """管理画面から応募者へLINE Push APIで手動送信します。"""
     line_user_id = payload.get("line_user_id")

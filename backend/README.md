@@ -10,6 +10,8 @@ pip install -r requirements.txt
 uvicorn main:app --reload --port 8000
 ```
 
+`.env.example`を`.env`へコピーし、すべての値を設定してください。`LINE_CHANNEL_SECRET`または`ADMIN_API_KEY`が未設定の場合、対応するWebhookまたは管理APIは安全のため拒否されます。
+
 ## 主なAPI
 
 - `GET /api/health`
@@ -20,4 +22,4 @@ uvicorn main:app --reload --port 8000
 - `GET /api/inquiries`
 - `POST /api/line/send`
 
-既存の `/webhook` はそのまま残しています。
+`/webhook`はLINEの`X-Line-Signature`を検証します。`/api/health`以外の管理APIは`X-Admin-Key`が必要で、通常はNext.js管理プロキシ経由で利用します。
