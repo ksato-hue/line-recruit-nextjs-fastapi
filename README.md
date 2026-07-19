@@ -29,6 +29,11 @@ npm run dev
 
 ブラウザで `http://localhost:3000` を開きます。
 
+## ドキュメント
+
+- [要件定義](docs/requirements.md)
+- [サービス構想](docs/concept.md)
+
 ## 構成方針
 
 - FastAPIはLINE BotとAPI提供に集中
