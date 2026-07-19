@@ -49,6 +49,9 @@ button { cursor: pointer; }
 }
 .brand span { display: block; color: var(--muted); font-size: 12px; margin-top: 4px; }
 .navList { display: grid; gap: 6px; }
+.navTree { display: grid; gap: 4px; }
+.navTree > .navItem { display: flex; justify-content: space-between; align-items: center; }
+.navChild { margin-left: 14px; width: calc(100% - 14px); font-size: 13px; border-left: 2px solid var(--line); border-radius: 0 10px 10px 0 !important; }
 .navItem {
   width: 100%; border: 0; border-radius: 13px;
   background: transparent; color: #44506a;
@@ -219,6 +222,11 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .settingsField input { min-width: 0; width: 100%; }
 .settingsField textarea { min-height: 90px; }
 .settingsToggle { border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 14px; }
+.questionEditorList { display: grid; gap: 14px; }
+.compactForm { max-width: none; }
+.reminderCard { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(140px, .6fr) minmax(220px, 1fr); align-items: end; gap: 14px; }
+.reminderCard label { display: grid; gap: 6px; }
+.settingCard small { display: block; color: var(--muted); margin-top: 4px; }
 .stepGrid, .analyticsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .stepCard strong { display: block; margin-top: 8px; color: var(--blueDark); }
 .metricBox strong { display: block; font-size: 28px; color: var(--blueDark); margin-top: 6px; }
@@ -238,6 +246,7 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   input { min-width: auto; width: 100%; }
   .detailGrid, .stepGrid, .analyticsGrid { grid-template-columns: 1fr; }
   .rowStatusEditor, .faqItem { grid-template-columns: 1fr; }
+  .reminderCard { grid-template-columns: 1fr; }
   .statusStep { grid-template-columns: 42px 1fr; }
   .statusStep .textButton { grid-column: 2; justify-self: start; }
   .addStatusBox { align-items: stretch; flex-direction: column; }

@@ -17,7 +17,8 @@ const ALLOWED_PREFIXES = new Set([
   "faqs",
   "faq-settings",
   "settings",
-  "question-tree"
+  "question-tree",
+  "status-settings"
 ]);
 const ALLOWED_METHODS = new Set(["GET", "POST", "PATCH"]);
 

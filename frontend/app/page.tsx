@@ -1,30 +1,21 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getInquiries, getLineMessages, getQuestionTree, getSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings } from "../lib/api";
-import type { AppSettings, Applicant, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree } from "../types";
+import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getInquiries, getLineMessages, getQuestionTree, getSettings, getStatusSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings, updateStatusSettings } from "../lib/api";
+import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree, QuestionTreeQuestion } from "../types";
 import faqTemplatesJson from "../../shared/faq_templates.json";
 
 const faqTemplates = faqTemplatesJson as FAQTemplateCategory[];
 
-const menuItems = [
+const topMenuItems = [
   "ダッシュボード",
   "応募者一覧",
-  "ステータス管理",
-  "LINEメッセージ履歴",
   "お問い合わせ",
-  "リマインド設定",
-  "質問ツリー設定",
-  "FAQ設定",
-  "メッセージテンプレート設定",
-  "面接候補日管理",
+  "面接関連",
   "簡易分析",
   "設定"
 ];
-
-const defaultStatusFlow = ["新規応募", "応募途中", "応募完了", "面接調整中", "面接確定", "採用 / 不採用"];
-const additionalStatusCandidates = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
-const statusOptions = ["新規応募", "応募途中", "応募完了", "面接調整中", "面接確定", ...additionalStatusCandidates, "採用", "不採用", "離脱"];
+const settingsMenuItems = ["基本設定", "ステータス設定", "FAQ設定", "質問ツリー設定", "リマインド・メッセージテンプレート"];
 const interviewTypeOptions = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
 
 function formatDate(value?: string) {
@@ -66,19 +57,23 @@ export default function AdminPage() {
   const [error, setError] = useState<string | null>(null);
   const [draftMemo, setDraftMemo] = useState("");
   const [isSaving, setIsSaving] = useState(false);
+  const [statuses, setStatuses] = useState<ApplicantStatusSetting[]>([]);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   async function loadData() {
     setIsLoading(true);
     setError(null);
     try {
-      const [dashboardData, applicantData, inquiryData] = await Promise.all([
+      const [dashboardData, applicantData, inquiryData, statusData] = await Promise.all([
         getDashboard(),
         getApplicants(),
-        getInquiries()
+        getInquiries(),
+        getStatusSettings()
       ]);
       setDashboard(dashboardData);
       setApplicants(applicantData);
       setInquiries(inquiryData);
+      setStatuses(statusData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "データ取得に失敗しました");
     } finally {
@@ -104,6 +99,8 @@ export default function AdminPage() {
       return matchesKeyword && matchesStatus;
     });
   }, [applicants, search, statusFilter]);
+
+  const activeStatusNames = statuses.filter((status) => status.is_active).map((status) => status.name);
 
   async function handleStatusChange(applicant: Applicant, status: string) {
     setIsSaving(true);
@@ -169,7 +166,20 @@ export default function AdminPage() {
           </div>
         </button>
         <nav className="navList">
-          {menuItems.map((item) => (
+          {topMenuItems.map((item) => (
+            item === "設定" ? (
+              <div className="navTree" key={item}>
+                <button
+                  className={settingsMenuItems.includes(activeMenu) ? "navItem active" : "navItem"}
+                  onClick={() => setSettingsOpen((current) => !current)}
+                >
+                  <span>設定</span><span>{settingsOpen ? "▾" : "▸"}</span>
+                </button>
+                {settingsOpen && settingsMenuItems.map((child) => (
+                  <button key={child} className={activeMenu === child ? "navItem navChild active" : "navItem navChild"} onClick={() => setActiveMenu(child)}>{child}</button>
+                ))}
+              </div>
+            ) : (
             <button
               key={item}
               className={activeMenu === item ? "navItem active" : "navItem"}
@@ -177,6 +187,7 @@ export default function AdminPage() {
             >
               {item}
             </button>
+            )
           ))}
         </nav>
       </aside>
@@ -196,7 +207,7 @@ export default function AdminPage() {
         ) : (
           <>
             {activeMenu === "ダッシュボード" && (
-              <DashboardView dashboard={dashboard} applicants={applicants} inquiries={inquiries} onSelectApplicant={setSelectedApplicant} />
+              <DashboardView dashboard={dashboard} applicants={applicants} inquiries={inquiries} statuses={statuses} onSelectApplicant={setSelectedApplicant} />
             )}
 
             {activeMenu === "応募者一覧" && (
@@ -208,23 +219,18 @@ export default function AdminPage() {
                 setStatusFilter={setStatusFilter}
                 onSelectApplicant={setSelectedApplicant}
                 onStatusSave={handleApplicantStatusSave}
+                statusOptions={activeStatusNames}
               />
             )}
 
-            {activeMenu === "LINEメッセージ履歴" && (
-              <HistoryView applicants={applicants} />
-            )}
-
             {activeMenu === "お問い合わせ" && <InquiriesView inquiries={inquiries} />}
-
-            {activeMenu === "リマインド設定" && <ReminderSettings />}
             {activeMenu === "質問ツリー設定" && <QuestionTreeSettings />}
             {activeMenu === "FAQ設定" && <FAQSettings />}
-            {activeMenu === "メッセージテンプレート設定" && <TemplateSettings />}
-            {activeMenu === "面接候補日管理" && <InterviewDateSettings applicants={applicants} />}
-            {activeMenu === "簡易分析" && <AnalyticsView dashboard={dashboard} applicants={applicants} />}
-            {activeMenu === "ステータス管理" && <StatusSettings />}
-            {activeMenu === "設定" && <GeneralSettings />}
+            {activeMenu === "リマインド・メッセージテンプレート" && <MessageAndReminderSettings />}
+            {activeMenu === "面接関連" && <InterviewDateSettings applicants={applicants} onSelectApplicant={setSelectedApplicant} />}
+            {activeMenu === "簡易分析" && <AnalyticsView dashboard={dashboard} applicants={applicants} statuses={statuses} />}
+            {activeMenu === "ステータス設定" && <StatusSettings statuses={statuses} onSaved={async (saved) => { setStatuses(saved); await loadData(); }} />}
+            {activeMenu === "基本設定" && <GeneralSettings />}
           </>
         )}
       </section>
@@ -239,25 +245,29 @@ export default function AdminPage() {
           onMemoSave={handleMemoSave}
           onInterviewSent={handleInterviewSent}
           isSaving={isSaving}
+          statusOptions={activeStatusNames}
         />
       )}
     </main>
   );
 }
 
-function DashboardView({ dashboard, applicants, inquiries, onSelectApplicant }: {
+function DashboardView({ dashboard, applicants, inquiries, statuses, onSelectApplicant }: {
   dashboard: Dashboard | null;
   applicants: Applicant[];
   inquiries: Inquiry[];
+  statuses: ApplicantStatusSetting[];
   onSelectApplicant: (applicant: Applicant) => void;
 }) {
-  const cards = [
-    ["応募者数", dashboard?.applicant_count ?? 0, "今月・累計"],
-    ["新規応募", dashboard?.new_count ?? 0, "要確認"],
-    ["面接調整中", dashboard?.interview_count ?? 0, "日程調整"],
-    ["お問い合わせ", dashboard?.inquiry_count ?? inquiries.length, "未対応含む"],
-    ["採用", dashboard?.hired_count ?? 0, "累計"],
-    ["離脱", dashboard?.dropout_count ?? 0, "フォロー対象"]
+  const statusCards = statuses.filter((status) => status.is_active).slice(0, 4).map((status) => [
+    status.name,
+    dashboard?.status_counts?.[status.name] ?? applicants.filter((applicant) => applicant.status === status.name).length,
+    "現在の件数"
+  ] as [string, number, string]);
+  const cards: [string, number, string][] = [
+    ["応募者数", dashboard?.applicant_count ?? applicants.length, "累計"],
+    ...statusCards,
+    ["お問い合わせ", dashboard?.inquiry_count ?? inquiries.length, "未対応含む"]
   ];
 
   return (
@@ -282,7 +292,7 @@ function DashboardView({ dashboard, applicants, inquiries, onSelectApplicant }: 
             <span className="pill">自動抽出</span>
           </div>
           <div className="todoList">
-            <TodoItem title="1時間経過リマインド" count={dashboard?.todo.one_hour_reminder ?? 0} helper="応募途中の人へ自動フォロー" />
+            <TodoItem title="1時間経過リマインド" count={dashboard?.todo.one_hour_reminder ?? 0} helper="対象候補（自動送信処理は未接続）" />
             <TodoItem title="24時間経過リマインド" count={dashboard?.todo.twenty_four_hour_reminder ?? 0} helper="離脱前の再アプローチ" />
             <TodoItem title="面接候補日送信待ち" count={dashboard?.todo.interview_date_waiting ?? 0} helper="候補日をLINEで送信" />
           </div>
@@ -325,7 +335,7 @@ function TodoItem({ title, count, helper }: { title: string; count: number; help
   );
 }
 
-function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatusFilter, onSelectApplicant, onStatusSave }: {
+function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatusFilter, onSelectApplicant, onStatusSave, statusOptions }: {
   applicants: Applicant[];
   search: string;
   statusFilter: string;
@@ -333,6 +343,7 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
   setStatusFilter: (value: string) => void;
   onSelectApplicant: (applicant: Applicant) => void;
   onStatusSave: (applicant: Applicant, status: string) => Promise<void>;
+  statusOptions: string[];
 }) {
   const [statusDrafts, setStatusDrafts] = useState<Record<string, string>>({});
   const [savingId, setSavingId] = useState<string | null>(null);
@@ -427,7 +438,7 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
   );
 }
 
-function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatusChange, onMemoSave, onInterviewSent, isSaving }: {
+function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatusChange, onMemoSave, onInterviewSent, isSaving, statusOptions }: {
   applicant: Applicant;
   draftMemo: string;
   setDraftMemo: (value: string) => void;
@@ -436,6 +447,7 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
   onMemoSave: () => void;
   onInterviewSent: (updatedApplicant?: Applicant) => Promise<void>;
   isSaving: boolean;
+  statusOptions: string[];
 }) {
   const tags = normalizeTags(applicant.tags);
   const [showInterviewForm, setShowInterviewForm] = useState(false);
@@ -813,10 +825,6 @@ function InquiriesView({ inquiries }: { inquiries: Inquiry[] }) {
   );
 }
 
-function ReminderSettings() {
-  return <StaticCards title="リマインド設定" items={["応募開始から1時間後に自動リマインド", "応募開始から24時間後に再リマインド", "未完了のまま一定期間経過で離脱扱い"]} />;
-}
-
 function QuestionTreeSettings() {
   const [tree, setTree] = useState<QuestionTree | null>(null);
   const [isLoadingTree, setIsLoadingTree] = useState(true);
@@ -841,80 +849,53 @@ function QuestionTreeSettings() {
     loadTree();
   }, []);
 
-  function updateChoice(choiceIndex: number, updater: (choice: QuestionTree["choices"][number]) => QuestionTree["choices"][number]) {
+  function updateQuestion(index: number, data: Partial<QuestionTreeQuestion>) {
+    setTree((current) => current ? ({ ...current, questions: current.questions.map((question, itemIndex) => itemIndex === index ? { ...question, ...data } : question) }) : current);
+  }
+
+  function addQuestion() {
+    const id = `question_${Date.now()}`;
+    setTree((current) => current ? ({ ...current, questions: [...current.questions, { id, label: "新しい質問", type: "text", required: false }] }) : current);
+  }
+
+  function removeQuestion(index: number) {
+    setTree((current) => current && current.questions.length > 1 ? ({ ...current, questions: current.questions.filter((_, itemIndex) => itemIndex !== index) }) : current);
+  }
+
+  function moveQuestion(index: number, delta: number) {
     setTree((current) => {
       if (!current) return current;
-      return {
-        ...current,
-        choices: current.choices.map((choice, index) => index === choiceIndex ? updater(choice) : choice)
-      };
+      const target = index + delta;
+      if (target < 0 || target >= current.questions.length) return current;
+      const questions = [...current.questions];
+      [questions[index], questions[target]] = [questions[target], questions[index]];
+      return { ...current, questions };
     });
   }
 
-  function updateQuestion(choiceIndex: number, questionIndex: number, value: string) {
-    updateChoice(choiceIndex, (choice) => ({
-      ...choice,
-      questions: choice.questions.map((question, index) => index === questionIndex ? value : question)
-    }));
-  }
-
-  function addQuestion(choiceIndex: number) {
-    updateChoice(choiceIndex, (choice) => ({ ...choice, questions: [...choice.questions, ""] }));
-  }
-
-  function removeQuestion(choiceIndex: number, questionIndex: number) {
-    updateChoice(choiceIndex, (choice) => ({
-      ...choice,
-      questions: choice.questions.filter((_, index) => index !== questionIndex)
-    }));
-  }
-
-  function moveQuestion(choiceIndex: number, questionIndex: number, delta: number) {
-    updateChoice(choiceIndex, (choice) => {
-      const target = questionIndex + delta;
-      if (target < 0 || target >= choice.questions.length) return choice;
-      const questions = [...choice.questions];
-      [questions[questionIndex], questions[target]] = [questions[target], questions[questionIndex]];
-      return { ...choice, questions };
-    });
-  }
-
-  function addChoice() {
-    setTree((current) => {
-      if (!current) return current;
-      if (current.choices.length >= 10) return current;
-      return { ...current, choices: [...current.choices, { label: "新しい選択肢", questions: [] }] };
-    });
-  }
-
-  function removeChoice(choiceIndex: number) {
-    setTree((current) => {
-      if (!current || current.choices.length <= 1) return current;
-      return { ...current, choices: current.choices.filter((_, index) => index !== choiceIndex) };
-    });
+  function resetTree() {
+    if (!window.confirm("保存前の編集内容を破棄し、初期質問へ戻しますか？")) return;
+    setTree({ version: 2, questions: [
+      { id: "name", label: "お名前", type: "text", required: true, system_field: "name" },
+      { id: "phone", label: "電話番号", type: "tel", required: true, system_field: "phone" },
+      { id: "job", label: "希望職種", type: "select", required: true, system_field: "job", options: ["SNS運用", "Web制作", "営業", "社内事務", "その他"], allow_other: true },
+      { id: "motivation", label: "応募動機", type: "textarea", required: true, system_field: "motivation" }
+    ] });
+    setTreeMessage("初期値を表示しました。反映するには保存してください。");
   }
 
   async function saveTree() {
     if (!tree) return;
     setTreeMessage(null);
     setTreeError(null);
-    if (!tree.root_question.trim()) {
-      setTreeError("最初の質問を入力してください");
+    if (tree.questions.some((question) => !question.label.trim() || (question.type === "select" && !(question.options || []).length))) {
+      setTreeError("質問文と選択式の選択肢を確認してください");
       return;
     }
-    if (tree.choices.some((choice) => !choice.label.trim())) {
-      setTreeError("選択肢名をすべて入力してください");
-      return;
-    }
+    if (!window.confirm("この質問構成を保存し、LINE応募フローへ反映しますか？")) return;
     setIsSavingTree(true);
     try {
-      const cleaned: QuestionTree = {
-        root_question: tree.root_question.trim(),
-        choices: tree.choices.map((choice) => ({
-          label: choice.label.trim(),
-          questions: choice.questions.map((question) => question.trim()).filter(Boolean)
-        }))
-      };
+      const cleaned: QuestionTree = { version: 2, questions: tree.questions.map((question) => ({ ...question, label: question.label.trim(), options: question.type === "select" ? (question.options || []).map((option) => option.trim()).filter(Boolean) : undefined })) };
       const saved = await updateQuestionTree(cleaned);
       setTree(saved);
       setTreeMessage("質問ツリーを保存しました");
@@ -933,14 +914,15 @@ function QuestionTreeSettings() {
           <h2>質問ツリー設定</h2>
         </div>
         <div className="headerActions">
-          <button className="secondaryButton" onClick={addChoice} disabled={!tree || tree.choices.length >= 10}>選択肢を追加</button>
+          <button className="secondaryButton" onClick={resetTree} disabled={!tree}>初期値に戻す</button>
+          <button className="secondaryButton" onClick={addQuestion} disabled={!tree || tree.questions.length >= 30}>質問を追加</button>
           <button className="primaryButton" onClick={saveTree} disabled={isSavingTree || !tree}>
             {isSavingTree ? "保存中..." : "保存する"}
           </button>
         </div>
       </div>
       <p className="sectionDescription">
-        このツリーはLINEの応募フローで実際に使われます。「応募する」→ お名前 → 電話番号のあとに、最初の質問 → 選択肢 → 分岐ごとの質問の順で進みます。保存するとすぐLINE側に反映されます。
+        保存した順番・入力形式・必須設定がLINE応募フローへ反映されます。「その他」を選ぶと職種の自由入力へ進みます。
       </p>
       {treeMessage && <div className="successBox listNotice">{treeMessage}</div>}
       {treeError && <div className="inlineError listNotice">{treeError}</div>}
@@ -948,34 +930,21 @@ function QuestionTreeSettings() {
         <div className="loadingCard">質問ツリーを取得中...</div>
       ) : (
         <>
-          <div className="rootQuestion">
-            <span className="stepNumber">1</span>
-            <div className="rootQuestionBody">
-              <label className="fieldLabel">最初の質問</label>
-              <input value={tree.root_question} onChange={(event) => setTree((current) => current ? { ...current, root_question: event.target.value } : current)} placeholder="最初の質問" />
-              <small>選択肢: {tree.choices.map((choice) => choice.label || "（未入力）").join(" / ")}</small>
-            </div>
-          </div>
-          <div className="branchGrid">
-            {tree.choices.map((choice, choiceIndex) => (
-              <article className="branchCard" key={choiceIndex}>
+          <div className="questionEditorList">
+            {tree.questions.map((question, questionIndex) => (
+              <article className="branchCard" key={question.id}>
                 <div className="branchHeader">
-                  <input className="branchLabelInput" value={choice.label} onChange={(event) => updateChoice(choiceIndex, (current) => ({ ...current, label: event.target.value }))} placeholder="選択肢名" />
-                  <button className="textButton dangerText" onClick={() => removeChoice(choiceIndex)} disabled={tree.choices.length <= 1}>分岐を削除</button>
+                  <strong>{questionIndex + 1}. 質問</strong>
+                  <div><button className="miniIconButton" onClick={() => moveQuestion(questionIndex, -1)} disabled={questionIndex === 0}>↑</button> <button className="miniIconButton" onClick={() => moveQuestion(questionIndex, 1)} disabled={questionIndex === tree.questions.length - 1}>↓</button> <button className="textButton dangerText" onClick={() => removeQuestion(questionIndex)} disabled={tree.questions.length <= 1}>削除</button></div>
                 </div>
-                <div className="treeQuestionList">
-                  {choice.questions.map((question, questionIndex) => (
-                    <div className="treeQuestionRow" key={questionIndex}>
-                      <span className="treeQuestionNumber">{questionIndex + 1}</span>
-                      <input value={question} onChange={(event) => updateQuestion(choiceIndex, questionIndex, event.target.value)} placeholder="質問文" />
-                      <button className="miniIconButton" onClick={() => moveQuestion(choiceIndex, questionIndex, -1)} disabled={questionIndex === 0} aria-label="上へ">↑</button>
-                      <button className="miniIconButton" onClick={() => moveQuestion(choiceIndex, questionIndex, 1)} disabled={questionIndex === choice.questions.length - 1} aria-label="下へ">↓</button>
-                      <button className="miniIconButton" onClick={() => removeQuestion(choiceIndex, questionIndex)} aria-label="削除">×</button>
-                    </div>
-                  ))}
-                  {choice.questions.length === 0 && <span className="muted">質問がまだありません</span>}
+                <div className="settingsForm compactForm">
+                  <input value={question.label} onChange={(event) => updateQuestion(questionIndex, { label: event.target.value })} placeholder="質問文" />
+                  <select value={question.type} onChange={(event) => updateQuestion(questionIndex, { type: event.target.value as QuestionTreeQuestion["type"] })}>
+                    <option value="text">テキスト</option><option value="tel">電話番号</option><option value="textarea">複数行テキスト</option><option value="select">選択式</option>
+                  </select>
+                  <label className="checkLabel"><input type="checkbox" checked={question.required} onChange={(event) => updateQuestion(questionIndex, { required: event.target.checked })} />必須にする</label>
+                  {question.type === "select" && <><textarea value={(question.options || []).join("\n")} onChange={(event) => updateQuestion(questionIndex, { options: event.target.value.split("\n") })} placeholder="選択肢を1行ずつ入力" /><label className="checkLabel"><input type="checkbox" checked={Boolean(question.allow_other)} onChange={(event) => updateQuestion(questionIndex, { allow_other: event.target.checked })} />「その他」の自由入力を許可</label></>}
                 </div>
-                <button className="secondaryButton compactButton" onClick={() => addQuestion(choiceIndex)}>質問を追加</button>
               </article>
             ))}
           </div>
@@ -1170,27 +1139,68 @@ function FAQSettings() {
   );
 }
 
-function TemplateSettings() {
-  return <StaticCards title="メッセージテンプレート設定" items={["応募完了通知", "1時間リマインド", "24時間リマインド", "面接候補日送信", "不採用通知", "採用通知", "FAQ回答"]} />;
+const messageTemplateFields: { key: keyof AppSettings; label: string }[] = [
+  { key: "application_start_message", label: "応募受付開始メッセージ" },
+  { key: "application_complete_message", label: "応募完了メッセージ" },
+  { key: "application_closed_message", label: "応募受付停止メッセージ" },
+  { key: "interview_slots_message", label: "面接候補日送信メッセージ" },
+  { key: "interview_confirmed_message", label: "面接確定メッセージ" },
+  { key: "inquiry_complete_message", label: "お問い合わせ受付完了メッセージ" },
+  { key: "faq_preparing_message", label: "FAQ準備中メッセージ" },
+  { key: "reminder_1h_message", label: "1時間後リマインド" },
+  { key: "reminder_24h_message", label: "24時間後リマインド" },
+  { key: "reminder_3d_message", label: "3日後フォロー" }
+];
+
+function MessageAndReminderSettings() {
+  const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  async function load() { setError(null); try { setSettings(await getSettings()); } catch (err) { setError(err instanceof Error ? err.message : "設定取得に失敗しました"); } }
+  useEffect(() => { load(); }, []);
+  function update(key: keyof AppSettings, value: string | number | boolean) { setSettings((current) => current ? ({ ...current, [key]: value } as AppSettings) : current); }
+  async function save() {
+    if (!settings) return;
+    setSaving(true); setMessage(null); setError(null);
+    const payload: Partial<AppSettings> = {
+      reminder_1h_enabled: settings.reminder_1h_enabled, reminder_1h_hours: settings.reminder_1h_hours, reminder_1h_template_key: settings.reminder_1h_template_key,
+      reminder_24h_enabled: settings.reminder_24h_enabled, reminder_24h_hours: settings.reminder_24h_hours, reminder_24h_template_key: settings.reminder_24h_template_key,
+      reminder_3d_enabled: settings.reminder_3d_enabled, reminder_3d_hours: settings.reminder_3d_hours, reminder_3d_template_key: settings.reminder_3d_template_key
+    };
+    messageTemplateFields.forEach(({ key }) => { payload[key] = settings[key] as never; });
+    try { setSettings(await updateSettings(payload)); setMessage("リマインド・メッセージ設定を保存しました"); } catch (err) { setError(err instanceof Error ? err.message : "保存に失敗しました"); } finally { setSaving(false); }
+  }
+  if (!settings) return <section className="panel"><h2>リマインド・メッセージテンプレート</h2>{error ? <div className="inlineError">{error}</div> : <div className="loadingCard">設定を取得中...</div>}</section>;
+  const reminders = [
+    ["1時間後", "reminder_1h_enabled", "reminder_1h_hours", "reminder_1h_template_key"],
+    ["24時間後", "reminder_24h_enabled", "reminder_24h_hours", "reminder_24h_template_key"],
+    ["3日後フォロー", "reminder_3d_enabled", "reminder_3d_hours", "reminder_3d_template_key"]
+  ] as const;
+  return <section className="panel">
+    <div className="panelHeader"><div><p className="eyebrow">Automation Settings</p><h2>リマインド・メッセージテンプレート</h2></div><div className="headerActions"><button className="secondaryButton" onClick={load}>再読み込み</button><button className="primaryButton" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存"}</button></div></div>
+    <div className="inlineError listNotice">自動送信処理は未接続です。ここでは設定だけを保存します。</div>
+    {message && <div className="successBox listNotice">{message}</div>}{error && <div className="inlineError listNotice">{error}</div>}
+    <h3>リマインド設定</h3><div className="cardList">{reminders.map(([label, enabledKey, hoursKey, templateKey]) => <article className="settingCard reminderCard" key={label}><label className="checkLabel"><input type="checkbox" checked={Boolean(settings[enabledKey])} onChange={(event) => update(enabledKey, event.target.checked)} />{label}を有効にする</label><label>送信までの時間<input type="number" min="1" max="8760" value={Number(settings[hoursKey])} onChange={(event) => update(hoursKey, Number(event.target.value))} /></label><label>使用テンプレート<select value={String(settings[templateKey])} onChange={(event) => update(templateKey, event.target.value)}>{messageTemplateFields.map((field) => <option value={field.key} key={field.key}>{field.label}</option>)}</select></label></article>)}</div>
+    <h3>メッセージテンプレート</h3><div className="settingsForm">{messageTemplateFields.map((field) => <div className="settingsField" key={field.key}><label className="fieldLabel">{field.label}</label><textarea value={String(settings[field.key] ?? "")} onChange={(event) => update(field.key, event.target.value)} /></div>)}</div>
+  </section>;
 }
 
-function InterviewDateSettings({ applicants }: { applicants: Applicant[] }) {
+function InterviewDateSettings({ applicants, onSelectApplicant }: { applicants: Applicant[]; onSelectApplicant: (applicant: Applicant) => void }) {
   return (
     <section className="panel">
-      <div className="panelHeader"><h2>面接候補日管理</h2><span className="pill">Googleカレンダー連携前</span></div>
-      <div className="stepGrid">
-        <div className="stepCard">1. 応募者選択<br /><strong>{applicants[0]?.name || "応募者を選択"}</strong></div>
-        <div className="stepCard">2. 候補日追加<br /><strong>7/10 10:00・7/10 14:00・7/11 11:00</strong></div>
-        <div className="stepCard">3. 内容確認<br /><strong>LINE送信文を確認</strong></div>
-        <div className="stepCard">4. LINEで送信<br /><strong>送信待ち</strong></div>
-      </div>
+      <div className="panelHeader"><h2>面接関連</h2><span className="pill">候補日送信・調整</span></div>
+      <p className="sectionDescription">応募者を選ぶと詳細画面から面接候補日をLINE送信できます。Googleカレンダー連携は未接続です。</p>
+      <div className="cardList">{applicants.map((applicant) => <article className="settingCard" key={applicant.id}><span><strong>{applicant.name || "名前未入力"}</strong><small>{applicant.interview_status || "面接未設定"}</small></span><button className="secondaryButton" onClick={() => onSelectApplicant(applicant)}>面接設定を開く</button></article>)}</div>
     </section>
   );
 }
 
-function AnalyticsView({ dashboard, applicants }: { dashboard: Dashboard | null; applicants: Applicant[] }) {
+function AnalyticsView({ dashboard, applicants, statuses }: { dashboard: Dashboard | null; applicants: Applicant[]; statuses: ApplicantStatusSetting[] }) {
   const total = Math.max(applicants.length, 1);
-  const complete = applicants.filter((a) => ["応募完了", "面接調整中", "面接確定", "採用"].includes(a.status || "")).length;
+  const completedKeys = new Set(["completed", "interview_adjusting", "interview_confirmed", "casual_interview", "hired"]);
+  const completedNames = new Set(statuses.filter((status) => completedKeys.has(status.status_key)).map((status) => status.name));
+  const complete = applicants.filter((applicant) => completedNames.has(applicant.status || "")).length;
   const rate = Math.round((complete / total) * 100);
   return (
     <section className="panel">
@@ -1200,6 +1210,7 @@ function AnalyticsView({ dashboard, applicants }: { dashboard: Dashboard | null;
         <div className="metricBox"><span>面接設定数</span><strong>{dashboard?.interview_count ?? 0}</strong></div>
         <div className="metricBox"><span>採用数</span><strong>{dashboard?.hired_count ?? 0}</strong></div>
       </div>
+      <div className="cardList">{statuses.filter((status) => status.is_active).map((status) => <article className="settingCard" key={status.status_key}><strong>{status.name}</strong><span>{dashboard?.status_counts?.[status.name] ?? applicants.filter((applicant) => applicant.status === status.name).length}件</span></article>)}</div>
       <div className="barChart">
         <div style={{ width: `${rate}%` }} />
       </div>
@@ -1207,43 +1218,38 @@ function AnalyticsView({ dashboard, applicants }: { dashboard: Dashboard | null;
   );
 }
 
-function StatusSettings() {
-  const [customStatuses, setCustomStatuses] = useState<string[]>([]);
-  const [newStatus, setNewStatus] = useState(additionalStatusCandidates[0]);
-  const flow = [...defaultStatusFlow.slice(0, 5), ...customStatuses, defaultStatusFlow[5]];
-
-  function addStatus() {
-    const value = newStatus.trim();
-    if (!value || flow.includes(value)) return;
-    setCustomStatuses((current) => [...current, value]);
-  }
+function StatusSettings({ statuses, onSaved }: { statuses: ApplicantStatusSetting[]; onSaved: (saved: ApplicantStatusSetting[]) => Promise<void> }) {
+  const requiredStatusKeys = new Set(["new", "interview_adjusting", "interview_confirmed"]);
+  const [drafts, setDrafts] = useState<ApplicantStatusSetting[]>(statuses);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => setDrafts(statuses), [statuses]);
+  function update(index: number, data: Partial<ApplicantStatusSetting>) { setDrafts((current) => current.map((status, itemIndex) => itemIndex === index ? { ...status, ...data } : status)); }
+  function move(index: number, delta: number) { setDrafts((current) => { const target = index + delta; if (target < 0 || target >= current.length) return current; const next = [...current]; [next[index], next[target]] = [next[target], next[index]]; return next; }); }
+  function addStatus() { setDrafts((current) => [...current, { status_key: `custom_${Date.now()}`, name: "新しいステータス", sort_order: current.length + 1, is_active: true }]); }
+  function remove(index: number) { if (window.confirm("このステータスを削除しますか？使用中の場合は保存時に拒否されます。")) setDrafts((current) => current.filter((_, itemIndex) => itemIndex !== index)); }
+  async function save() { setSaving(true); setError(null); setMessage(null); try { const saved = await updateStatusSettings(drafts.map((status, index) => ({ ...status, sort_order: index + 1 }))); await onSaved(saved); setMessage("ステータス設定を保存しました"); } catch (err) { setError(err instanceof Error ? err.message : "保存に失敗しました"); } finally { setSaving(false); } }
 
   return (
     <section className="panel">
       <div className="panelHeader">
         <div>
           <p className="eyebrow">Selection Flow</p>
-          <h2>ステータス管理</h2>
+          <h2>ステータス設定</h2>
         </div>
+        <div className="headerActions"><button className="secondaryButton" onClick={addStatus}>追加</button><button className="primaryButton" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存"}</button></div>
       </div>
-      <p className="sectionDescription">この順番で選考フローが進みます。追加したステータスもフロー上に表示されます。</p>
+      <p className="sectionDescription">名称、順序、有効状態を企業ごとに保存します。使用中ステータスの削除はAPIが拒否します。名称変更時は既存応募者も同時に移行します。</p>
+      {message && <div className="successBox listNotice">{message}</div>}{error && <div className="inlineError listNotice">{error}</div>}
       <div className="statusFlow">
-        {flow.map((status, index) => (
-          <article className="statusStep" key={`${status}-${index}`}>
+        {drafts.map((status, index) => (
+          <article className="statusStep" key={status.status_key}>
             <span className="stepNumber">{index + 1}</span>
-            <strong>{status}</strong>
-            <button className="textButton">編集</button>
+            <input value={status.name} onChange={(event) => update(index, { name: event.target.value })} />
+            <div className="headerActions"><label className="checkLabel"><input type="checkbox" checked={status.is_active} onChange={(event) => update(index, { is_active: event.target.checked })} />有効</label><button className="miniIconButton" onClick={() => move(index, -1)} disabled={index === 0}>↑</button><button className="miniIconButton" onClick={() => move(index, 1)} disabled={index === drafts.length - 1}>↓</button><button className="textButton dangerText" onClick={() => remove(index)} disabled={requiredStatusKeys.has(status.status_key)} title={requiredStatusKeys.has(status.status_key) ? "応募・面接処理で使用するため削除できません" : undefined}>削除</button></div>
           </article>
         ))}
-      </div>
-      <div className="addStatusBox">
-        <div>
-          <label>追加ステータス</label>
-          <select value={newStatus} onChange={(event) => setNewStatus(event.target.value)}>
-            {additionalStatusCandidates.map((status) => <option key={status}>{status}</option>)}
-          </select>
-        </div>
-        <button className="primaryButton" onClick={addStatus}>追加する</button>
       </div>
     </section>
   );
@@ -1253,11 +1259,7 @@ const settingsFields: { key: keyof AppSettings; label: string; type: "text" | "t
   { key: "company_name", label: "会社名", type: "text" },
   { key: "recruiter_name", label: "採用担当者名", type: "text" },
   { key: "line_bot_name", label: "LINE Botの表示名", type: "text" },
-  { key: "notification_email", label: "通知先メールアドレス", type: "text" },
-  { key: "application_complete_message", label: "応募完了メッセージ", type: "textarea", helper: "応募内容の確定後にLINEへ送るメッセージです。" },
-  { key: "interview_slots_message", label: "面接候補日送信メッセージ", type: "textarea", helper: "候補日と一緒にLINEへ送る案内文です。" },
-  { key: "interview_confirmed_message", label: "面接確定メッセージ", type: "textarea", helper: "面接日程確定時の先頭メッセージです。" },
-  { key: "faq_preparing_message", label: "FAQ準備中メッセージ", type: "textarea", helper: "公開中のFAQが1つもないときに返すメッセージです。" }
+  { key: "notification_email", label: "通知先メールアドレス", type: "text" }
 ];
 
 function GeneralSettings() {
@@ -1294,7 +1296,13 @@ function GeneralSettings() {
     setSettingsError(null);
     setIsSavingSettings(true);
     try {
-      const saved = await updateSettings(settings);
+      const saved = await updateSettings({
+        company_name: settings.company_name,
+        recruiter_name: settings.recruiter_name,
+        line_bot_name: settings.line_bot_name,
+        notification_email: settings.notification_email,
+        application_enabled: settings.application_enabled
+      });
       setSettings(saved);
       setSettingsMessage("設定を保存しました");
     } catch (err) {
@@ -1309,13 +1317,13 @@ function GeneralSettings() {
       <div className="panelHeader">
         <div>
           <p className="eyebrow">Settings</p>
-          <h2>設定</h2>
+          <h2>基本設定</h2>
         </div>
         <button className="primaryButton" onClick={saveSettings} disabled={isSavingSettings || !settings}>
           {isSavingSettings ? "保存中..." : "保存する"}
         </button>
       </div>
-      <p className="sectionDescription">会社情報とLINEで送る自動メッセージを設定します。保存するとLINE Botに反映されます。</p>
+      <p className="sectionDescription">会社情報と応募受付状態を設定します。LINE文面は「リマインド・メッセージテンプレート」で管理します。</p>
       {settingsMessage && <div className="successBox listNotice">{settingsMessage}</div>}
       {settingsError && <div className="inlineError listNotice">{settingsError}</div>}
       {isLoadingSettings || !settings ? (
@@ -1352,15 +1360,6 @@ function GeneralSettings() {
           ))}
         </div>
       )}
-    </section>
-  );
-}
-
-function StaticCards({ title, items }: { title: string; items: string[] }) {
-  return (
-    <section className="panel">
-      <div className="panelHeader"><h2>{title}</h2><button className="primaryButton">追加</button></div>
-      <div className="cardList">{items.map((item) => <article className="settingCard" key={item}><strong>{item}</strong><button className="textButton">編集</button></article>)}</div>
     </section>
   );
 }

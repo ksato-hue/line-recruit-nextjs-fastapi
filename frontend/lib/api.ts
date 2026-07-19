@@ -1,4 +1,4 @@
-import type { AppSettings, Applicant, Dashboard, FAQ, FAQCategory, FAQPayload, FAQSetting, FAQSettingUpdatePayload, FAQUpdatePayload, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse, LineMessageLog, LineSendRequest, LineSendResponse, QuestionTree } from "../types";
+import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQ, FAQCategory, FAQPayload, FAQSetting, FAQSettingUpdatePayload, FAQUpdatePayload, Inquiry, InterviewSlot, InterviewSlotCreateRequest, InterviewSlotCreateResponse, LineMessageLog, LineSendRequest, LineSendResponse, QuestionTree } from "../types";
 
 // 管理APIは同一オリジンのNext.jsプロキシ(/api/admin/*)経由で呼びます。
 // 管理キーはサーバー側でのみ付与されるため、ブラウザには露出しません。
@@ -14,7 +14,16 @@ async function adminRequest<T>(path: string, init?: RequestInit): Promise<T> {
 
   if (!response.ok) {
     const text = await response.text();
-    throw new Error(text || `API error: ${response.status}`);
+    let detail = "";
+    try {
+      detail = String((JSON.parse(text) as { detail?: unknown }).detail || "");
+    } catch {
+      detail = "";
+    }
+    if (response.status === 503 && detail.includes("管理API")) {
+      throw new Error("管理APIの接続設定が完了していません。環境変数を確認してください。");
+    }
+    throw new Error(detail || `処理に失敗しました（${response.status}）`);
   }
 
   return response.json();
@@ -116,5 +125,16 @@ export function updateQuestionTree(tree: QuestionTree) {
   return adminRequest<QuestionTree>("/question-tree", {
     method: "PATCH",
     body: JSON.stringify(tree)
+  });
+}
+
+export function getStatusSettings() {
+  return adminRequest<ApplicantStatusSetting[]>("/status-settings");
+}
+
+export function updateStatusSettings(statuses: ApplicantStatusSetting[]) {
+  return adminRequest<ApplicantStatusSetting[]>("/status-settings", {
+    method: "PATCH",
+    body: JSON.stringify({ statuses })
   });
 }

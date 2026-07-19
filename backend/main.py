@@ -153,6 +153,7 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "company_name": "",
     "recruiter_name": "",
     "line_bot_name": "",
+    "application_start_message": "応募ありがとうございます。必要事項を順番に入力してください。",
     "application_complete_message": (
         "ありがとうございます！\n応募内容を確定しました。\n\n担当者よりご連絡いたします。"
     ),
@@ -160,7 +161,21 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
         "面接候補日をお送りします。\nご都合の良い日時を選択してください。"
     ),
     "interview_confirmed_message": "面接日程を確定しました。",
+    "application_closed_message": "現在、応募の受付を一時停止しています。\nご質問がある場合はお問い合わせからご連絡ください。",
+    "inquiry_complete_message": "お問い合わせを受け付けました。担当者よりご連絡いたします。",
     "faq_preparing_message": FAQ_PREPARING_MESSAGE,
+    "reminder_1h_message": "応募入力の途中です。続きからご入力いただけます。",
+    "reminder_24h_message": "応募についてご不明な点があれば、LINEからお気軽にご相談ください。",
+    "reminder_3d_message": "気になる点やご不安があれば、質問だけでもお気軽にお送りください。",
+    "reminder_1h_enabled": False,
+    "reminder_1h_hours": 1,
+    "reminder_1h_template_key": "reminder_1h_message",
+    "reminder_24h_enabled": False,
+    "reminder_24h_hours": 24,
+    "reminder_24h_template_key": "reminder_24h_message",
+    "reminder_3d_enabled": False,
+    "reminder_3d_hours": 72,
+    "reminder_3d_template_key": "reminder_3d_message",
     "notification_email": "",
     "application_enabled": True,
 }
@@ -172,15 +187,51 @@ APPLICATION_CLOSED_MESSAGE = (
 
 # DBに設定がない場合の初期ツリー。従来のLINE応募フロー（職種選択→応募動機）をそのまま再現します。
 DEFAULT_QUESTION_TREE: dict[str, Any] = {
-    "root_question": "希望職種を選択してください",
-    "choices": [
-        {"label": "SNS運用", "questions": ["応募動機を一言で入力してください"]},
-        {"label": "Web制作", "questions": ["応募動機を一言で入力してください"]},
-        {"label": "営業", "questions": ["応募動機を一言で入力してください"]},
-        {"label": "社内事務", "questions": ["応募動機を一言で入力してください"]},
-        {"label": "その他", "questions": ["希望職種を入力してください", "応募動機を一言で入力してください"]},
+    "version": 2,
+    "questions": [
+        {"id": "name", "label": "お名前", "type": "text", "required": True, "system_field": "name"},
+        {"id": "phone", "label": "電話番号", "type": "tel", "required": True, "system_field": "phone"},
+        {
+            "id": "job", "label": "希望職種", "type": "select", "required": True,
+            "system_field": "job", "options": ["SNS運用", "Web制作", "営業", "社内事務", "その他"],
+            "allow_other": True,
+        },
+        {"id": "motivation", "label": "応募動機", "type": "textarea", "required": True, "system_field": "motivation"},
     ],
 }
+
+DEFAULT_APPLICANT_STATUSES = [
+    ("new", "新規応募"), ("in_progress", "応募途中"), ("completed", "応募完了"),
+    ("interview_adjusting", "面接調整中"), ("interview_confirmed", "面接確定"),
+    ("casual_interview", "カジュアル面接"), ("hired", "採用"), ("rejected", "不採用"),
+]
+REQUIRED_STATUS_KEYS = {"new", "interview_adjusting", "interview_confirmed"}
+
+
+def get_applicant_status_settings() -> list[dict[str, Any]]:
+    result = _safe_execute(
+        "applicant_status_settings取得",
+        lambda: (
+            supabase.table("applicant_status_settings")
+            .select("status_key,name,sort_order,is_active")
+            .eq("company_id", COMPANY_ID)
+            .order("sort_order")
+            .execute()
+        ),
+    )
+    if result and result.data:
+        return result.data
+    return [
+        {"status_key": key, "name": name, "sort_order": index + 1, "is_active": True}
+        for index, (key, name) in enumerate(DEFAULT_APPLICANT_STATUSES)
+    ]
+
+
+def get_status_name(status_key: str, fallback: str) -> str:
+    return next(
+        (row["name"] for row in get_applicant_status_settings() if row.get("status_key") == status_key),
+        fallback,
+    )
 
 
 def get_app_settings() -> dict[str, Any]:
@@ -219,10 +270,45 @@ def get_question_tree_for_bot() -> dict[str, Any]:
     )
     if result and result.data:
         tree = result.data[0].get("tree") or {}
-        choices = [c for c in (tree.get("choices") or []) if c.get("label")]
-        if tree.get("root_question") and choices:
-            return {"root_question": tree["root_question"], "choices": choices}
+        try:
+            return _normalize_question_tree(tree)
+        except HTTPException:
+            _log_event("question_tree.load", "invalid_saved_tree")
     return DEFAULT_QUESTION_TREE
+
+
+def _normalize_question_tree(tree: dict[str, Any]) -> dict[str, Any]:
+    """v2質問配列を正規化し、旧分岐形式は読み取り時だけv2へ変換します。"""
+    if isinstance(tree.get("questions"), list):
+        return _validate_question_tree_v2(tree)
+
+    root_question = str(tree.get("root_question") or "").strip()
+    choices = [choice for choice in (tree.get("choices") or []) if str(choice.get("label") or "").strip()]
+    if not root_question or not choices:
+        raise HTTPException(status_code=400, detail="質問ツリーの形式が不正です")
+
+    normalized = [dict(question) for question in DEFAULT_QUESTION_TREE["questions"][:2]]
+    normalized.append({
+        "id": "job", "label": root_question, "type": "select", "required": True,
+        "system_field": "job", "options": [str(choice["label"]).strip() for choice in choices],
+        "allow_other": any(str(choice["label"]).strip() == "その他" for choice in choices),
+    })
+    sequence = 0
+    for choice in choices:
+        choice_label = str(choice["label"]).strip()
+        branch_questions = [str(value).strip() for value in (choice.get("questions") or []) if str(value or "").strip()]
+        if choice_label == "その他" and branch_questions and "希望職種" in branch_questions[0]:
+            branch_questions = branch_questions[1:]
+        for label in branch_questions:
+            sequence += 1
+            normalized.append({
+                "id": f"legacy_{sequence}", "label": label, "type": "textarea", "required": True,
+                "system_field": "motivation" if "応募動機" in label else None,
+                "show_when": {"question_id": "job", "equals": choice_label},
+            })
+    if len(normalized) == 3:
+        normalized.append(dict(DEFAULT_QUESTION_TREE["questions"][3]))
+    return {"version": 2, "questions": normalized}
 
 
 @app.get("/")
@@ -709,7 +795,7 @@ def _finish_interview_confirmation(user_id: str) -> dict[str, Any]:
     (
         supabase.table("applicants")
         .update({
-            "status": "面接確定",
+            "status": get_status_name("interview_confirmed", "面接確定"),
             "interview_status": "面接確定",
             "interview_date": selected_datetime,
         })
@@ -825,32 +911,24 @@ def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict
 
 
 def _application_confirmation(user_id: str) -> dict[str, Any]:
-    """質問ツリーの回答をまとめて確認画面を返し、applicants に job / motivation を反映します。"""
+    """質問配列の回答を既存applicants項目へ反映し、確認画面を返します。"""
     session = application_tree_sessions.get(user_id) or {}
     data = applicants.get(user_id, {})
-    tree = session.get("tree") or {}
-    choice_label = (session.get("choice") or {}).get("label") or data.get("job", "")
     answers = session.get("answers") or []
-
-    if len(answers) == 1:
-        motivation = answers[0].get("answer", "")
-    else:
-        motivation = "\n".join(
-            f"■{item.get('question')}\n{item.get('answer')}" for item in answers
-        )
-
-    data["job"] = choice_label
-    data["motivation"] = motivation
+    additional = []
+    for item in answers:
+        system_field = item.get("system_field")
+        if system_field in {"name", "phone", "job", "motivation"}:
+            data[system_field] = item.get("answer", "")
+        elif item.get("answer"):
+            additional.append(f"■{item.get('question')}\n{item.get('answer')}")
+    if additional:
+        existing = str(data.get("motivation") or "").strip()
+        data["motivation"] = "\n\n".join([value for value in [existing, *additional] if value])
     applicants[user_id] = data
     user_states[user_id] = "confirming"
 
-    body = (
-        "【応募内容の確認】\n\n"
-        "以下の内容でお間違いないかご確認ください。\n\n"
-        f"■お名前\n{data.get('name', '')}\n\n"
-        f"■電話番号\n{data.get('phone', '')}\n\n"
-        f"■{tree.get('root_question', '選択内容')}\n{choice_label}\n\n"
-    )
+    body = "【応募内容の確認】\n\n以下の内容でお間違いないかご確認ください。\n\n"
     for item in answers:
         body += f"■{item.get('question')}\n{item.get('answer')}\n\n"
     body += (
@@ -858,6 +936,48 @@ def _application_confirmation(user_id: str) -> dict[str, Any]:
         "問題なければ「確認」を選択してください。"
     )
     return text_response(body, confirm_menu())
+
+
+def _question_is_visible(question: dict[str, Any], answers: list[dict[str, Any]]) -> bool:
+    condition = question.get("show_when")
+    if not condition:
+        return True
+    answer_by_id = {item.get("question_id"): item.get("answer") for item in answers}
+    return answer_by_id.get(condition.get("question_id")) == condition.get("equals")
+
+
+def _application_question_response(user_id: str) -> dict[str, Any]:
+    session = application_tree_sessions[user_id]
+    questions = session["tree"].get("questions") or []
+    index = int(session.get("question_index", 0))
+    answers = session.get("answers") or []
+    while index < len(questions) and not _question_is_visible(questions[index], answers):
+        index += 1
+    session["question_index"] = index
+    if index >= len(questions):
+        return _application_confirmation(user_id)
+    question = questions[index]
+    user_states[user_id] = "applying_question"
+    required_label = "必須" if question.get("required") else "任意"
+    buttons = list(question.get("options") or []) if question.get("type") == "select" else []
+    if not question.get("required"):
+        buttons.append("スキップ")
+    buttons.append("キャンセル")
+    return text_response(
+        f"【応募情報入力中】\n\n{question.get('label')}（{required_label}）",
+        buttons[:13],
+    )
+
+
+def _store_application_answer(user_id: str, question: dict[str, Any], answer: str) -> None:
+    session = application_tree_sessions[user_id]
+    session.setdefault("answers", []).append({
+        "question_id": question.get("id"),
+        "question": question.get("label"),
+        "answer": answer,
+        "system_field": question.get("system_field"),
+    })
+    session["question_index"] = int(session.get("question_index", 0)) + 1
 
 
 def handle_message(user_id, message):
@@ -891,8 +1011,9 @@ def handle_message(user_id, message):
         )
 
     if message in ["応募", "応募する"]:
-        if not get_app_settings().get("application_enabled", True):
-            return text_response(APPLICATION_CLOSED_MESSAGE, ["お問い合わせ", "メニュー"])
+        settings = get_app_settings()
+        if not settings.get("application_enabled", True):
+            return text_response(str(settings.get("application_closed_message") or APPLICATION_CLOSED_MESSAGE), ["お問い合わせ", "メニュー"])
 
         if user_id in applicants and applicants[user_id]:
             data = applicants[user_id]
@@ -909,28 +1030,19 @@ def handle_message(user_id, message):
                 confirm_menu()
             )
 
-        user_states[user_id] = "waiting_name"
         applicants[user_id] = {}
-
-        return text_response(
-            "【応募情報入力中】\n\n"
-            "応募ありがとうございます！\n\n"
-            "まず、\n"
-            "お名前をフルネームで入力してください。\n\n"
-            "中止したい場合は「キャンセル」を選択してください。",
-            cancel_menu()
-        )
+        application_tree_sessions[user_id] = {"tree": get_question_tree_for_bot(), "answers": [], "question_index": 0}
+        start_message = str(settings.get("application_start_message") or DEFAULT_APP_SETTINGS["application_start_message"])
+        response = _application_question_response(user_id)
+        response["text"] = f"{start_message}\n\n{response['text']}"
+        return response
 
     if message == "修正":
-        user_states[user_id] = "waiting_name"
         applicants[user_id] = {}
-        application_tree_sessions.pop(user_id, None)
-
-        return text_response(
-            "応募内容を修正します。\n\n"
-            "まず、お名前をフルネームで送ってください。",
-            cancel_menu()
-        )
+        application_tree_sessions[user_id] = {"tree": get_question_tree_for_bot(), "answers": [], "question_index": 0}
+        response = _application_question_response(user_id)
+        response["text"] = f"応募内容を修正します。\n\n{response['text']}"
+        return response
 
     if message == "確認":
         if user_id in applicants and applicants[user_id]:
@@ -943,7 +1055,7 @@ def handle_message(user_id, message):
                 "phone": data.get("phone"),
                 "job": data.get("job"),
                 "motivation": data.get("motivation"),
-                "status": "新規応募"
+                "status": get_status_name("new", "新規応募")
             }).execute()
             _log_event("application.save", "success", subject_id=user_id)
 
@@ -959,91 +1071,36 @@ def handle_message(user_id, message):
             main_menu()
         )
 
-    if state == "waiting_name":
-        applicants[user_id]["name"] = message
-        user_states[user_id] = "waiting_phone"
-
-        return text_response(
-            "【応募情報入力中】\n\n"
-            f"■お名前\n{applicants[user_id]['name']}\n\n"
-            "次に、電話番号を送ってください。",
-            cancel_menu()
-        )
-
-    if state == "waiting_phone":
-        applicants[user_id]["phone"] = message
-        tree = get_question_tree_for_bot()
-        application_tree_sessions[user_id] = {"tree": tree, "answers": []}
-        user_states[user_id] = "applying_tree_choice"
-
-        labels = [choice.get("label") for choice in tree.get("choices", []) if choice.get("label")][:12]
-        return text_response(
-            "【応募情報入力中】\n\n"
-            f"■お名前\n{applicants[user_id]['name']}\n\n"
-            f"■電話番号\n{applicants[user_id]['phone']}\n\n"
-            f"次に、{tree.get('root_question')}",
-            labels + ["キャンセル"]
-        )
-
-    if state == "applying_tree_choice":
+    if state in ["applying_question", "applying_other"]:
         session = application_tree_sessions.get(user_id)
         if not session:
-            session = {"tree": get_question_tree_for_bot(), "answers": []}
-            application_tree_sessions[user_id] = session
-        tree = session["tree"]
-        choice = next(
-            (c for c in tree.get("choices", []) if c.get("label") == message),
-            None,
-        )
-        if not choice:
-            labels = [c.get("label") for c in tree.get("choices", []) if c.get("label")][:12]
-            return text_response(
-                f"{tree.get('root_question')}\n選択肢から選んでください。",
-                labels + ["キャンセル"]
-            )
-
-        session["choice"] = choice
-        session["question_index"] = 0
-        session["answers"] = []
-        applicants[user_id]["job"] = choice.get("label")
-
-        questions = [str(q) for q in (choice.get("questions") or []) if str(q or "").strip()]
-        session["questions"] = questions
-        if not questions:
-            return _application_confirmation(user_id)
-
-        user_states[user_id] = "applying_tree_question"
-        return text_response(
-            "【応募情報入力中】\n\n" + questions[0],
-            cancel_menu()
-        )
-
-    if state == "applying_tree_question":
-        session = application_tree_sessions.get(user_id)
-        if not session or not session.get("choice"):
             user_states[user_id] = None
-            application_tree_sessions.pop(user_id, None)
             return text_response(
                 "応募情報の入力状態がリセットされました。\nお手数ですが「応募する」からやり直してください。",
                 main_menu()
             )
-
-        questions = session.get("questions") or []
-        index = session.get("question_index", 0)
-        if index < len(questions):
-            session.setdefault("answers", []).append({
-                "question": questions[index],
-                "answer": message,
-            })
-            index += 1
-            session["question_index"] = index
-
-        if index < len(questions):
-            return text_response(
-                "【応募情報入力中】\n\n" + questions[index],
-                cancel_menu()
-            )
-        return _application_confirmation(user_id)
+        questions = session["tree"].get("questions") or []
+        index = int(session.get("question_index", 0))
+        if index >= len(questions):
+            return _application_confirmation(user_id)
+        question = questions[index]
+        answer = message.strip()
+        if state == "applying_other":
+            if not answer:
+                return text_response("希望職種を入力してください。", cancel_menu())
+        elif answer == "スキップ" and not question.get("required"):
+            answer = ""
+        elif question.get("type") == "select":
+            options = [str(option) for option in question.get("options") or []]
+            if answer not in options:
+                return text_response("選択肢から選んでください。", options[:12] + ["キャンセル"])
+            if answer == "その他" and question.get("allow_other"):
+                user_states[user_id] = "applying_other"
+                return text_response("希望する職種を自由入力してください。", cancel_menu())
+        elif question.get("required") and not answer:
+            return text_response(f"{question.get('label')}は必須です。入力してください。", cancel_menu())
+        _store_application_answer(user_id, question, answer)
+        return _application_question_response(user_id)
 
     if message == "お問い合わせ":
         user_states[user_id] = "waiting_inquiry"
@@ -1065,12 +1122,16 @@ def handle_message(user_id, message):
         }).execute()
         
         _log_event("inquiry.save", "success", subject_id=user_id)
+        complete_message = str(
+            get_app_settings().get("inquiry_complete_message")
+            or DEFAULT_APP_SETTINGS["inquiry_complete_message"]
+        )
 
         return card_response(
             "お問い合わせ受付完了",
-            f"お問い合わせを受け付けました。\n\n"
+            f"{complete_message}\n\n"
             f"■お問い合わせ内容\n{inquiry_text}\n\n"
-            f"担当者からの返信をお待ちください。",
+            "担当者からの返信をお待ちください。",
             main_menu()
         )
 
@@ -1588,6 +1649,17 @@ class InquiryUpdate(BaseModel):
     status: str
 
 
+class ApplicantStatusSetting(BaseModel):
+    status_key: str
+    name: str
+    sort_order: int
+    is_active: bool = True
+
+
+class ApplicantStatusSettingsPayload(BaseModel):
+    statuses: list[ApplicantStatusSetting]
+
+
 class FAQCategoryPayload(BaseModel):
     name: str
     sort_order: Optional[int] = 0
@@ -1672,11 +1744,16 @@ def api_dashboard():
 
     rows = applicants_result.data or []
     inquiries = inquiries_result.data or []
+    status_settings = get_applicant_status_settings()
+    status_counts = {
+        status["name"]: _safe_count(rows, "status", status["name"])
+        for status in status_settings
+    }
 
-    new_count = _safe_count(rows, "status", "新規応募")
-    in_progress_count = _safe_count(rows, "status", "応募途中")
-    interview_count = _safe_count(rows, "interview_status", "面接調整中") + _safe_count(rows, "status", "面接調整中")
-    hired_count = _safe_count(rows, "status", "採用")
+    new_count = _safe_count(rows, "status", get_status_name("new", "新規応募"))
+    in_progress_count = _safe_count(rows, "status", get_status_name("in_progress", "応募途中"))
+    interview_count = _safe_count(rows, "interview_status", "面接調整中") + _safe_count(rows, "status", get_status_name("interview_adjusting", "面接調整中"))
+    hired_count = _safe_count(rows, "status", get_status_name("hired", "採用"))
     dropout_count = _safe_count(rows, "status", "離脱")
 
     return {
@@ -1687,6 +1764,7 @@ def api_dashboard():
         "interview_count": interview_count,
         "hired_count": hired_count,
         "dropout_count": dropout_count,
+        "status_counts": status_counts,
         "todo": {
             "one_hour_reminder": in_progress_count,
             "twenty_four_hour_reminder": dropout_count,
@@ -1724,6 +1802,12 @@ def api_update_applicant(applicant_id: str, payload: ApplicantUpdate):
     update_data = payload.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="更新内容がありません")
+    if "status" in update_data:
+        active_statuses = {
+            row["name"] for row in get_applicant_status_settings() if row.get("is_active")
+        }
+        if update_data["status"] not in active_statuses:
+            raise HTTPException(status_code=400, detail="有効なステータスを選択してください")
 
     result = (
         supabase.table("applicants")
@@ -1773,7 +1857,7 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
         slots_result = _insert_interview_slots(rows)
         applicant_result = (
             supabase.table("applicants")
-            .update({"interview_status": "面接調整中"})
+            .update({"interview_status": "面接調整中", "status": get_status_name("interview_adjusting", "面接調整中")})
             .eq("id", applicant_id)
             .execute()
         )
@@ -1812,6 +1896,73 @@ def api_update_interview_slot(slot_id: str, payload: InterviewSlotUpdate):
     if not result.data:
         raise HTTPException(status_code=404, detail="面接候補が見つかりません")
     return result.data[0]
+
+
+@app.get("/api/status-settings", dependencies=[Depends(require_admin)])
+def api_status_settings():
+    return get_applicant_status_settings()
+
+
+@app.patch("/api/status-settings", dependencies=[Depends(require_admin)])
+def api_update_status_settings(payload: ApplicantStatusSettingsPayload):
+    if not payload.statuses or len(payload.statuses) > 50:
+        raise HTTPException(status_code=400, detail="ステータスは1〜50件で設定してください")
+    keys = [item.status_key.strip() for item in payload.statuses]
+    names = [item.name.strip() for item in payload.statuses]
+    if any(not value for value in keys + names) or len(set(keys)) != len(keys) or len(set(names)) != len(names):
+        raise HTTPException(status_code=400, detail="ステータス名またはキーが空欄・重複しています")
+
+    current_result = (
+        supabase.table("applicant_status_settings")
+        .select("status_key,name")
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
+    current_rows = current_result.data or get_applicant_status_settings()
+    current_by_key = {row["status_key"]: row for row in current_rows}
+    submitted_keys = set(keys)
+
+    missing_required_keys = REQUIRED_STATUS_KEYS - submitted_keys
+    if missing_required_keys:
+        raise HTTPException(
+            status_code=409,
+            detail="応募受付・面接処理で使用するシステムステータスは削除できません",
+        )
+
+    for key, current in current_by_key.items():
+        if key not in submitted_keys:
+            used = supabase.table("applicants").select("id").eq("status", current["name"]).limit(1).execute()
+            if used.data:
+                raise HTTPException(status_code=409, detail=f"「{current['name']}」は応募者が使用中のため削除できません")
+
+    rows = []
+    for index, item in enumerate(payload.statuses):
+        key = item.status_key.strip()
+        name = item.name.strip()
+        previous = current_by_key.get(key, {}).get("name")
+        if previous and previous != name:
+            supabase.table("applicants").update({"status": name}).eq("status", previous).execute()
+        rows.append({
+            "company_id": COMPANY_ID,
+            "status_key": key,
+            "name": name,
+            "sort_order": index + 1,
+            "is_active": item.is_active,
+            "updated_at": _utc_now(),
+        })
+
+    supabase.table("applicant_status_settings").upsert(
+        rows, on_conflict="company_id,status_key"
+    ).execute()
+    for key in set(current_by_key) - submitted_keys:
+        (
+            supabase.table("applicant_status_settings")
+            .delete()
+            .eq("company_id", COMPANY_ID)
+            .eq("status_key", key)
+            .execute()
+        )
+    return get_applicant_status_settings()
 
 
 @app.get("/api/faq-categories", dependencies=[Depends(require_admin)])
@@ -1997,10 +2148,13 @@ def api_update_settings(payload: dict[str, Any]):
     if unknown_keys:
         raise HTTPException(status_code=400, detail=f"不明な設定キーです: {', '.join(unknown_keys)}")
 
-    if "application_enabled" in payload and not isinstance(payload["application_enabled"], bool):
-        raise HTTPException(status_code=400, detail="application_enabled は true / false で指定してください")
     for key, value in payload.items():
-        if key != "application_enabled" and not isinstance(value, str):
+        expected = type(DEFAULT_APP_SETTINGS[key])
+        if expected is bool and not isinstance(value, bool):
+            raise HTTPException(status_code=400, detail=f"{key} は true / false で指定してください")
+        if expected is int and (not isinstance(value, int) or isinstance(value, bool) or value < 1 or value > 8760):
+            raise HTTPException(status_code=400, detail=f"{key} は1〜8760の整数で指定してください")
+        if expected is str and not isinstance(value, str):
             raise HTTPException(status_code=400, detail=f"{key} は文字列で指定してください")
 
     now = _utc_now()
@@ -2019,35 +2173,51 @@ def api_update_settings(payload: dict[str, Any]):
     return get_app_settings()
 
 
-def _validate_question_tree(tree: dict[str, Any]) -> dict[str, Any]:
+def _validate_question_tree_v2(tree: dict[str, Any]) -> dict[str, Any]:
     if not isinstance(tree, dict):
         raise HTTPException(status_code=400, detail="ツリーの形式が不正です")
+    questions = tree.get("questions")
+    if not isinstance(questions, list) or not questions or len(questions) > 30:
+        raise HTTPException(status_code=400, detail="質問は1〜30件で設定してください")
+    allowed_types = {"text", "tel", "textarea", "select"}
+    allowed_system_fields = {"name", "phone", "job", "motivation", None}
+    normalized = []
+    ids = set()
+    for index, question in enumerate(questions):
+        if not isinstance(question, dict):
+            raise HTTPException(status_code=400, detail="質問の形式が不正です")
+        question_id = str(question.get("id") or f"question_{index + 1}").strip()
+        label = str(question.get("label") or "").strip()
+        question_type = str(question.get("type") or "text")
+        if not question_id or question_id in ids or not label or question_type not in allowed_types:
+            raise HTTPException(status_code=400, detail="質問ID、質問文、入力形式を確認してください")
+        ids.add(question_id)
+        options = [str(value).strip() for value in (question.get("options") or []) if str(value or "").strip()]
+        if question_type == "select" and not options:
+            raise HTTPException(status_code=400, detail=f"{label}の選択肢を1つ以上設定してください")
+        system_field = question.get("system_field")
+        if system_field not in allowed_system_fields:
+            system_field = None
+        item: dict[str, Any] = {
+            "id": question_id, "label": label, "type": question_type,
+            "required": bool(question.get("required")), "system_field": system_field,
+        }
+        if options:
+            item["options"] = options[:12]
+        if question_type == "select":
+            item["allow_other"] = bool(question.get("allow_other"))
+        condition = question.get("show_when")
+        if isinstance(condition, dict) and condition.get("question_id") and condition.get("equals") is not None:
+            item["show_when"] = {
+                "question_id": str(condition["question_id"]),
+                "equals": str(condition["equals"]),
+            }
+        normalized.append(item)
+    return {"version": 2, "questions": normalized}
 
-    root_question = str(tree.get("root_question") or "").strip()
-    if not root_question:
-        raise HTTPException(status_code=400, detail="最初の質問を入力してください")
 
-    choices = tree.get("choices")
-    if not isinstance(choices, list) or not choices:
-        raise HTTPException(status_code=400, detail="選択肢を1つ以上設定してください")
-    if len(choices) > 10:
-        raise HTTPException(status_code=400, detail="選択肢は10件以内にしてください")
-
-    normalized_choices = []
-    for choice in choices:
-        if not isinstance(choice, dict):
-            raise HTTPException(status_code=400, detail="選択肢の形式が不正です")
-        label = str(choice.get("label") or "").strip()
-        if not label:
-            raise HTTPException(status_code=400, detail="選択肢名を入力してください")
-        questions = [
-            str(question).strip()
-            for question in (choice.get("questions") or [])
-            if str(question or "").strip()
-        ]
-        normalized_choices.append({"label": label, "questions": questions})
-
-    return {"root_question": root_question, "choices": normalized_choices}
+def _validate_question_tree(tree: dict[str, Any]) -> dict[str, Any]:
+    return _normalize_question_tree(tree)
 
 
 @app.get("/api/question-tree", dependencies=[Depends(require_admin)])

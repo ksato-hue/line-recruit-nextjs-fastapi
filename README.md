@@ -18,7 +18,10 @@ cp .env.example .env
 uvicorn main:app --reload --port 8000
 ```
 
-Supabase SQL Editorで[`supabase/migrations/202607190001_mvp_security_foundation.sql`](supabase/migrations/202607190001_mvp_security_foundation.sql)を実行してから起動してください。
+Supabase SQL Editorでマイグレーションを番号順に実行してから起動してください。
+
+1. [`202607190001_mvp_security_foundation.sql`](supabase/migrations/202607190001_mvp_security_foundation.sql)
+2. [`202607190002_admin_configuration.sql`](supabase/migrations/202607190002_admin_configuration.sql)
 
 ### 2. Next.js
 
@@ -86,3 +89,11 @@ npm run dev
 - `company_id`は追加済みですが、すべての業務クエリで企業境界を強制する完全なマルチテナント対応は未完了です。
 - 応募途中状態のDB永続化、Webhook冪等性、レート制限、監視・アラートは未実装です。
 - 詳細は[MVPセキュリティ判断メモ](docs/security-decisions.md)を参照してください。
+
+## 管理画面の設定
+
+- トップレベルは「ダッシュボード」「応募者一覧」「お問い合わせ」「面接関連」「簡易分析」「設定」です。
+- 設定配下で基本設定、企業別ステータス、FAQ、質問ツリー、リマインド・メッセージを管理します。
+- ステータスの追加・名称変更・順序・有効状態はDBへ保存されます。使用中ステータスは削除できません。
+- リマインド設定は保存できますが、定期送信ジョブは未接続です。
+- メッセージテンプレートと質問ツリーは保存後のLINE Bot処理で使用されます。

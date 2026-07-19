@@ -114,16 +114,46 @@ export type AppSettings = {
   faq_preparing_message: string;
   notification_email: string;
   application_enabled: boolean;
+  application_start_message: string;
+  application_closed_message: string;
+  inquiry_complete_message: string;
+  reminder_1h_message: string;
+  reminder_24h_message: string;
+  reminder_3d_message: string;
+  reminder_1h_enabled: boolean;
+  reminder_1h_hours: number;
+  reminder_1h_template_key: string;
+  reminder_24h_enabled: boolean;
+  reminder_24h_hours: number;
+  reminder_24h_template_key: string;
+  reminder_3d_enabled: boolean;
+  reminder_3d_hours: number;
+  reminder_3d_template_key: string;
 };
 
-export type QuestionTreeChoice = {
+export type QuestionType = "text" | "tel" | "textarea" | "select";
+
+export type QuestionTreeQuestion = {
+  id: string;
   label: string;
-  questions: string[];
+  type: QuestionType;
+  required: boolean;
+  system_field?: "name" | "phone" | "job" | "motivation" | null;
+  options?: string[];
+  allow_other?: boolean;
+  show_when?: { question_id: string; equals: string };
 };
 
 export type QuestionTree = {
-  root_question: string;
-  choices: QuestionTreeChoice[];
+  version: 2;
+  questions: QuestionTreeQuestion[];
+};
+
+export type ApplicantStatusSetting = {
+  status_key: string;
+  name: string;
+  sort_order: number;
+  is_active: boolean;
 };
 
 export type LineMessageLog = {
@@ -151,6 +181,7 @@ export type Dashboard = {
   interview_count: number;
   hired_count: number;
   dropout_count: number;
+  status_counts?: Record<string, number>;
   todo: {
     one_hour_reminder: number;
     twenty_four_hour_reminder: number;
