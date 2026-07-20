@@ -177,6 +177,16 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "reminder_3d_enabled": False,
     "reminder_3d_hours": 72,
     "reminder_3d_template_key": "reminder_3d_message",
+    "reminders": [
+        {
+            "id": "reminder_default",
+            "name": "リマインド 1",
+            "enabled": False,
+            "delay": 1,
+            "unit": "hours",
+            "message": "応募入力の途中です。続きからご入力いただけます。",
+        }
+    ],
     "notification_email": "",
     "application_enabled": True,
 }
@@ -246,10 +256,32 @@ def get_app_settings() -> dict[str, Any]:
             .execute()
         ),
     )
-    for row in (result.data if result and result.data else []):
+    rows = result.data if result and result.data else []
+    stored_keys = {row.get("key") for row in rows}
+    for row in rows:
         key = row.get("key")
         if key in DEFAULT_APP_SETTINGS and row.get("value") is not None:
             settings[key] = row["value"]
+    legacy_reminder_keys = {
+        "reminder_1h_enabled", "reminder_1h_hours", "reminder_1h_message",
+        "reminder_24h_enabled", "reminder_24h_hours", "reminder_24h_message",
+        "reminder_3d_enabled", "reminder_3d_hours", "reminder_3d_message",
+    }
+    if "reminders" not in stored_keys and stored_keys.intersection(legacy_reminder_keys):
+        settings["reminders"] = [
+            {
+                "id": "legacy_1h", "name": "リマインド 1", "enabled": bool(settings["reminder_1h_enabled"]),
+                "delay": int(settings["reminder_1h_hours"]), "unit": "hours", "message": str(settings["reminder_1h_message"]),
+            },
+            {
+                "id": "legacy_24h", "name": "リマインド 2", "enabled": bool(settings["reminder_24h_enabled"]),
+                "delay": int(settings["reminder_24h_hours"]), "unit": "hours", "message": str(settings["reminder_24h_message"]),
+            },
+            {
+                "id": "legacy_3d", "name": "リマインド 3", "enabled": bool(settings["reminder_3d_enabled"]),
+                "delay": int(settings["reminder_3d_hours"]), "unit": "hours", "message": str(settings["reminder_3d_message"]),
+            },
+        ]
     return settings
 
 
@@ -2370,6 +2402,30 @@ def api_update_settings(payload: dict[str, Any]):
             raise HTTPException(status_code=400, detail=f"{key} は1〜8760の整数で指定してください")
         if expected is str and not isinstance(value, str):
             raise HTTPException(status_code=400, detail=f"{key} は文字列で指定してください")
+        if key == "reminders":
+            if not isinstance(value, list) or not value or len(value) > 20:
+                raise HTTPException(status_code=400, detail="リマインドは1〜20件で指定してください")
+            limits = {"minutes": 525600, "hours": 8760, "days": 365}
+            reminder_ids: set[str] = set()
+            for index, reminder in enumerate(value):
+                if not isinstance(reminder, dict):
+                    raise HTTPException(status_code=400, detail="リマインドの形式が不正です")
+                reminder_id = str(reminder.get("id") or "").strip()
+                name = str(reminder.get("name") or "").strip()
+                unit = reminder.get("unit")
+                delay = reminder.get("delay")
+                message = reminder.get("message")
+                if not reminder_id or reminder_id in reminder_ids or not name:
+                    raise HTTPException(status_code=400, detail=f"リマインド{index + 1}のIDまたは名前が不正です")
+                reminder_ids.add(reminder_id)
+                if not isinstance(reminder.get("enabled"), bool):
+                    raise HTTPException(status_code=400, detail=f"リマインド{index + 1}の有効状態が不正です")
+                if unit not in limits:
+                    raise HTTPException(status_code=400, detail=f"リマインド{index + 1}の時間単位が不正です")
+                if not isinstance(delay, int) or isinstance(delay, bool) or delay < 1 or delay > limits[unit]:
+                    raise HTTPException(status_code=400, detail=f"リマインド{index + 1}の送信時間が範囲外です")
+                if not isinstance(message, str) or not message.strip() or len(message) > 5000:
+                    raise HTTPException(status_code=400, detail=f"リマインド{index + 1}の本文は1〜5000文字で指定してください")
 
     now = _utc_now()
     rows = [

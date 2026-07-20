@@ -1,8 +1,8 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getInquiries, getLineMessages, getQuestionTree, getSettings, getStatusSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings, updateStatusSettings } from "../lib/api";
-import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree, QuestionTreeQuestion } from "../types";
+import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree, QuestionTreeQuestion, ReminderSetting, ReminderUnit } from "../types";
 import faqTemplatesJson from "../../shared/faq_templates.json";
 import { formatJstDateTime } from "../lib/datetime";
 
@@ -17,6 +17,12 @@ const topMenuItems = [
 ];
 const settingsMenuItems = ["基本設定", "ステータス設定", "FAQ設定", "質問ツリー設定", "リマインド・メッセージテンプレート"];
 const interviewTypeOptions = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
+const allMenuItems = [...topMenuItems, ...settingsMenuItems];
+type DirtyAwareSettingsProps = { onDirtyChange: (dirty: boolean) => void };
+
+function snapshot(value: unknown) {
+  return JSON.stringify(value);
+}
 
 function maskLineUserId(value?: string) {
   if (!value) return "未設定";
@@ -61,10 +67,40 @@ export default function AdminPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [statuses, setStatuses] = useState<ApplicantStatusSetting[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsDirty, setSettingsDirty] = useState(false);
+  const [pendingMenu, setPendingMenu] = useState<string | null>(null);
+  const activeMenuRef = useRef(activeMenu);
+  const settingsDirtyRef = useRef(settingsDirty);
+  const historyIndexRef = useRef(0);
+  const suppressHistoryRef = useRef(false);
+
+  useEffect(() => { activeMenuRef.current = activeMenu; }, [activeMenu]);
+  useEffect(() => { settingsDirtyRef.current = settingsDirty; }, [settingsDirty]);
+
+  const handleSettingsDirtyChange = useCallback((dirty: boolean) => {
+    setSettingsDirty(dirty);
+  }, []);
+
+  function commitMenuChange(menu: string, historyMode: "push" | "replace" = "push") {
+    setSettingsDirty(false);
+    setActiveMenuState(menu);
+    setSettingsOpen(settingsMenuItems.includes(menu));
+    const hash = `#${encodeURIComponent(menu)}`;
+    if (historyMode === "replace") {
+      window.history.replaceState({ adminIndex: historyIndexRef.current }, "", hash);
+    } else {
+      historyIndexRef.current += 1;
+      window.history.pushState({ adminIndex: historyIndexRef.current }, "", hash);
+    }
+  }
 
   function setActiveMenu(menu: string) {
-    setActiveMenuState(menu);
-    window.history.replaceState(null, "", `#${encodeURIComponent(menu)}`);
+    if (menu === activeMenuRef.current) return;
+    if (settingsDirtyRef.current) {
+      setPendingMenu(menu);
+      return;
+    }
+    commitMenuChange(menu);
   }
 
   async function loadDashboard() {
@@ -105,11 +141,52 @@ export default function AdminPage() {
 
   useEffect(() => {
     const menu = decodeURIComponent(window.location.hash.slice(1));
-    if ([...topMenuItems, ...settingsMenuItems].includes(menu)) {
+    if (allMenuItems.includes(menu)) {
       setActiveMenuState(menu);
       setSettingsOpen(settingsMenuItems.includes(menu));
     }
+    const initialMenu = allMenuItems.includes(menu) ? menu : "ダッシュボード";
+    const initialIndex = typeof window.history.state?.adminIndex === "number" ? window.history.state.adminIndex : 0;
+    historyIndexRef.current = initialIndex;
+    window.history.replaceState({ adminIndex: initialIndex }, "", `#${encodeURIComponent(initialMenu)}`);
     setIsReady(true);
+  }, []);
+
+  useEffect(() => {
+    if (!isReady) return;
+    function handleHistoryNavigation(event: PopStateEvent) {
+      if (suppressHistoryRef.current) {
+        suppressHistoryRef.current = false;
+        return;
+      }
+      const target = decodeURIComponent(window.location.hash.slice(1));
+      if (!allMenuItems.includes(target) || target === activeMenuRef.current) return;
+      const targetIndex = typeof event.state?.adminIndex === "number" ? event.state.adminIndex : null;
+      if (settingsDirtyRef.current) {
+        setPendingMenu(target);
+        suppressHistoryRef.current = true;
+        if (targetIndex === null) window.history.back();
+        else window.history.go(historyIndexRef.current - targetIndex);
+        return;
+      }
+      if (targetIndex !== null) historyIndexRef.current = targetIndex;
+      setActiveMenuState(target);
+      setSettingsOpen(settingsMenuItems.includes(target));
+    }
+    window.addEventListener("popstate", handleHistoryNavigation);
+    return () => {
+      window.removeEventListener("popstate", handleHistoryNavigation);
+    };
+  }, [isReady]);
+
+  useEffect(() => {
+    function handleBeforeUnload(event: BeforeUnloadEvent) {
+      if (!settingsDirtyRef.current) return;
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", handleBeforeUnload);
+    return () => window.removeEventListener("beforeunload", handleBeforeUnload);
   }, []);
 
   useEffect(() => {
@@ -260,9 +337,9 @@ export default function AdminPage() {
               {inquiriesError && <div className="errorBox">{inquiriesError}</div>}
               {inquiriesLoading && inquiries.length === 0 ? <div className="loadingCard">お問い合わせを取得中...</div> : <InquiriesView inquiries={inquiries} />}
             </>}
-            {activeMenu === "質問ツリー設定" && <QuestionTreeSettings />}
-            {activeMenu === "FAQ設定" && <FAQSettings />}
-            {activeMenu === "リマインド・メッセージテンプレート" && <MessageAndReminderSettings />}
+            {activeMenu === "質問ツリー設定" && <QuestionTreeSettings onDirtyChange={handleSettingsDirtyChange} />}
+            {activeMenu === "FAQ設定" && <FAQSettings onDirtyChange={handleSettingsDirtyChange} />}
+            {activeMenu === "リマインド・メッセージテンプレート" && <MessageAndReminderSettings onDirtyChange={handleSettingsDirtyChange} />}
             {activeMenu === "簡易分析" && <>
               {dashboardError && <div className="errorBox">{dashboardError}</div>}
               {applicantsError && <div className="errorBox">{applicantsError}</div>}
@@ -271,9 +348,9 @@ export default function AdminPage() {
             </>}
             {activeMenu === "ステータス設定" && <>
               {statusesError && <div className="errorBox">{statusesError}</div>}
-              {statusesLoading && statuses.length === 0 ? <div className="loadingCard">ステータス設定を取得中...</div> : <StatusSettings statuses={statuses} onSaved={async (saved) => { setStatuses(saved); void loadDashboard(); }} />}
+              {statusesLoading && statuses.length === 0 ? <div className="loadingCard">ステータス設定を取得中...</div> : <StatusSettings statuses={statuses} onSaved={async (saved) => { setStatuses(saved); void loadDashboard(); }} onDirtyChange={handleSettingsDirtyChange} />}
             </>}
-            {activeMenu === "基本設定" && <GeneralSettings />}
+            {activeMenu === "基本設定" && <GeneralSettings onDirtyChange={handleSettingsDirtyChange} />}
           </>}
       </section>
 
@@ -291,6 +368,18 @@ export default function AdminPage() {
           statusOptionsLoading={statusesLoading}
           statusOptionsError={statusesError}
         />
+      )}
+      {pendingMenu && (
+        <div className="confirmDialogBackdrop" role="presentation">
+          <section className="confirmDialog" role="dialog" aria-modal="true" aria-labelledby="unsaved-title" aria-describedby="unsaved-description">
+            <h2 id="unsaved-title">変更が保存されていません</h2>
+            <p id="unsaved-description">この画面を離れると、変更内容は失われます。</p>
+            <div className="confirmDialogActions">
+              <button className="dangerButton" onClick={() => { const target = pendingMenu; setPendingMenu(null); commitMenuChange(target); }}>このまま移動する</button>
+              <button className="secondaryButton" autoFocus onClick={() => setPendingMenu(null)}>設定画面に戻る</button>
+            </div>
+          </section>
+        </div>
       )}
     </main>
   );
@@ -875,8 +964,9 @@ function InquiriesView({ inquiries }: { inquiries: Inquiry[] }) {
   );
 }
 
-function QuestionTreeSettings() {
+function QuestionTreeSettings({ onDirtyChange }: DirtyAwareSettingsProps) {
   const [tree, setTree] = useState<QuestionTree | null>(null);
+  const [savedTree, setSavedTree] = useState<QuestionTree | null>(null);
   const [isLoadingTree, setIsLoadingTree] = useState(true);
   const [isSavingTree, setIsSavingTree] = useState(false);
   const [treeMessage, setTreeMessage] = useState<string | null>(null);
@@ -888,6 +978,7 @@ function QuestionTreeSettings() {
     try {
       const data = await getQuestionTree();
       setTree(data);
+      setSavedTree(data);
     } catch (err) {
       setTreeError(err instanceof Error ? err.message : "質問ツリーの取得に失敗しました");
     } finally {
@@ -898,6 +989,11 @@ function QuestionTreeSettings() {
   useEffect(() => {
     loadTree();
   }, []);
+
+  useEffect(() => {
+    onDirtyChange(Boolean(tree && savedTree && snapshot(tree) !== snapshot(savedTree)));
+  }, [tree, savedTree, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   function updateQuestion(index: number, data: Partial<QuestionTreeQuestion>) {
     setTree((current) => current ? ({ ...current, questions: current.questions.map((question, itemIndex) => itemIndex === index ? { ...question, ...data } : question) }) : current);
@@ -948,6 +1044,7 @@ function QuestionTreeSettings() {
       const cleaned: QuestionTree = { version: 2, questions: tree.questions.map((question) => ({ ...question, label: question.label.trim(), options: question.type === "select" ? (question.options || []).map((option) => option.trim()).filter(Boolean) : undefined })) };
       const saved = await updateQuestionTree(cleaned);
       setTree(saved);
+      setSavedTree(saved);
       setTreeMessage("質問ツリーを保存しました");
     } catch (err) {
       setTreeError(err instanceof Error ? err.message : "質問ツリーの保存に失敗しました");
@@ -1013,8 +1110,9 @@ function faqDraftStatus(draft: FAQDraft) {
   return "未設定";
 }
 
-function FAQSettings() {
+function FAQSettings({ onDirtyChange }: DirtyAwareSettingsProps) {
   const [drafts, setDrafts] = useState<Record<string, FAQDraft>>({});
+  const [savedDrafts, setSavedDrafts] = useState<Record<string, FAQDraft>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const [faqSearch, setFAQSearch] = useState("");
   const [faqCategoryFilter, setFAQCategoryFilter] = useState("すべて");
@@ -1042,6 +1140,7 @@ function FAQSettings() {
         });
       });
       setDrafts(next);
+      setSavedDrafts(next);
     } catch (err) {
       setFAQError(err instanceof Error ? err.message : "FAQ設定の取得に失敗しました");
     } finally {
@@ -1052,6 +1151,11 @@ function FAQSettings() {
   useEffect(() => {
     loadFAQSettings();
   }, []);
+
+  useEffect(() => {
+    onDirtyChange(!isLoadingFAQ && snapshot(drafts) !== snapshot(savedDrafts));
+  }, [drafts, savedDrafts, isLoadingFAQ, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   function updateDraft(faqKey: string, data: Partial<FAQDraft>) {
     setDrafts((current) => ({ ...current, [faqKey]: { ...current[faqKey], ...data } }));
@@ -1069,7 +1173,9 @@ function FAQSettings() {
     setFAQMessage(null);
     try {
       const saved = await updateFAQSetting(faqKey, { answer: draft.answer, is_visible: draft.is_visible });
-      setDrafts((current) => ({ ...current, [faqKey]: { answer: saved.answer, is_visible: saved.is_visible } }));
+      const savedDraft = { answer: saved.answer, is_visible: saved.is_visible };
+      setDrafts((current) => ({ ...current, [faqKey]: savedDraft }));
+      setSavedDrafts((current) => ({ ...current, [faqKey]: savedDraft }));
       setFAQMessage("保存しました");
     } catch (err) {
       setFAQError(err instanceof Error ? err.message : "FAQ設定の保存に失敗しました");
@@ -1196,43 +1302,108 @@ const messageTemplateFields: { key: keyof AppSettings; label: string }[] = [
   { key: "interview_slots_message", label: "面接候補日送信メッセージ" },
   { key: "interview_confirmed_message", label: "面接確定メッセージ" },
   { key: "inquiry_complete_message", label: "お問い合わせ受付完了メッセージ" },
-  { key: "faq_preparing_message", label: "FAQ準備中メッセージ" },
-  { key: "reminder_1h_message", label: "1時間後リマインド" },
-  { key: "reminder_24h_message", label: "24時間後リマインド" },
-  { key: "reminder_3d_message", label: "3日後フォロー" }
+  { key: "faq_preparing_message", label: "FAQ準備中メッセージ" }
 ];
 
-function MessageAndReminderSettings() {
+const reminderMessageMaxLength = 5000;
+const reminderUnitLabels: Record<ReminderUnit, string> = { minutes: "分後", hours: "時間後", days: "日後" };
+
+function normalizeReminderSettings(settings: AppSettings): ReminderSetting[] {
+  if (Array.isArray(settings.reminders) && settings.reminders.length) return settings.reminders;
+  return [
+    { id: "legacy_1h", name: "リマインド 1", enabled: settings.reminder_1h_enabled, delay: settings.reminder_1h_hours, unit: "hours", message: settings.reminder_1h_message },
+    { id: "legacy_24h", name: "リマインド 2", enabled: settings.reminder_24h_enabled, delay: settings.reminder_24h_hours, unit: "hours", message: settings.reminder_24h_message },
+    { id: "legacy_3d", name: "リマインド 3", enabled: settings.reminder_3d_enabled, delay: settings.reminder_3d_hours, unit: "hours", message: settings.reminder_3d_message }
+  ];
+}
+
+function MessageAndReminderSettings({ onDirtyChange }: DirtyAwareSettingsProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [savedSettings, setSavedSettings] = useState<AppSettings | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  async function load() { setError(null); try { setSettings(await getSettings()); } catch (err) { setError(err instanceof Error ? err.message : "設定取得に失敗しました"); } }
+  async function load() {
+    setError(null);
+    try {
+      const loaded = await getSettings();
+      const normalized = { ...loaded, reminders: normalizeReminderSettings(loaded) };
+      setSettings(normalized);
+      setSavedSettings(normalized);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "設定取得に失敗しました");
+    }
+  }
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    onDirtyChange(Boolean(settings && savedSettings && snapshot(settings) !== snapshot(savedSettings)));
+  }, [settings, savedSettings, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   function update(key: keyof AppSettings, value: string | number | boolean) { setSettings((current) => current ? ({ ...current, [key]: value } as AppSettings) : current); }
+  function updateReminder(index: number, data: Partial<ReminderSetting>) {
+    setSettings((current) => current ? ({ ...current, reminders: current.reminders.map((reminder, itemIndex) => itemIndex === index ? { ...reminder, ...data } : reminder) }) : current);
+  }
+  function addReminder() {
+    setSettings((current) => current ? ({ ...current, reminders: [...current.reminders, { id: `reminder_${Date.now()}`, name: `リマインド ${current.reminders.length + 1}`, enabled: false, delay: 1, unit: "hours", message: "" }] }) : current);
+  }
+  function removeReminder(index: number) {
+    if (!settings || settings.reminders.length <= 1 || !window.confirm("このリマインドを削除しますか？")) return;
+    setSettings((current) => current ? ({ ...current, reminders: current.reminders.filter((_, itemIndex) => itemIndex !== index) }) : current);
+  }
+  function moveReminder(index: number, delta: number) {
+    setSettings((current) => {
+      if (!current) return current;
+      const target = index + delta;
+      if (target < 0 || target >= current.reminders.length) return current;
+      const reminders = [...current.reminders];
+      [reminders[index], reminders[target]] = [reminders[target], reminders[index]];
+      return { ...current, reminders };
+    });
+  }
   async function save() {
     if (!settings) return;
+    const invalidIndex = settings.reminders.findIndex((reminder) => !reminder.name.trim() || !reminder.message.trim() || reminder.message.length > reminderMessageMaxLength || !Number.isInteger(reminder.delay) || reminder.delay < 1);
+    if (invalidIndex >= 0) {
+      setError(`リマインド ${invalidIndex + 1}の名前、送信時間、本文（1〜${reminderMessageMaxLength}文字）を確認してください`);
+      return;
+    }
     setSaving(true); setMessage(null); setError(null);
-    const payload: Partial<AppSettings> = {
-      reminder_1h_enabled: settings.reminder_1h_enabled, reminder_1h_hours: settings.reminder_1h_hours, reminder_1h_template_key: settings.reminder_1h_template_key,
-      reminder_24h_enabled: settings.reminder_24h_enabled, reminder_24h_hours: settings.reminder_24h_hours, reminder_24h_template_key: settings.reminder_24h_template_key,
-      reminder_3d_enabled: settings.reminder_3d_enabled, reminder_3d_hours: settings.reminder_3d_hours, reminder_3d_template_key: settings.reminder_3d_template_key
-    };
+    const payload: Partial<AppSettings> = { reminders: settings.reminders };
     messageTemplateFields.forEach(({ key }) => { payload[key] = settings[key] as never; });
-    try { setSettings(await updateSettings(payload)); setMessage("リマインド・メッセージ設定を保存しました"); } catch (err) { setError(err instanceof Error ? err.message : "保存に失敗しました"); } finally { setSaving(false); }
+    try {
+      const saved = await updateSettings(payload);
+      const normalized = { ...saved, reminders: normalizeReminderSettings(saved) };
+      setSettings(normalized);
+      setSavedSettings(normalized);
+      setMessage("リマインド・メッセージ設定を保存しました");
+    } catch (err) { setError(err instanceof Error ? err.message : "保存に失敗しました"); } finally { setSaving(false); }
   }
   if (!settings) return <section className="panel"><h2>リマインド・メッセージテンプレート</h2>{error ? <div className="inlineError">{error}</div> : <div className="loadingCard">設定を取得中...</div>}</section>;
-  const reminders = [
-    ["1時間後", "reminder_1h_enabled", "reminder_1h_hours", "reminder_1h_template_key"],
-    ["24時間後", "reminder_24h_enabled", "reminder_24h_hours", "reminder_24h_template_key"],
-    ["3日後フォロー", "reminder_3d_enabled", "reminder_3d_hours", "reminder_3d_template_key"]
-  ] as const;
   return <section className="panel">
     <div className="panelHeader"><div><p className="eyebrow">Automation Settings</p><h2>リマインド・メッセージテンプレート</h2></div><div className="headerActions"><button className="secondaryButton" onClick={load}>再読み込み</button><button className="primaryButton" onClick={save} disabled={saving}>{saving ? "保存中..." : "保存"}</button></div></div>
-    <div className="inlineError listNotice" role="status">リマインドの自動送信機能は現在未接続です。<br />設定内容を保存してもメッセージは自動送信されません。</div>
+    <div className="reminderWarning listNotice" role="status"><strong>自動送信は未接続です</strong><span>リマインドの自動送信機能は現在未接続です。<br />設定内容を保存してもメッセージは自動送信されません。</span></div>
     {message && <div className="successBox listNotice">{message}</div>}{error && <div className="inlineError listNotice">{error}</div>}
-    <h3>リマインド設定（現在は変更できません）</h3><div className="cardList">{reminders.map(([label, enabledKey, hoursKey, templateKey]) => <article className="settingCard reminderCard" key={label}><label className="checkLabel"><input type="checkbox" checked={Boolean(settings[enabledKey])} disabled />{label}を有効にする</label><label>送信までの時間<input type="number" min="1" max="8760" value={Number(settings[hoursKey])} disabled /></label><label>使用テンプレート<select value={String(settings[templateKey])} disabled>{messageTemplateFields.map((field) => <option value={field.key} key={field.key}>{field.label}</option>)}</select></label></article>)}</div>
-    <h3>メッセージテンプレート</h3><div className="settingsForm">{messageTemplateFields.map((field) => <div className="settingsField" key={field.key}><label className="fieldLabel">{field.label}</label><textarea value={String(settings[field.key] ?? "")} onChange={(event) => update(field.key, event.target.value)} /></div>)}</div>
+    <div className="sectionHeading"><div><h3>リマインド設定</h3><p>送信条件と本文をリマインドごとに設定できます。</p></div></div>
+    <div className="reminderList">{settings.reminders.map((reminder, index) => {
+      const nameId = `reminder-name-${reminder.id}`;
+      const delayId = `reminder-delay-${reminder.id}`;
+      const unitId = `reminder-unit-${reminder.id}`;
+      const messageId = `reminder-message-${reminder.id}`;
+      return <article className="reminderCard" key={reminder.id}>
+        <div className="reminderCardHeader">
+          <div><span className="reminderSequence">リマインド {index + 1}</span><label className="srOnly" htmlFor={nameId}>リマインド名</label><input id={nameId} className="reminderNameInput" value={reminder.name} onChange={(event) => updateReminder(index, { name: event.target.value })} maxLength={80} /></div>
+          <label className="checkLabel reminderEnabled"><input type="checkbox" checked={reminder.enabled} onChange={(event) => updateReminder(index, { enabled: event.target.checked })} />{reminder.enabled ? "有効" : "無効"}</label>
+        </div>
+        <div className="reminderTiming">
+          <div><label className="fieldLabel" htmlFor={delayId}>送信までの時間</label><input id={delayId} type="number" min="1" max={reminder.unit === "minutes" ? 525600 : reminder.unit === "hours" ? 8760 : 365} value={reminder.delay} onChange={(event) => updateReminder(index, { delay: Number(event.target.value) })} /></div>
+          <div><label className="fieldLabel" htmlFor={unitId}>時間単位</label><select id={unitId} value={reminder.unit} onChange={(event) => updateReminder(index, { unit: event.target.value as ReminderUnit })}>{(Object.keys(reminderUnitLabels) as ReminderUnit[]).map((unit) => <option value={unit} key={unit}>{reminderUnitLabels[unit]}</option>)}</select></div>
+        </div>
+        <div className="reminderMessageField"><div className="fieldLabelRow"><label className="fieldLabel" htmlFor={messageId}>送信メッセージ本文</label><span className={reminder.message.length > reminderMessageMaxLength ? "characterCount characterCountError" : "characterCount"}>{reminder.message.length} / {reminderMessageMaxLength}文字</span></div><textarea id={messageId} value={reminder.message} maxLength={reminderMessageMaxLength} onChange={(event) => updateReminder(index, { message: event.target.value })} aria-invalid={!reminder.message.trim()} />{!reminder.message.trim() && <small className="fieldError">本文を入力してください</small>}</div>
+        <div className="reminderCardActions"><div><button className="miniIconButton" onClick={() => moveReminder(index, -1)} disabled={index === 0} aria-label={`${reminder.name}を上へ移動`}>↑</button> <button className="miniIconButton" onClick={() => moveReminder(index, 1)} disabled={index === settings.reminders.length - 1} aria-label={`${reminder.name}を下へ移動`}>↓</button></div><button className="dangerButton compactButton" onClick={() => removeReminder(index)} disabled={settings.reminders.length <= 1}>削除</button></div>
+      </article>;
+    })}</div>
+    <button className="secondaryButton addReminderButton" onClick={addReminder}>＋ リマインドを追加</button>
+    <div className="messageTemplateSection"><h3>共通メッセージテンプレート</h3><div className="settingsForm">{messageTemplateFields.map((field) => { const id = `message-template-${String(field.key)}`; return <div className="settingsField" key={field.key}><label className="fieldLabel" htmlFor={id}>{field.label}</label><textarea id={id} value={String(settings[field.key] ?? "")} onChange={(event) => update(field.key, event.target.value)} /></div>; })}</div></div>
   </section>;
 }
 
@@ -1260,20 +1431,32 @@ function AnalyticsView({ dashboard, applicants, statuses }: { dashboard: Dashboa
         <div className="metricBox"><span>面接確定件数</span><strong>{interviewConfirmed}</strong></div>
         <div className="metricBox"><span>採用数</span><strong>{hired}</strong></div>
       </div>
-      <div className="cardList">{statuses.filter((status) => status.is_active).map((status) => <article className="settingCard" key={status.status_key}><strong>{status.name}</strong><span>{applicants.filter((applicant) => applicant.status === status.name).length}件</span></article>)}</div>
-      <p className="sectionDescription">応募開始数はapplication_sessionsの全件数、応募完了数はstatusがcompletedの件数、応募完了率は「応募完了数 ÷ 応募開始数」です。開始数が0件の場合は「—」と表示します。面接確定件数は面接調整状況が「面接確定」、採用数は選考ステータスが「{hiredStatus}」の応募者数です。</p>
+      <div className="cardList analyticsStatusList">{statuses.filter((status) => status.is_active).map((status) => <article className="settingCard" key={status.status_key}><strong>{status.name}</strong><span>{applicants.filter((applicant) => applicant.status === status.name).length}件</span></article>)}</div>
+      <aside className="analyticsGuide" aria-labelledby="analytics-guide-title">
+        <h3 id="analytics-guide-title">集計について</h3>
+        <ul>
+          <li>応募開始数：application_sessionsの全件数</li>
+          <li>応募完了数：statusがcompletedの件数</li>
+          <li>応募完了率：応募完了数 ÷ 応募開始数</li>
+          <li>面接確定数：面接調整状況が面接確定の応募者数</li>
+          <li>採用数：選考ステータスが{hiredStatus}の応募者数</li>
+          <li>応募開始数が0件の場合、応募完了率は「—」と表示</li>
+        </ul>
+      </aside>
       {applicants.length === 0 && <div className="emptyState">分析対象の応募者データがありません。</div>}
     </section>
   );
 }
 
-function StatusSettings({ statuses, onSaved }: { statuses: ApplicantStatusSetting[]; onSaved: (saved: ApplicantStatusSetting[]) => Promise<void> }) {
+function StatusSettings({ statuses, onSaved, onDirtyChange }: { statuses: ApplicantStatusSetting[]; onSaved: (saved: ApplicantStatusSetting[]) => Promise<void>; onDirtyChange: (dirty: boolean) => void }) {
   const requiredStatusKeys = new Set(["new", "interview_adjusting", "interview_confirmed"]);
   const [drafts, setDrafts] = useState<ApplicantStatusSetting[]>(statuses);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   useEffect(() => setDrafts(statuses), [statuses]);
+  useEffect(() => { onDirtyChange(snapshot(drafts) !== snapshot(statuses)); }, [drafts, statuses, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
   function update(index: number, data: Partial<ApplicantStatusSetting>) { setDrafts((current) => current.map((status, itemIndex) => itemIndex === index ? { ...status, ...data } : status)); }
   function move(index: number, delta: number) { setDrafts((current) => { const target = index + delta; if (target < 0 || target >= current.length) return current; const next = [...current]; [next[index], next[target]] = [next[target], next[index]]; return next; }); }
   function addStatus() { setDrafts((current) => [...current, { status_key: `custom_${Date.now()}`, name: "新しいステータス", sort_order: current.length + 1, is_active: true }]); }
@@ -1311,8 +1494,9 @@ const settingsFields: { key: keyof AppSettings; label: string; type: "text" | "t
   { key: "notification_email", label: "通知先メールアドレス", type: "text" }
 ];
 
-function GeneralSettings() {
+function GeneralSettings({ onDirtyChange }: DirtyAwareSettingsProps) {
   const [settings, setSettings] = useState<AppSettings | null>(null);
+  const [savedSettings, setSavedSettings] = useState<AppSettings | null>(null);
   const [isLoadingSettings, setIsLoadingSettings] = useState(true);
   const [isSavingSettings, setIsSavingSettings] = useState(false);
   const [settingsMessage, setSettingsMessage] = useState<string | null>(null);
@@ -1324,6 +1508,7 @@ function GeneralSettings() {
     try {
       const data = await getSettings();
       setSettings(data);
+      setSavedSettings(data);
     } catch (err) {
       setSettingsError(err instanceof Error ? err.message : "設定の取得に失敗しました");
     } finally {
@@ -1334,6 +1519,11 @@ function GeneralSettings() {
   useEffect(() => {
     loadSettings();
   }, []);
+
+  useEffect(() => {
+    onDirtyChange(Boolean(settings && savedSettings && snapshot(settings) !== snapshot(savedSettings)));
+  }, [settings, savedSettings, onDirtyChange]);
+  useEffect(() => () => onDirtyChange(false), [onDirtyChange]);
 
   function updateField(key: keyof AppSettings, value: string | boolean) {
     setSettings((current) => current ? ({ ...current, [key]: value } as AppSettings) : current);
@@ -1353,6 +1543,7 @@ function GeneralSettings() {
         application_enabled: settings.application_enabled
       });
       setSettings(saved);
+      setSavedSettings(saved);
       setSettingsMessage("設定を保存しました");
     } catch (err) {
       setSettingsError(err instanceof Error ? err.message : "設定の保存に失敗しました");

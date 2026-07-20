@@ -22,6 +22,8 @@ body {
 }
 button, input, select, textarea { font: inherit; }
 button { cursor: pointer; }
+button:disabled { cursor: default; }
+.srOnly { position: absolute !important; width: 1px !important; height: 1px !important; padding: 0 !important; margin: -1px !important; overflow: hidden !important; clip: rect(0, 0, 0, 0) !important; white-space: nowrap !important; border: 0 !important; }
 .appShell { min-height: 100vh; }
 .sidebar {
   width: 260px;
@@ -108,6 +110,9 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .primaryButton, .secondaryButton {
   border: 0; border-radius: 13px; padding: 11px 15px; font-weight: 800;
 }
+.dangerButton { border: 1px solid #fecaca; border-radius: 13px; padding: 10px 14px; background: #fff5f5; color: #b42318; font-weight: 800; }
+.dangerButton:hover { background: #fee2e2; }
+.dangerButton:disabled { opacity: .45; }
 .primaryButton { background: var(--green); color: white; margin-top: 10px; }
 .primaryButton:disabled { opacity: .5; }
 .secondaryButton { background: white; border: 1px solid var(--line); color: var(--blueDark); }
@@ -226,12 +231,42 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .settingsToggle { border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 14px; }
 .questionEditorList { display: grid; gap: 14px; }
 .compactForm { max-width: none; }
-.reminderCard { display: grid; grid-template-columns: minmax(180px, 1fr) minmax(140px, .6fr) minmax(220px, 1fr); align-items: end; gap: 14px; }
-.reminderCard label { display: grid; gap: 6px; }
+.sectionHeading { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; margin: 24px 0 14px; }
+.sectionHeading p { color: var(--muted); margin: 6px 0 0; font-size: 13px; }
+.reminderWarning { display: grid; gap: 5px; border: 1px solid #f5cf72; border-radius: 14px; padding: 14px 16px; background: #fff9e8; color: #7c5700; line-height: 1.6; }
+.reminderWarning strong { font-size: 14px; }
+.reminderList { display: grid; gap: 16px; }
+.reminderCard { display: grid; gap: 18px; padding: 18px; border: 1px solid var(--line); border-radius: 18px; background: #f8fafc; }
+.reminderCardHeader { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.reminderCardHeader > div { flex: 1; min-width: 0; }
+.reminderSequence { display: block; color: var(--muted); font-size: 12px; font-weight: 800; margin-bottom: 6px; }
+.reminderNameInput { width: 100%; min-width: 0; padding: 8px 10px; font-size: 16px; font-weight: 800; background: #fff; }
+.reminderEnabled { flex-shrink: 0; border-radius: 999px; padding: 9px 12px; background: #fff; border: 1px solid var(--line); }
+.reminderTiming { display: grid; grid-template-columns: minmax(160px, 1fr) minmax(150px, .7fr); gap: 14px; max-width: 520px; }
+.reminderTiming > div { display: grid; gap: 7px; }
+.reminderTiming input, .reminderTiming select { width: 100%; min-width: 0; }
+.reminderMessageField { display: grid; gap: 7px; }
+.reminderMessageField textarea { min-height: 130px; background: #fff; }
+.fieldLabelRow { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.characterCount { color: var(--muted); font-size: 12px; }
+.characterCountError, .fieldError { color: #b42318; }
+.fieldError { font-weight: 700; }
+.reminderCardActions { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
+.addReminderButton { margin-top: 16px; }
+.messageTemplateSection { margin-top: 32px; padding-top: 24px; border-top: 1px solid var(--line); }
+.messageTemplateSection h3 { margin: 0 0 16px; }
 .settingCard small { display: block; color: var(--muted); margin-top: 4px; }
 .stepGrid, .analyticsGrid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
 .stepCard strong { display: block; margin-top: 8px; color: var(--blueDark); }
 .metricBox strong { display: block; font-size: 28px; color: var(--blueDark); margin-top: 6px; }
+.analyticsStatusList { gap: 14px; margin-top: 20px; margin-bottom: 28px; }
+.analyticsGuide { margin-top: 22px; border: 1px solid #cfe0f5; border-radius: 16px; background: #f4f8fd; padding: 18px 20px; color: #344054; }
+.analyticsGuide h3 { margin: 0 0 12px; color: var(--blueDark); }
+.analyticsGuide ul { margin: 0; padding-left: 20px; display: grid; gap: 8px; line-height: 1.6; }
+.confirmDialogBackdrop { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 20px; background: rgba(15, 23, 42, .48); }
+.confirmDialog { width: min(460px, 100%); border-radius: 20px; background: #fff; padding: 24px; box-shadow: 0 24px 80px rgba(15, 23, 42, .28); }
+.confirmDialog p { margin: 14px 0 22px; color: var(--muted); line-height: 1.7; }
+.confirmDialogActions { display: flex; flex-direction: row-reverse; gap: 10px; justify-content: flex-start; flex-wrap: wrap; }
 .barChart { margin-top: 20px; height: 22px; background: #edf2f7; border-radius: 999px; overflow: hidden; }
 .barChart div { height: 100%; background: linear-gradient(90deg, var(--green), var(--blue)); border-radius: inherit; }
 @media (max-width: 1180px) {
@@ -248,7 +283,12 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   input { min-width: auto; width: 100%; }
   .detailGrid, .stepGrid, .analyticsGrid { grid-template-columns: 1fr; }
   .rowStatusEditor, .faqItem { grid-template-columns: 1fr; }
-  .reminderCard { grid-template-columns: 1fr; }
+  .reminderCardHeader { align-items: stretch; flex-direction: column; }
+  .reminderEnabled { align-self: flex-start; }
+  .reminderTiming { grid-template-columns: 1fr; max-width: none; }
+  .reminderCardActions { align-items: stretch; flex-direction: column; }
+  .reminderCardActions .dangerButton { width: 100%; }
+  .confirmDialogActions { display: grid; grid-template-columns: 1fr; }
   .statusStep { grid-template-columns: 42px 1fr; }
   .statusStep .textButton { grid-column: 2; justify-self: start; }
   .addStatusBox { align-items: stretch; flex-direction: column; }

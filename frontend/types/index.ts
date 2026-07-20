@@ -129,6 +129,18 @@ export type AppSettings = {
   reminder_3d_enabled: boolean;
   reminder_3d_hours: number;
   reminder_3d_template_key: string;
+  reminders: ReminderSetting[];
+};
+
+export type ReminderUnit = "minutes" | "hours" | "days";
+
+export type ReminderSetting = {
+  id: string;
+  name: string;
+  enabled: boolean;
+  delay: number;
+  unit: ReminderUnit;
+  message: string;
 };
 
 export type QuestionType = "text" | "tel" | "textarea" | "select";
