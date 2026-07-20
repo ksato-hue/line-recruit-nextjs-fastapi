@@ -16,7 +16,11 @@ npm run dev
 ```env
 BACKEND_API_BASE_URL=http://localhost:8000
 ADMIN_API_KEY=replace_with_the_same_long_random_secret_as_backend
+ADMIN_BASIC_USERNAME=admin
+ADMIN_BASIC_PASSWORD=replace_with_a_long_random_password
 ```
+
+Renderでは上記4変数をfrontendサービスへ設定します。`ADMIN_API_KEY`とBasic認証情報はいずれも`NEXT_PUBLIC_`を付けず、サーバー側だけで保持してください。
 
 ## 画面
 

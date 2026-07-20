@@ -54,8 +54,12 @@ npm run dev
 |---|---|
 | `BACKEND_API_BASE_URL` | Next.jsサーバーから接続するFastAPIのURL |
 | `ADMIN_API_KEY` | backendと同一の共有キー。`NEXT_PUBLIC_`を付けない |
+| `ADMIN_BASIC_USERNAME` | 管理画面のBasic認証ユーザー名 |
+| `ADMIN_BASIC_PASSWORD` | 管理画面のBasic認証パスワード。十分に長いランダム値 |
 
 `ADMIN_API_KEY`と`LINE_CHANNEL_SECRET`は未設定時に保護を無効化せず、対象リクエストを拒否します。ローカル設定は[`backend/.env.example`](backend/.env.example)と[`frontend/.env.local.example`](frontend/.env.local.example)を参照してください。
+
+Renderのfrontendサービスには`BACKEND_API_BASE_URL`、`ADMIN_API_KEY`、`ADMIN_BASIC_USERNAME`、`ADMIN_BASIC_PASSWORD`を設定してください。Basic認証は管理画面HTMLと同一オリジンの`/api/admin/*`をサーバー側で保護し、認証情報をブラウザ保存領域へ書き込みません。将来はこの入口の認証層をSupabase Authのセッション検証へ置き換えられます。
 
 ## ドキュメント
 
@@ -84,7 +88,7 @@ npm run dev
 
 ## 公開前に残る重要事項
 
-- `ADMIN_API_KEY`はサーバー間認証であり、採用担当者のログイン機能ではありません。正式公開前に利用者認証・認可が必要です。
+- MVPでは管理画面入口をBasic認証で保護します。`ADMIN_API_KEY`は引き続きサーバー間認証専用です。正式運用ではSupabase Auth等による利用者別認証・認可へ移行します。
 - RLSは認証方式と企業権限が未確定のため、今回有効化していません。
 - `company_id`は追加済みですが、すべての業務クエリで企業境界を強制する完全なマルチテナント対応は未完了です。
 - 応募途中状態のDB永続化、Webhook冪等性、レート制限、監視・アラートは未実装です。

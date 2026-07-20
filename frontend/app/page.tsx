@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getInquiries, getLineMessages, getQuestionTree, getSettings, getStatusSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings, updateStatusSettings } from "../lib/api";
 import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree, QuestionTreeQuestion } from "../types";
 import faqTemplatesJson from "../../shared/faq_templates.json";
+import { formatJstDateTime } from "../lib/datetime";
 
 const faqTemplates = faqTemplatesJson as FAQTemplateCategory[];
 
@@ -17,16 +18,10 @@ const topMenuItems = [
 const settingsMenuItems = ["基本設定", "ステータス設定", "FAQ設定", "質問ツリー設定", "リマインド・メッセージテンプレート"];
 const interviewTypeOptions = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
 
-function formatDate(value?: string) {
-  if (!value) return "-";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return value;
-  return new Intl.DateTimeFormat("ja-JP", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit"
-  }).format(date);
+function maskLineUserId(value?: string) {
+  if (!value) return "未設定";
+  if (value.length <= 8) return `${value.slice(0, 2)}••••`;
+  return `${value.slice(0, 4)}••••${value.slice(-4)}`;
 }
 
 function statusClass(status?: string) {
@@ -45,7 +40,7 @@ function normalizeTags(tags: Applicant["tags"]) {
 }
 
 export default function AdminPage() {
-  const [activeMenu, setActiveMenu] = useState("ダッシュボード");
+  const [activeMenu, setActiveMenuState] = useState("ダッシュボード");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [applicants, setApplicants] = useState<Applicant[]>([]);
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
@@ -58,6 +53,11 @@ export default function AdminPage() {
   const [isSaving, setIsSaving] = useState(false);
   const [statuses, setStatuses] = useState<ApplicantStatusSetting[]>([]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+
+  function setActiveMenu(menu: string) {
+    setActiveMenuState(menu);
+    window.history.replaceState(null, "", `#${encodeURIComponent(menu)}`);
+  }
 
   async function loadData() {
     setIsLoading(true);
@@ -81,6 +81,11 @@ export default function AdminPage() {
   }
 
   useEffect(() => {
+    const menu = decodeURIComponent(window.location.hash.slice(1));
+    if ([...topMenuItems, ...settingsMenuItems].includes(menu)) {
+      setActiveMenuState(menu);
+      setSettingsOpen(settingsMenuItems.includes(menu));
+    }
     loadData();
   }, []);
 
@@ -110,23 +115,6 @@ export default function AdminPage() {
       await loadData();
     } catch (err) {
       setError(err instanceof Error ? err.message : "ステータス更新に失敗しました");
-    } finally {
-      setIsSaving(false);
-    }
-  }
-
-  async function handleApplicantStatusSave(applicant: Applicant, status: string) {
-    setIsSaving(true);
-    try {
-      const updated = await updateApplicant(applicant.id, { status });
-      setApplicants((current) => current.map((item) => item.id === applicant.id ? updated : item));
-      if (selectedApplicant?.id === applicant.id) {
-        setSelectedApplicant(updated);
-      }
-      await loadData();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "ステータス更新に失敗しました");
-      throw err;
     } finally {
       setIsSaving(false);
     }
@@ -217,7 +205,6 @@ export default function AdminPage() {
                 setSearch={setSearch}
                 setStatusFilter={setStatusFilter}
                 onSelectApplicant={setSelectedApplicant}
-                onStatusSave={handleApplicantStatusSave}
                 statusOptions={activeStatusNames}
               />
             )}
@@ -306,7 +293,7 @@ function DashboardView({ dashboard, applicants, inquiries, statuses, onSelectApp
           <div className="miniRows">
             {applicants.slice(0, 6).map((applicant) => (
               <button className="miniRow" key={applicant.id} onClick={() => onSelectApplicant(applicant)}>
-                <span className="avatar">{applicant.name?.slice(0, 1) || "応"}</span>
+                <span className="avatar" aria-hidden="true">{applicant.name?.slice(0, 1) || "応"}</span>
                 <span>
                   <strong>{applicant.name || "名前未入力"}</strong>
                   <small>{applicant.job || "希望職種未入力"}</small>
@@ -333,46 +320,16 @@ function TodoItem({ title, count, helper }: { title: string; count: number; help
   );
 }
 
-function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatusFilter, onSelectApplicant, onStatusSave, statusOptions }: {
+function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatusFilter, onSelectApplicant, statusOptions }: {
   applicants: Applicant[];
   search: string;
   statusFilter: string;
   setSearch: (value: string) => void;
   setStatusFilter: (value: string) => void;
   onSelectApplicant: (applicant: Applicant) => void;
-  onStatusSave: (applicant: Applicant, status: string) => Promise<void>;
   statusOptions: string[];
 }) {
   const filterOptions = Array.from(new Set([...statusOptions, "面接調整中", "面接確定"]));
-  const [statusDrafts, setStatusDrafts] = useState<Record<string, string>>({});
-  const [savingId, setSavingId] = useState<string | null>(null);
-  const [rowMessage, setRowMessage] = useState<string | null>(null);
-
-  useEffect(() => {
-    setStatusDrafts((current) => {
-      const next = { ...current };
-      applicants.forEach((applicant) => {
-        const key = String(applicant.id);
-        if (!(key in next)) next[key] = applicant.status || "";
-      });
-      return next;
-    });
-  }, [applicants]);
-
-  async function saveRowStatus(applicant: Applicant) {
-    const key = String(applicant.id);
-    const nextStatus = statusDrafts[key] || "";
-    setSavingId(key);
-    setRowMessage(null);
-    try {
-      await onStatusSave(applicant, nextStatus);
-      setRowMessage(`${applicant.name || "応募者"}のステータスを更新しました`);
-    } catch {
-      setRowMessage("ステータス更新に失敗しました");
-    } finally {
-      setSavingId(null);
-    }
-  }
 
   return (
     <section className="panel">
@@ -390,7 +347,6 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
           {filterOptions.map((status) => <option key={status}>{status}</option>)}
         </select>
       </div>
-      {rowMessage && <div className={rowMessage.includes("失敗") ? "inlineError listNotice" : "successBox listNotice"}>{rowMessage}</div>}
       <div className="tableWrap">
         <table>
           <thead>
@@ -398,7 +354,7 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
               <th>名前</th>
               <th>電話番号</th>
               <th>希望職種</th>
-              <th>応募ステータス</th>
+              <th>選考ステータス</th>
               <th>面接状況</th>
               <th>面接日時</th>
               <th>最終接触</th>
@@ -409,26 +365,14 @@ function ApplicantsView({ applicants, search, statusFilter, setSearch, setStatus
             {applicants.map((applicant) => (
               <tr key={applicant.id}>
                 <td><strong>{applicant.name || "名前未入力"}</strong></td>
-                <td>{applicant.phone || "-"}</td>
+                <td>{applicant.phone || "未登録"}</td>
                 <td>{applicant.job || "-"}</td>
                 <td>
-                  <div className="rowStatusEditor">
-                    <span className={statusClass(applicant.status)}>{applicant.status || "未設定"}</span>
-                    <select
-                      value={statusDrafts[String(applicant.id)] ?? applicant.status ?? ""}
-                      onChange={(event) => setStatusDrafts((current) => ({ ...current, [String(applicant.id)]: event.target.value }))}
-                    >
-                      <option value="">未設定</option>
-                      {statusOptions.map((status) => <option key={status}>{status}</option>)}
-                    </select>
-                    <button className="secondaryButton compactButton" onClick={() => saveRowStatus(applicant)} disabled={savingId === String(applicant.id)}>
-                      {savingId === String(applicant.id) ? "変更中..." : "変更する"}
-                    </button>
-                  </div>
+                  <span className={statusClass(applicant.status)}>{applicant.status || "未設定"}</span>
                 </td>
                 <td>{applicant.interview_status || "未設定"}</td>
-                <td>{applicant.interview_date ? formatDate(applicant.interview_date) : "-"}</td>
-                <td>{formatDate(applicant.created_at)}</td>
+                <td>{formatJstDateTime(applicant.interview_date)}</td>
+                <td>{formatJstDateTime(applicant.created_at)}</td>
                 <td><button className="textButton" onClick={() => onSelectApplicant(applicant)}>詳細を見る</button></td>
               </tr>
             ))}
@@ -560,12 +504,12 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
         </header>
 
         <div className="detailGrid">
-          <Detail label="電話番号" value={applicant.phone} />
-          <Detail label="LINEユーザーID" value={applicant.line_user_id} />
+          <Detail label="電話番号" value={applicant.phone || "未登録"} />
+          <Detail label="LINEユーザーID" value={maskLineUserId(applicant.line_user_id)} />
           <Detail label="希望職種" value={applicant.job} />
           <Detail label="応募動機" value={applicant.motivation} />
           <Detail label="面接ステータス" value={applicant.interview_status} />
-          <Detail label="面接日" value={applicant.interview_date} />
+          <Detail label="面接日" value={formatJstDateTime(applicant.interview_date)} />
         </div>
 
         <div className="drawerBlock interviewBlock">
@@ -612,7 +556,7 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
         <div className="drawerBlock lineSendBlock">
           <div className="blockHeader">
             <label>LINE送信</label>
-            <button className="secondaryButton" onClick={() => setShowLineForm((value) => !value)}>LINE送信</button>
+            <button className="secondaryButton" onClick={() => setShowLineForm((value) => !value)}>メッセージを入力</button>
           </div>
           {lineNotice && <div className="successBox">{lineNotice}</div>}
           {lineError && <div className="inlineError">{lineError}</div>}
@@ -628,7 +572,7 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
         </div>
 
         <div className="drawerBlock">
-          <label>ステータス変更</label>
+          <label>選考ステータス変更</label>
           <select value={applicant.status || ""} onChange={(event) => onStatusChange(applicant, event.target.value)} disabled={isSaving}>
             <option value="">未設定</option>
             {statusOptions.map((status) => <option key={status}>{status}</option>)}
@@ -658,7 +602,7 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
                 <li key={log.id}>
                   <span className={log.direction === "inbound" ? "timelineDotIn" : "timelineDotOut"} />
                   <div className="timelineBody">
-                    <small>{formatDate(log.created_at)}・{directionLabel(log.direction)}</small>
+                    <small>{formatJstDateTime(log.created_at)}・{directionLabel(log.direction)}</small>
                     <p>{log.message}</p>
                   </div>
                 </li>
@@ -675,7 +619,7 @@ function Detail({ label, value }: { label: string; value?: string }) {
   return (
     <div className="detailItem">
       <span>{label}</span>
-      <strong>{value || "-"}</strong>
+      <strong>{value || "未設定"}</strong>
     </div>
   );
 }
@@ -770,8 +714,8 @@ function HistoryView({ applicants }: { applicants: Applicant[] }) {
             <tbody>
               {filteredLogs.map((log) => (
                 <tr key={log.id}>
-                  <td>{formatDate(log.created_at)}</td>
-                  <td>{nameByLineUserId[log.line_user_id || ""] || log.line_user_id || "-"}</td>
+                  <td>{formatJstDateTime(log.created_at)}</td>
+                  <td>{nameByLineUserId[log.line_user_id || ""] || maskLineUserId(log.line_user_id)}</td>
                   <td>
                     <span className={log.direction === "inbound" ? "badge badgeBlue" : "badge badgeGreen"}>
                       {directionLabel(log.direction)}
@@ -813,8 +757,8 @@ function InquiriesView({ inquiries }: { inquiries: Inquiry[] }) {
           <tbody>
             {inquiries.map((inquiry) => (
               <tr key={inquiry.id}>
-                <td>{formatDate(inquiry.created_at)}</td>
-                <td>{inquiry.line_user_id || "-"}</td>
+                <td>{formatJstDateTime(inquiry.created_at)}</td>
+                <td>{maskLineUserId(inquiry.line_user_id)}</td>
                 <td>{inquiry.message || "-"}</td>
                 <td><span className="badge">{inquiry.status || "未対応"}</span></td>
               </tr>
@@ -1198,22 +1142,23 @@ function InterviewDateSettings({ applicants, onSelectApplicant }: { applicants: 
 }
 
 function AnalyticsView({ dashboard, applicants, statuses }: { dashboard: Dashboard | null; applicants: Applicant[]; statuses: ApplicantStatusSetting[] }) {
-  const total = Math.max(applicants.length, 1);
+  const total = applicants.length;
   const completedKeys = new Set(["completed", "interview_adjusting", "interview_confirmed", "casual_interview", "hired"]);
   const completedNames = new Set(statuses.filter((status) => completedKeys.has(status.status_key)).map((status) => status.name));
   const complete = applicants.filter((applicant) => completedNames.has(applicant.status || "")).length;
-  const rate = Math.round((complete / total) * 100);
+  const rate = total === 0 ? null : Math.round((complete / total) * 100);
   return (
     <section className="panel">
       <h2>簡易分析</h2>
       <div className="analyticsGrid">
-        <div className="metricBox"><span>応募完了率</span><strong>{rate}%</strong></div>
-        <div className="metricBox"><span>面接設定数</span><strong>{dashboard?.interview_count ?? 0}</strong></div>
+        <div className="metricBox"><span>応募完了率</span><strong>{rate === null ? "対象データなし" : `${rate}%`}</strong></div>
+        <div className="metricBox"><span>面接確定件数</span><strong>{dashboard?.interview_confirmed_count ?? applicants.filter((applicant) => applicant.interview_status === "面接確定").length}</strong></div>
         <div className="metricBox"><span>採用数</span><strong>{dashboard?.hired_count ?? 0}</strong></div>
       </div>
       <div className="cardList">{statuses.filter((status) => status.is_active).map((status) => <article className="settingCard" key={status.status_key}><strong>{status.name}</strong><span>{dashboard?.status_counts?.[status.name] ?? applicants.filter((applicant) => applicant.status === status.name).length}件</span></article>)}</div>
-      <div className="barChart">
-        <div style={{ width: `${rate}%` }} />
+      <p className="sectionDescription">応募完了率 = 応募完了以降の選考ステータスにある応募者数 ÷ 登録応募者総数。登録応募者が0件の場合は率を算出しません。面接確定件数は面接調整状況が「面接確定」の応募者数です。</p>
+      <div className="barChart" aria-label={rate === null ? "応募完了率は算出対象なし" : `応募完了率${rate}%`}>
+        <div style={{ width: `${rate ?? 0}%` }} />
       </div>
     </section>
   );

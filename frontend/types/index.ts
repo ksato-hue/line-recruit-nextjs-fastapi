@@ -179,6 +179,7 @@ export type Dashboard = {
   new_count: number;
   in_progress_count: number;
   interview_count: number;
+  interview_confirmed_count: number;
   hired_count: number;
   dropout_count: number;
   status_counts?: Record<string, number>;

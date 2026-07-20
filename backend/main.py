@@ -1752,7 +1752,8 @@ def api_dashboard():
 
     new_count = _safe_count(rows, "status", get_status_name("new", "新規応募"))
     in_progress_count = _safe_count(rows, "status", get_status_name("in_progress", "応募途中"))
-    interview_count = _safe_count(rows, "interview_status", "面接調整中") + _safe_count(rows, "status", get_status_name("interview_adjusting", "面接調整中"))
+    interview_count = _safe_count(rows, "interview_status", "面接調整中")
+    interview_confirmed_count = _safe_count(rows, "interview_status", "面接確定")
     hired_count = _safe_count(rows, "status", get_status_name("hired", "採用"))
     dropout_count = _safe_count(rows, "status", "離脱")
 
@@ -1762,6 +1763,7 @@ def api_dashboard():
         "new_count": new_count,
         "in_progress_count": in_progress_count,
         "interview_count": interview_count,
+        "interview_confirmed_count": interview_confirmed_count,
         "hired_count": hired_count,
         "dropout_count": dropout_count,
         "status_counts": status_counts,
@@ -1802,6 +1804,8 @@ def api_update_applicant(applicant_id: str, payload: ApplicantUpdate):
     update_data = payload.model_dump(exclude_none=True)
     if not update_data:
         raise HTTPException(status_code=400, detail="更新内容がありません")
+    if update_data.get("interview_status") == "面接確定":
+        update_data["status"] = get_status_name("interview_confirmed", "面接確定")
     if "status" in update_data:
         active_statuses = {
             row["name"] for row in get_applicant_status_settings() if row.get("is_active")
