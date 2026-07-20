@@ -4,7 +4,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import base64
 import hashlib
 import hmac
@@ -38,6 +38,7 @@ app.add_middleware(
 
 COMPANY_ID = os.getenv("COMPANY_ID", "default")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
+APPLICATION_DROPOUT_HOURS = max(int(os.getenv("APPLICATION_DROPOUT_HOURS", "24")), 1)
 logger = logging.getLogger("line_recruit")
 
 
@@ -337,7 +338,7 @@ async def webhook(request: Request):
         _log_event("line.message.received", "accepted", subject_id=user_id)
         try_insert_line_message_log(user_id, message, "inbound", "reply")
 
-        response = handle_message(user_id, message)
+        response = handle_message(user_id, message, event.get("webhookEventId"))
 
         outbound_text = response.get("text") or response.get("body") or ""
         if outbound_text:
@@ -910,27 +911,177 @@ def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict
         )
 
 
-def _application_confirmation(user_id: str) -> dict[str, Any]:
+def _sanitize_session_answers(value: Any) -> list[dict[str, str]]:
+    if not isinstance(value, list):
+        return []
+    answers: list[dict[str, str]] = []
+    for item in value:
+        if not isinstance(item, dict) or not item.get("question_id"):
+            continue
+        answers.append({
+            "question_id": str(item["question_id"]),
+            "answer": str(item.get("answer") or ""),
+        })
+    return answers
+
+
+def _find_application_session_for_event(user_id: str, event_id: Optional[str]) -> Optional[dict[str, Any]]:
+    if not event_id:
+        return None
+    result = (
+        supabase.table("application_sessions")
+        .select("id,status")
+        .eq("company_id", COMPANY_ID)
+        .eq("line_user_id", user_id)
+        .eq("last_event_id", event_id)
+        .limit(1)
+        .execute()
+    )
+    return (result.data or [None])[0]
+
+
+def _get_active_application_session(user_id: str) -> Optional[dict[str, Any]]:
+    result = (
+        supabase.table("application_sessions")
+        .select("*")
+        .eq("company_id", COMPANY_ID)
+        .eq("line_user_id", user_id)
+        .eq("status", "active")
+        .order("started_at", desc=True)
+        .limit(1)
+        .execute()
+    )
+    return (result.data or [None])[0]
+
+
+def _hydrate_application_session(user_id: str, row: dict[str, Any]) -> dict[str, Any]:
+    tree = get_question_tree_for_bot()
+    questions = tree.get("questions") or []
+    current_key = row.get("current_question_key")
+    if current_key == "__confirm__":
+        question_index = len(questions)
+        state = "confirming"
+    else:
+        question_index = next(
+            (index for index, question in enumerate(questions) if question.get("id") == current_key),
+            min(len(_sanitize_session_answers(row.get("answers"))), len(questions)),
+        )
+        state = "applying_question"
+    session = {
+        "id": row["id"],
+        "tree": tree,
+        "answers": _sanitize_session_answers(row.get("answers")),
+        "question_index": question_index,
+    }
+    application_tree_sessions[user_id] = session
+    user_states[user_id] = state
+    return session
+
+
+def _restore_active_application_session(user_id: str) -> Optional[dict[str, Any]]:
+    row = _get_active_application_session(user_id)
+    return _hydrate_application_session(user_id, row) if row else None
+
+
+def _persist_application_session(user_id: str, event_id: Optional[str] = None) -> None:
+    session = application_tree_sessions.get(user_id)
+    if not session or not session.get("id"):
+        raise RuntimeError("application session is not initialized")
+    questions = session.get("tree", {}).get("questions") or []
+    index = int(session.get("question_index", 0))
+    current_key = "__confirm__" if index >= len(questions) else str(questions[index].get("id") or "")
+    update_data: dict[str, Any] = {
+        "current_question_key": current_key,
+        "answers": _sanitize_session_answers(session.get("answers")),
+        "last_activity_at": _utc_now(),
+    }
+    if event_id:
+        update_data["last_event_id"] = event_id
+    result = (
+        supabase.table("application_sessions")
+        .update(update_data)
+        .eq("id", session["id"])
+        .eq("company_id", COMPANY_ID)
+        .eq("status", "active")
+        .execute()
+    )
+    if not result.data:
+        raise RuntimeError("active application session could not be updated")
+
+
+def _start_or_resume_application_session(user_id: str, event_id: Optional[str]) -> tuple[dict[str, Any], bool]:
+    existing = _get_active_application_session(user_id)
+    if existing:
+        session = _hydrate_application_session(user_id, existing)
+        _persist_application_session(user_id, event_id)
+        return session, True
+
+    tree = get_question_tree_for_bot()
+    row = {
+        "company_id": COMPANY_ID,
+        "line_user_id": user_id,
+        "status": "active",
+        "answers": [],
+        "current_question_key": None,
+        "last_event_id": event_id,
+    }
+    try:
+        result = supabase.table("application_sessions").insert(row).execute()
+        created = (result.data or [None])[0]
+    except Exception:
+        # The partial unique index may have accepted the same user's session in another worker.
+        created = _get_active_application_session(user_id)
+    if not created:
+        raise RuntimeError("application session could not be created")
+    return _hydrate_application_session(user_id, created), False
+
+
+def _cancel_application_session(user_id: str, event_id: Optional[str]) -> None:
+    row = _get_active_application_session(user_id)
+    if row:
+        update_data: dict[str, Any] = {
+            "status": "cancelled",
+            "cancelled_at": _utc_now(),
+            "last_activity_at": _utc_now(),
+            "current_question_key": None,
+            "answers": [],
+        }
+        if event_id:
+            update_data["last_event_id"] = event_id
+        supabase.table("application_sessions").update(update_data).eq("id", row["id"]).eq("status", "active").execute()
+    application_tree_sessions.pop(user_id, None)
+    applicants.pop(user_id, None)
+
+
+def _application_confirmation(user_id: str, event_id: Optional[str] = None) -> dict[str, Any]:
     """質問配列の回答を既存applicants項目へ反映し、確認画面を返します。"""
     session = application_tree_sessions.get(user_id) or {}
     data = applicants.get(user_id, {})
-    answers = session.get("answers") or []
+    answers = _sanitize_session_answers(session.get("answers"))
+    question_by_id = {
+        str(question.get("id")): question
+        for question in session.get("tree", {}).get("questions") or []
+    }
     additional = []
     for item in answers:
-        system_field = item.get("system_field")
+        question = question_by_id.get(str(item.get("question_id")), {})
+        system_field = question.get("system_field")
         if system_field in {"name", "phone", "job", "motivation"}:
             data[system_field] = item.get("answer", "")
         elif item.get("answer"):
-            additional.append(f"■{item.get('question')}\n{item.get('answer')}")
+            additional.append(f"■{question.get('label') or item.get('question_id')}\n{item.get('answer')}")
     if additional:
         existing = str(data.get("motivation") or "").strip()
         data["motivation"] = "\n\n".join([value for value in [existing, *additional] if value])
     applicants[user_id] = data
     user_states[user_id] = "confirming"
+    session["question_index"] = len(session.get("tree", {}).get("questions") or [])
+    _persist_application_session(user_id, event_id)
 
     body = "【応募内容の確認】\n\n以下の内容でお間違いないかご確認ください。\n\n"
     for item in answers:
-        body += f"■{item.get('question')}\n{item.get('answer')}\n\n"
+        question = question_by_id.get(str(item.get("question_id")), {})
+        body += f"■{question.get('label') or item.get('question_id')}\n{item.get('answer')}\n\n"
     body += (
         "内容を修正したい場合は「修正」を選択してください。\n"
         "問題なければ「確認」を選択してください。"
@@ -946,7 +1097,7 @@ def _question_is_visible(question: dict[str, Any], answers: list[dict[str, Any]]
     return answer_by_id.get(condition.get("question_id")) == condition.get("equals")
 
 
-def _application_question_response(user_id: str) -> dict[str, Any]:
+def _application_question_response(user_id: str, event_id: Optional[str] = None) -> dict[str, Any]:
     session = application_tree_sessions[user_id]
     questions = session["tree"].get("questions") or []
     index = int(session.get("question_index", 0))
@@ -955,9 +1106,10 @@ def _application_question_response(user_id: str) -> dict[str, Any]:
         index += 1
     session["question_index"] = index
     if index >= len(questions):
-        return _application_confirmation(user_id)
+        return _application_confirmation(user_id, event_id)
     question = questions[index]
     user_states[user_id] = "applying_question"
+    _persist_application_session(user_id, event_id)
     required_label = "必須" if question.get("required") else "任意"
     buttons = list(question.get("options") or []) if question.get("type") == "select" else []
     if not question.get("required"):
@@ -971,17 +1123,27 @@ def _application_question_response(user_id: str) -> dict[str, Any]:
 
 def _store_application_answer(user_id: str, question: dict[str, Any], answer: str) -> None:
     session = application_tree_sessions[user_id]
-    session.setdefault("answers", []).append({
-        "question_id": question.get("id"),
-        "question": question.get("label"),
-        "answer": answer,
-        "system_field": question.get("system_field"),
-    })
+    question_id = str(question.get("id") or "")
+    answers = [
+        item for item in _sanitize_session_answers(session.get("answers"))
+        if item.get("question_id") != question_id
+    ]
+    answers.append({"question_id": question_id, "answer": answer})
+    session["answers"] = answers
     session["question_index"] = int(session.get("question_index", 0)) + 1
 
 
-def handle_message(user_id, message):
+def handle_message(user_id: str, message: str, event_id: Optional[str] = None):
+    if _find_application_session_for_event(user_id, event_id):
+        return text_response("この操作はすでに処理済みです。", main_menu())
+
     state = user_states.get(user_id)
+    if not state:
+        restored = _restore_active_application_session(user_id)
+        if restored:
+            state = user_states.get(user_id)
+            if state == "confirming":
+                _application_confirmation(user_id)
 
     confirmation_response = handle_interview_confirmation(user_id, message)
     if confirmation_response:
@@ -1003,8 +1165,7 @@ def handle_message(user_id, message):
 
     if message == "キャンセル":
         user_states[user_id] = None
-        applicants[user_id] = {}
-        application_tree_sessions.pop(user_id, None)
+        _cancel_application_session(user_id, event_id)
         return text_response(
             "【入力をキャンセルしました】\n必要な場合は、もう一度メニューから選択してください。",
             main_menu()
@@ -1015,51 +1176,51 @@ def handle_message(user_id, message):
         if not settings.get("application_enabled", True):
             return text_response(str(settings.get("application_closed_message") or APPLICATION_CLOSED_MESSAGE), ["お問い合わせ", "メニュー"])
 
-        if user_id in applicants and applicants[user_id]:
-            data = applicants[user_id]
-            user_states[user_id] = "confirming"
-            data = applicants[user_id]
- 
-            return card_response(
-                "前回の応募情報",
-                f"以下の内容でお間違いないかご確認ください。\n\n"
-                f"■お名前\n{data.get('name', '')}\n\n"
-                f"■電話番号\n{data.get('phone', '')}\n\n"
-                f"■希望職種\n{data.get('job', '')}\n\n"
-                f"内容を修正したい場合は「修正」を選択してください。",
-                confirm_menu()
-            )
-
-        applicants[user_id] = {}
-        application_tree_sessions[user_id] = {"tree": get_question_tree_for_bot(), "answers": [], "question_index": 0}
+        session, resumed = _start_or_resume_application_session(user_id, event_id)
+        if resumed and user_states.get(user_id) == "confirming":
+            response = _application_confirmation(user_id, event_id)
+            response["text"] = f"応募入力を再開します。\n\n{response['text']}"
+            return response
         start_message = str(settings.get("application_start_message") or DEFAULT_APP_SETTINGS["application_start_message"])
-        response = _application_question_response(user_id)
-        response["text"] = f"{start_message}\n\n{response['text']}"
+        response = _application_question_response(user_id, event_id)
+        prefix = "応募入力を続きから再開します。" if resumed else start_message
+        response["text"] = f"{prefix}\n\n{response['text']}"
         return response
 
     if message == "修正":
         applicants[user_id] = {}
-        application_tree_sessions[user_id] = {"tree": get_question_tree_for_bot(), "answers": [], "question_index": 0}
-        response = _application_question_response(user_id)
+        session = application_tree_sessions.get(user_id) or _restore_active_application_session(user_id)
+        if not session:
+            session, _ = _start_or_resume_application_session(user_id, event_id)
+        session["tree"] = get_question_tree_for_bot()
+        session["answers"] = []
+        session["question_index"] = 0
+        response = _application_question_response(user_id, event_id)
         response["text"] = f"応募内容を修正します。\n\n{response['text']}"
         return response
 
     if message == "確認":
         if user_id in applicants and applicants[user_id]:
-            user_states[user_id] = None
+            session = application_tree_sessions.get(user_id)
+            if not session or not session.get("id"):
+                return text_response("応募セッションを確認できませんでした。「応募する」から再開してください。", main_menu())
             data = applicants[user_id]
-            
-            supabase.table("applicants").insert({
-                "line_user_id": user_id,
-                "name": data.get("name"),
-                "phone": data.get("phone"),
-                "job": data.get("job"),
-                "motivation": data.get("motivation"),
-                "status": get_status_name("new", "新規応募")
+            supabase.rpc("complete_application_session", {
+                "p_session_id": session["id"],
+                "p_company_id": COMPANY_ID,
+                "p_line_user_id": user_id,
+                "p_name": data.get("name"),
+                "p_phone": data.get("phone"),
+                "p_job": data.get("job"),
+                "p_motivation": data.get("motivation"),
+                "p_applicant_status": get_status_name("new", "新規応募"),
+                "p_event_id": event_id,
             }).execute()
             _log_event("application.save", "success", subject_id=user_id)
 
+            user_states[user_id] = None
             application_tree_sessions.pop(user_id, None)
+            applicants.pop(user_id, None)
             complete_message = str(
                 get_app_settings().get("application_complete_message")
                 or DEFAULT_APP_SETTINGS["application_complete_message"]
@@ -1074,33 +1235,36 @@ def handle_message(user_id, message):
     if state in ["applying_question", "applying_other"]:
         session = application_tree_sessions.get(user_id)
         if not session:
+            session = _restore_active_application_session(user_id)
+        if not session:
             user_states[user_id] = None
-            return text_response(
-                "応募情報の入力状態がリセットされました。\nお手数ですが「応募する」からやり直してください。",
-                main_menu()
-            )
+            return text_response("応募情報を確認できませんでした。「応募する」から再開してください。", main_menu())
         questions = session["tree"].get("questions") or []
         index = int(session.get("question_index", 0))
         if index >= len(questions):
-            return _application_confirmation(user_id)
+            return _application_confirmation(user_id, event_id)
         question = questions[index]
         answer = message.strip()
         if state == "applying_other":
             if not answer:
+                _persist_application_session(user_id, event_id)
                 return text_response("希望職種を入力してください。", cancel_menu())
         elif answer == "スキップ" and not question.get("required"):
             answer = ""
         elif question.get("type") == "select":
             options = [str(option) for option in question.get("options") or []]
             if answer not in options:
+                _persist_application_session(user_id, event_id)
                 return text_response("選択肢から選んでください。", options[:12] + ["キャンセル"])
             if answer == "その他" and question.get("allow_other"):
                 user_states[user_id] = "applying_other"
+                _persist_application_session(user_id, event_id)
                 return text_response("希望する職種を自由入力してください。", cancel_menu())
         elif question.get("required") and not answer:
+            _persist_application_session(user_id, event_id)
             return text_response(f"{question.get('label')}は必須です。入力してください。", cancel_menu())
         _store_application_answer(user_id, question, answer)
-        return _application_question_response(user_id)
+        return _application_question_response(user_id, event_id)
 
     if message == "お問い合わせ":
         user_states[user_id] = "waiting_inquiry"
@@ -1692,6 +1856,16 @@ def _safe_count(rows: list[dict[str, Any]], key: str, value: str) -> int:
     return len([row for row in rows if row.get(key) == value])
 
 
+def _parse_database_datetime(value: Any) -> Optional[datetime]:
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    except ValueError:
+        return None
+
+
 def _normalize_slot_values(slots: list[str]) -> list[str]:
     normalized: list[str] = []
     for slot in slots:
@@ -1739,11 +1913,25 @@ def api_health():
 
 @app.get("/api/dashboard", dependencies=[Depends(require_admin)])
 def api_dashboard():
-    applicants_result = supabase.table("applicants").select("*").execute()
-    inquiries_result = supabase.table("inquiries").select("*").execute()
+    applicants_result = supabase.table("applicants").select("status,interview_status").execute()
+    inquiries_result = supabase.table("inquiries").select("status").execute()
+    recent_applicants_result = (
+        supabase.table("applicants")
+        .select("id,name,job,status,interview_status,interview_date,created_at,line_user_id,phone,motivation,memo,tags")
+        .order("created_at", desc=True)
+        .limit(6)
+        .execute()
+    )
+    sessions_result = (
+        supabase.table("application_sessions")
+        .select("status,last_activity_at")
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
 
     rows = applicants_result.data or []
     inquiries = inquiries_result.data or []
+    sessions = sessions_result.data or []
     status_settings = get_applicant_status_settings()
     status_counts = {
         status["name"]: _safe_count(rows, "status", status["name"])
@@ -1751,26 +1939,48 @@ def api_dashboard():
     }
 
     new_count = _safe_count(rows, "status", get_status_name("new", "新規応募"))
-    in_progress_count = _safe_count(rows, "status", get_status_name("in_progress", "応募途中"))
+    application_started_count = len(sessions)
+    application_completed_count = _safe_count(sessions, "status", "completed")
+    in_progress_count = _safe_count(sessions, "status", "active")
+    dropout_cutoff = datetime.now(timezone.utc) - timedelta(hours=APPLICATION_DROPOUT_HOURS)
+    dropout_count = len([
+        session for session in sessions
+        if session.get("status") == "active"
+        and (_parse_database_datetime(session.get("last_activity_at")) or datetime.max.replace(tzinfo=timezone.utc)) <= dropout_cutoff
+    ])
+    application_completion_rate = (
+        round(application_completed_count / application_started_count * 100, 1)
+        if application_started_count else None
+    )
     interview_count = _safe_count(rows, "interview_status", "面接調整中")
     interview_confirmed_count = _safe_count(rows, "interview_status", "面接確定")
     hired_count = _safe_count(rows, "status", get_status_name("hired", "採用"))
-    dropout_count = _safe_count(rows, "status", "離脱")
+    unanswered_inquiry_count = len([
+        inquiry for inquiry in inquiries
+        if not inquiry.get("status") or inquiry.get("status") == "未対応"
+    ])
 
     return {
         "applicant_count": len(rows),
         "inquiry_count": len(inquiries),
         "new_count": new_count,
         "in_progress_count": in_progress_count,
+        "application_started_count": application_started_count,
+        "application_completed_count": application_completed_count,
+        "application_completion_rate": application_completion_rate,
+        "dropout_threshold_hours": APPLICATION_DROPOUT_HOURS,
         "interview_count": interview_count,
         "interview_confirmed_count": interview_confirmed_count,
         "hired_count": hired_count,
         "dropout_count": dropout_count,
+        "unanswered_inquiry_count": unanswered_inquiry_count,
+        "recent_applicants": recent_applicants_result.data or [],
         "status_counts": status_counts,
         "todo": {
-            "one_hour_reminder": in_progress_count,
-            "twenty_four_hour_reminder": dropout_count,
-            "interview_date_waiting": interview_count,
+            "in_progress": in_progress_count,
+            "dropout": dropout_count,
+            "interview_adjusting": interview_count,
+            "unanswered_inquiries": unanswered_inquiry_count,
         },
     }
 

@@ -178,14 +178,21 @@ export type Dashboard = {
   inquiry_count: number;
   new_count: number;
   in_progress_count: number;
+  application_started_count: number;
+  application_completed_count: number;
+  application_completion_rate: number | null;
+  dropout_threshold_hours: number;
   interview_count: number;
   interview_confirmed_count: number;
   hired_count: number;
   dropout_count: number;
+  unanswered_inquiry_count: number;
+  recent_applicants: Applicant[];
   status_counts?: Record<string, number>;
   todo: {
-    one_hour_reminder: number;
-    twenty_four_hour_reminder: number;
-    interview_date_waiting: number;
+    in_progress: number;
+    dropout: number;
+    interview_adjusting: number;
+    unanswered_inquiries: number;
   };
 };

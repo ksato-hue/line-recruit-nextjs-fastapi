@@ -67,7 +67,7 @@ h1 { font-size: 28px; }
 h2 { font-size: 19px; }
 .eyebrow { margin: 0 0 6px; color: var(--blue); font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
 .gridStack { display: grid; gap: 20px; }
-.kpiGrid { display: grid; grid-template-columns: repeat(6, minmax(140px, 1fr)); gap: 14px; }
+.kpiGrid { display: grid; grid-template-columns: repeat(4, minmax(140px, 1fr)); gap: 14px; }
 .kpiCard, .panel, .loadingCard, .errorBox {
   background: var(--panel); border: 1px solid var(--line); border-radius: 22px;
   box-shadow: var(--shadow);
@@ -115,6 +115,7 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .iconButton { width: 38px; height: 38px; border-radius: 13px; border: 1px solid var(--line); background: #fff; font-size: 22px; }
 .loadingCard, .errorBox { padding: 18px; }
 .errorBox { background: #fff5f5; color: #b42318; margin-bottom: 14px; }
+.emptyState { padding: 18px; border: 1px dashed var(--line); border-radius: 14px; background: #f8fafc; color: var(--muted); line-height: 1.7; }
 .drawerBackdrop { position: fixed; inset: 0; background: rgba(15, 23, 42, .28); display: flex; justify-content: flex-end; z-index: 30; }
 .drawer { width: min(520px, 100%); height: 100%; background: #fff; padding: 24px; overflow: auto; box-shadow: -20px 0 60px rgba(0,0,0,.16); }
 .drawerHeader { display: flex; justify-content: space-between; align-items: flex-start; border-bottom: 1px solid var(--line); padding-bottom: 18px; margin-bottom: 18px; }
@@ -124,6 +125,7 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .detailItem strong { font-size: 14px; word-break: break-word; }
 .drawerBlock { margin-top: 18px; }
 .drawerBlock select { width: 100%; }
+.statusConfirmation { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; color: var(--muted); font-size: 13px; }
 .rowStatusEditor { display: grid; grid-template-columns: auto minmax(160px, 1fr) auto; gap: 8px; align-items: center; }
 .listNotice { margin-bottom: 14px; }
 .blockHeader { display: flex; justify-content: space-between; align-items: center; gap: 12px; }
