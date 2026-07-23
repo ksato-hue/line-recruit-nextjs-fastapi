@@ -764,6 +764,7 @@ def _find_active_interview_slot(line_user_id: str, slot_datetime: str) -> Option
     result = (
         supabase.table("interview_slots")
         .select("*")
+        .eq("company_id", COMPANY_ID)
         .eq("line_user_id", line_user_id)
         .eq("slot_datetime", normalized_datetime)
         .order("created_at", desc=True)
@@ -777,12 +778,13 @@ def _find_active_interview_slot(line_user_id: str, slot_datetime: str) -> Option
 
 def _get_pending_interview_confirmation(user_id: str) -> Optional[dict[str, Any]]:
     pending = interview_confirmations.get(user_id)
-    if pending:
+    if pending and pending.get("company_id") == COMPANY_ID:
         return pending
 
     result = (
         supabase.table("interview_slots")
         .select("*")
+        .eq("company_id", COMPANY_ID)
         .eq("line_user_id", user_id)
         .eq("status", "確認待ち")
         .order("created_at", desc=True)
@@ -797,6 +799,7 @@ def _get_pending_interview_confirmation(user_id: str) -> Optional[dict[str, Any]
         "applicant_id": slot.get("applicant_id"),
         "slot_datetime": slot.get("slot_datetime"),
         "interview_type": slot.get("interview_type") or "面接",
+        "company_id": COMPANY_ID,
     }
 
 
@@ -811,17 +814,23 @@ def _finish_interview_confirmation(user_id: str) -> dict[str, Any]:
     selected_slot_id = pending.get("slot_id")
     interview_type = pending.get("interview_type") or "面接"
     selected_at = _utc_now()
+    _get_applicant_or_404(applicant_id)
 
-    (
+    selected_result = (
         supabase.table("interview_slots")
         .update({"status": "選択済み", "selected_at": selected_at})
         .eq("id", selected_slot_id)
+        .eq("applicant_id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
+    if not selected_result.data:
+        raise HTTPException(status_code=404, detail="面接候補が見つかりません")
     (
         supabase.table("interview_slots")
         .update({"status": "キャンセル"})
         .eq("applicant_id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .neq("id", selected_slot_id)
         .execute()
     )
@@ -833,6 +842,7 @@ def _finish_interview_confirmation(user_id: str) -> dict[str, Any]:
             "interview_date": selected_datetime,
         })
         .eq("id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
 
@@ -862,18 +872,24 @@ def _reset_interview_confirmation(user_id: str) -> dict[str, Any]:
 
     slot_id = pending.get("slot_id")
     applicant_id = pending.get("applicant_id")
+    _get_applicant_or_404(applicant_id)
     if slot_id:
-        (
+        reset_result = (
             supabase.table("interview_slots")
             .update({"status": "候補"})
             .eq("id", slot_id)
+            .eq("applicant_id", applicant_id)
+            .eq("company_id", COMPANY_ID)
             .execute()
         )
+        if not reset_result.data:
+            raise HTTPException(status_code=404, detail="面接候補が見つかりません")
 
     slot_result = (
         supabase.table("interview_slots")
         .select("*")
         .eq("applicant_id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
     buttons = [
@@ -915,19 +931,25 @@ def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict
         if not applicant_id or not selected_datetime or not selected_slot_id:
             _log_event("interview.slot.select", "invalid_record", subject_id=user_id)
             return None
+        _get_applicant_or_404(applicant_id)
 
-        (
+        selected_result = (
             supabase.table("interview_slots")
             .update({"status": "確認待ち"})
             .eq("id", selected_slot_id)
+            .eq("applicant_id", applicant_id)
+            .eq("company_id", COMPANY_ID)
             .execute()
         )
+        if not selected_result.data:
+            raise HTTPException(status_code=404, detail="面接候補が見つかりません")
         user_states[user_id] = "confirming_interview_slot"
         interview_confirmations[user_id] = {
             "slot_id": selected_slot_id,
             "applicant_id": applicant_id,
             "slot_datetime": selected_datetime,
             "interview_type": selected_slot.get("interview_type") or "面接",
+            "company_id": COMPANY_ID,
         }
 
         return text_response(
@@ -1503,6 +1525,7 @@ def push_line_message(line_user_id: str, text: str, buttons: Optional[list[str]]
 def try_insert_line_message_log(line_user_id: str, message: str, direction: str, message_type: str) -> None:
     try:
         supabase.table("line_message_logs").insert({
+            "company_id": COMPANY_ID,
             "line_user_id": line_user_id,
             "message": message,
             "direction": direction,
@@ -1926,6 +1949,19 @@ def _get_applicant_or_404(applicant_id: str) -> dict[str, Any]:
     return result.data[0]
 
 
+def _get_interview_slot_or_404(slot_id: str) -> dict[str, Any]:
+    result = (
+        supabase.table("interview_slots")
+        .select("*")
+        .eq("id", slot_id)
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="面接候補が見つかりません")
+    return result.data[0]
+
+
 def _insert_interview_slots(rows: list[dict[str, Any]]) -> Any:
     try:
         return supabase.table("interview_slots").insert(rows).execute()
@@ -2098,6 +2134,7 @@ def api_get_interview_slots(applicant_id: str):
         supabase.table("interview_slots")
         .select("*")
         .eq("applicant_id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .order("slot_datetime")
         .execute()
     )
@@ -2115,6 +2152,7 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
 
     rows = [
         {
+            "company_id": COMPANY_ID,
             "applicant_id": applicant_id,
             "line_user_id": line_user_id,
             "slot_datetime": slot,
@@ -2130,6 +2168,7 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
             supabase.table("applicants")
             .update({"interview_status": "面接調整中", "status": get_status_name("interview_adjusting", "面接調整中")})
             .eq("id", applicant_id)
+            .eq("company_id", COMPANY_ID)
             .execute()
         )
         slots_message = str(
@@ -2155,6 +2194,7 @@ def api_create_interview_slots(applicant_id: str, payload: InterviewSlotCreate):
 
 @app.patch("/api/interview-slots/{slot_id}", dependencies=[Depends(require_admin)])
 def api_update_interview_slot(slot_id: str, payload: InterviewSlotUpdate):
+    _get_interview_slot_or_404(slot_id)
     update_data = payload.model_dump(exclude_none=True)
     if "slot_datetime" in update_data:
         update_data["slot_datetime"] = update_data["slot_datetime"].strip().replace("T", " ")
@@ -2163,7 +2203,13 @@ def api_update_interview_slot(slot_id: str, payload: InterviewSlotUpdate):
             update_data[key] = update_data[key].strip()
     if not update_data or any(value == "" for value in update_data.values()):
         raise HTTPException(status_code=400, detail="有効な更新内容がありません")
-    result = supabase.table("interview_slots").update(update_data).eq("id", slot_id).execute()
+    result = (
+        supabase.table("interview_slots")
+        .update(update_data)
+        .eq("id", slot_id)
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
     if not result.data:
         raise HTTPException(status_code=404, detail="面接候補が見つかりません")
     return result.data[0]
@@ -2544,6 +2590,7 @@ def api_line_messages(line_user_id: Optional[str] = None, limit: int = 100):
         query = (
             supabase.table("line_message_logs")
             .select("*")
+            .eq("company_id", COMPANY_ID)
             .order("created_at", desc=True)
             .limit(min(max(limit, 1), 300))
         )
