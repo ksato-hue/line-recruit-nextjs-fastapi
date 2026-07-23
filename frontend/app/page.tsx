@@ -457,6 +457,27 @@ function DashboardView({ dashboard, onSelectApplicant }: {
             {dashboard.recent_applicants.length === 0 && <div className="emptyState">まだ応募者はいません。LINEからテスト応募して動作を確認しましょう。</div>}
           </div>
         </article>
+
+        <article className="panel">
+          <div className="panelHeader">
+            <div>
+              <p className="eyebrow">Recent</p>
+              <h2>直近のお問い合わせ</h2>
+            </div>
+          </div>
+          <div className="miniRows">
+            {dashboard.recent_inquiries.map((inquiry) => (
+              <div className="miniRow" key={inquiry.id}>
+                <span>
+                  <strong>{inquiry.message || "内容未入力"}</strong>
+                  <small>{inquiry.created_at ? formatJstDateTime(inquiry.created_at) : "日時未設定"}</small>
+                </span>
+                <em>{inquiry.status || "未対応"}</em>
+              </div>
+            ))}
+            {dashboard.recent_inquiries.length === 0 && <div className="emptyState">お問い合わせはありません。</div>}
+          </div>
+        </article>
       </section>
     </div>
   );
