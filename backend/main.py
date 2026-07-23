@@ -1583,14 +1583,24 @@ def try_insert_line_message_log(line_user_id: str, message: str, direction: str,
 
 @app.get("/applicants", dependencies=[Depends(require_admin)])
 def get_applicants():
-    result = supabase.table("applicants").select("*").execute()
+    result = (
+        supabase.table("applicants")
+        .select("*")
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
     return result.data
 
 
 @app.get("/applicants-view", response_class=HTMLResponse, dependencies=[Depends(require_admin)])
 def applicants_view():
 
-    result = supabase.table("applicants").select("*").execute()
+    result = (
+        supabase.table("applicants")
+        .select("*")
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
 
     applicants = result.data
 
@@ -1606,7 +1616,12 @@ def applicants_view():
         if a.get("status") == "採用"
     ])
 
-    inquiry_result = supabase.table("inquiries").select("*").execute()
+    inquiry_result = (
+        supabase.table("inquiries")
+        .select("*")
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
     inquiry_count = len(inquiry_result.data)
 
     html = f"""
@@ -1759,6 +1774,7 @@ def applicant_detail(applicant_id: str):
         supabase.table("applicants")
         .select("*")
         .eq("id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
 
@@ -1850,6 +1866,7 @@ def inquiries_view():
     result = (
         supabase.table("inquiries")
         .select("*")
+        .eq("company_id", COMPANY_ID)
         .order("created_at", desc=True)
         .execute()
     )

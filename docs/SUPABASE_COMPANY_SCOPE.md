@@ -1,7 +1,7 @@
 # Supabase Company Scope Inventory
 
 Audit date: 2026-07-23
-Source: `backend/main.py` after the FAQ, applicant-status rename, and application-session cancellation scope changes in this worktree
+Source: `backend/main.py` after the legacy JSON/HTML route tenant-scope changes in this worktree
 
 ## Interpretation
 
@@ -33,36 +33,43 @@ Source: `backend/main.py` after the FAQ, applicant-status rename, and applicatio
 | `backend/main.py:1309` | application completion | complete_application_session / RPC | passes `p_company_id`; SQL validates company/user/session | Scoped value and database check |
 | `backend/main.py:1383` | inquiry submission | inquiries / insert | row contains `COMPANY_ID` | Scoped value—tested |
 | `backend/main.py:1574` | `try_insert_line_message_log` | line_message_logs / insert | row contains `COMPANY_ID` | Scoped value—tested |
-| `backend/main.py:1586,1593` | legacy applicant JSON/HTML views | applicants / select | none | Unscoped read—out of current scope |
-| `backend/main.py:1609` | legacy applicant view | inquiries / select | none | Unscoped read—out of current scope |
-| `backend/main.py:1759` | legacy applicant detail HTML | applicants / select | applicant ID only | Unscoped read—out of current scope |
-| `backend/main.py:1851` | legacy inquiry HTML | inquiries / select | none | Unscoped read—out of current scope |
-| `backend/main.py:1988` | `_get_applicant_or_404` | applicants / select | applicant ID plus `company_id` | Scoped predicate—tested |
-| `backend/main.py:2001` | `_get_interview_slot_or_404` | interview_slots / select | slot ID plus `company_id` | Scoped predicate—tested |
-| `backend/main.py:2014,2023` | `_insert_interview_slots` | interview_slots / insert/retry | supplied rows contain `COMPANY_ID`; fallback only removes `interview_type` | Scoped value—tested |
-| `backend/main.py:2034,2046` | dashboard applicant aggregate/recent | applicants / select | `company_id` predicate | Scoped predicate—tested |
-| `backend/main.py:2040,2054` | dashboard inquiry aggregate/recent | inquiries / select | `company_id` predicate | Scoped predicate—tested |
-| `backend/main.py:2062` | dashboard sessions | application_sessions / select | `company_id` predicate | Scoped predicate |
-| `backend/main.py:2128,2140,2166` | applicant list/detail/update APIs | applicants / select/update | ID where applicable plus `company_id` | Scoped predicate—tested |
-| `backend/main.py:2181` | applicant interview-slot API | interview_slots / select | applicant ID plus `company_id`; applicant was prevalidated | Scoped predicate—tested |
-| `backend/main.py:2215,2254` | interview creation/PATCH | applicants, interview_slots / update | entity ID plus `company_id`; inserted slots contain company value | Scoped predicate/value—tested |
-| `backend/main.py:2280` | status settings update | applicant_status_settings / select | `company_id` predicate | Scoped predicate |
-| `backend/main.py:2299` | removed-status usage check | applicants / select | status name plus `company_id` | Scoped predicate—fixed and tested |
-| `backend/main.py:2316` | status rename | applicants / bulk update | old status name plus `company_id` | Scoped predicate—fixed and tested |
-| `backend/main.py:2331` | status settings save | applicant_status_settings / upsert | every row contains `COMPANY_ID` | Scoped value |
-| `backend/main.py:2336` | removed status settings | applicant_status_settings / delete | status key plus `company_id` | Scoped predicate |
-| `backend/main.py:2356` | FAQ category create | faq_categories / insert | row contains `COMPANY_ID` | Scoped value—fixed and tested |
-| `backend/main.py:2377,2391` | FAQ category PATCH/DELETE | faq_categories / update/delete | category ID plus `company_id` | Scoped predicate—fixed and tested; another tenant receives 404 |
-| `backend/main.py:2422` | FAQ create | faqs / insert | category ownership checked; row contains `COMPANY_ID` | Scoped value—fixed and tested |
-| `backend/main.py:2454,2468` | FAQ PATCH/DELETE | faqs / update/delete | FAQ ID plus `company_id`; PATCH preloads scoped FAQ and validates changed category | Scoped predicate—fixed and tested |
-| `backend/main.py:2490,2510` | FAQ template settings | faq_settings / select | `company_id` predicate | Scoped predicate |
-| `backend/main.py:2535` | FAQ template settings | faq_settings / upsert | row contains `COMPANY_ID` | Scoped value |
-| `backend/main.py:2598` | general/reminder settings | app_settings / upsert | rows contain `COMPANY_ID` | Scoped value |
-| `backend/main.py:2664` | question tree settings | question_tree_settings / upsert | row contains `COMPANY_ID` | Scoped value |
-| `backend/main.py:2682` | LINE message history | line_message_logs / select | `company_id` plus optional user ID | Scoped predicate—tested; another tenant's user yields `[]` |
-| `backend/main.py:2700,2712,2729` | inquiry list/detail/update | inquiries / select/update | ID where applicable plus `company_id` | Scoped predicate—tested |
+| `backend/main.py:1587-1590` | legacy applicant JSON | applicants / select | `company_id` predicate | Scoped predicate—fixed and tested |
+| `backend/main.py:1599-1602,1620-1623` | legacy applicant dashboard HTML | applicants, inquiries / select | independent `company_id` predicates before counts/rendering | Scoped predicates—fixed and tested |
+| `backend/main.py:1774-1778` | legacy applicant detail HTML | applicants / select | applicant ID plus `company_id` | Scoped predicate—fixed and tested; another tenant receives existing not-found HTML |
+| `backend/main.py:1867-1871` | legacy inquiry HTML | inquiries / select | `company_id` predicate before ordering | Scoped predicate—fixed and tested |
+| `backend/main.py:2005` | `_get_applicant_or_404` | applicants / select | applicant ID plus `company_id` | Scoped predicate—tested |
+| `backend/main.py:2018` | `_get_interview_slot_or_404` | interview_slots / select | slot ID plus `company_id` | Scoped predicate—tested |
+| `backend/main.py:2031,2040` | `_insert_interview_slots` | interview_slots / insert/retry | supplied rows contain `COMPANY_ID`; fallback only removes `interview_type` | Scoped value—tested |
+| `backend/main.py:2051,2063` | dashboard applicant aggregate/recent | applicants / select | `company_id` predicate | Scoped predicate—tested |
+| `backend/main.py:2057,2071` | dashboard inquiry aggregate/recent | inquiries / select | `company_id` predicate | Scoped predicate—tested |
+| `backend/main.py:2079` | dashboard sessions | application_sessions / select | `company_id` predicate | Scoped predicate |
+| `backend/main.py:2145,2157,2183` | applicant list/detail/update APIs | applicants / select/update | ID where applicable plus `company_id` | Scoped predicate—tested |
+| `backend/main.py:2198` | applicant interview-slot API | interview_slots / select | applicant ID plus `company_id`; applicant was prevalidated | Scoped predicate—tested |
+| `backend/main.py:2232,2271` | interview creation/PATCH | applicants, interview_slots / update | entity ID plus `company_id`; inserted slots contain company value | Scoped predicate/value—tested |
+| `backend/main.py:2297` | status settings update | applicant_status_settings / select | `company_id` predicate | Scoped predicate |
+| `backend/main.py:2316` | removed-status usage check | applicants / select | status name plus `company_id` | Scoped predicate—fixed and tested |
+| `backend/main.py:2333` | status rename | applicants / bulk update | old status name plus `company_id` | Scoped predicate—fixed and tested |
+| `backend/main.py:2348` | status settings save | applicant_status_settings / upsert | every row contains `COMPANY_ID` | Scoped value |
+| `backend/main.py:2353` | removed status settings | applicant_status_settings / delete | status key plus `company_id` | Scoped predicate |
+| `backend/main.py:2373` | FAQ category create | faq_categories / insert | row contains `COMPANY_ID` | Scoped value—fixed and tested |
+| `backend/main.py:2394,2408` | FAQ category PATCH/DELETE | faq_categories / update/delete | category ID plus `company_id` | Scoped predicate—fixed and tested; another tenant receives 404 |
+| `backend/main.py:2439` | FAQ create | faqs / insert | category ownership checked; row contains `COMPANY_ID` | Scoped value—fixed and tested |
+| `backend/main.py:2471,2485` | FAQ PATCH/DELETE | faqs / update/delete | FAQ ID plus `company_id`; PATCH preloads scoped FAQ and validates changed category | Scoped predicate—fixed and tested |
+| `backend/main.py:2507,2527` | FAQ template settings | faq_settings / select | `company_id` predicate | Scoped predicate |
+| `backend/main.py:2552` | FAQ template settings | faq_settings / upsert | row contains `COMPANY_ID` | Scoped value |
+| `backend/main.py:2615` | general/reminder settings | app_settings / upsert | rows contain `COMPANY_ID` | Scoped value |
+| `backend/main.py:2681` | question tree settings | question_tree_settings / upsert | row contains `COMPANY_ID` | Scoped value |
+| `backend/main.py:2699` | LINE message history | line_message_logs / select | `company_id` plus optional user ID | Scoped predicate—tested; another tenant's user yields `[]` |
+| `backend/main.py:2717,2729,2746` | inquiry list/detail/update | inquiries / select/update | ID where applicable plus `company_id` | Scoped predicate—tested |
 
 ## Completed in this change
+
+- Kept all four documented compatibility routes and added company predicates directly to their five Supabase selects. No Python-side-only filtering is used.
+- Added six offline regression tests covering JSON and HTML isolation, company-scoped counts, duplicate applicant IDs across companies, another-company not-found behavior, query predicates, no row mutation, and the current GET-only route surface (`backend/tests/test_legacy_routes_tenant_scope.py:139-226`).
+- No legacy mutation or inquiry-detail route is registered, so this change did not invent applicant/inquiry update routes or frontend proxy paths.
+- The Backend suite now contains 62 tests.
+
+## Earlier completed scope work
 
 - Added company predicates to every checked old-table FAQ category/FAQ read, search, update, and delete query.
 - Added `_get_faq_category_or_404` and `_get_faq_or_404`; FAQ create and category-changing PATCH now reject another company's category before writing.
@@ -82,14 +89,15 @@ Source: `backend/main.py` after the FAQ, applicant-status rename, and applicatio
 
 ## Remaining unscoped operations
 
-- The legacy JSON/HTML applicant and inquiry routes at `backend/main.py:1586-1858` remain unscoped by explicit request. They should be scoped and tested or removed in a separately approved change.
+- No unscoped Supabase business-table operation remains in the current `backend/main.py` inventory. This is a statement about checked-out call sites, not database-enforced isolation.
 - Supabase Auth and RLS are not implemented in checked-in migrations. Application predicates do not replace database policies.
+- Tenant identity remains the process-wide `COMPANY_ID`; this is not end-user identity or authorization.
 - Live database constraints, applied migrations, RLS state, grants, and service-role access remain **unverified** because no Supabase connection was made.
 
 ## Recommended next slices
 
-1. Decide whether to scope/test or remove the legacy JSON/HTML routes.
-2. Define the supported deployment model and inspect the live schema before designing Supabase Auth/RLS.
-3. Add durable Webhook-wide idempotency for inquiry, interview, FAQ, reply, and log side effects.
+1. Define the supported deployment model and inspect the live schema before designing Supabase Auth/RLS.
+2. Add durable Webhook-wide idempotency for inquiry, interview, FAQ, reply, and log side effects.
+3. Decide the long-term compatibility-route deprecation policy after live request logs and external consumers can be checked.
 
 Each slice should begin with cross-company or replay failure tests and should remain independently reviewable.

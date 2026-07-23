@@ -18,6 +18,8 @@ git status --short
 rg --files --hidden -g '!.git/**' -g '!frontend/node_modules/**' -g '!frontend/.next/**'
 python -c "from pathlib import Path; print(len(Path('backend/main.py').read_text(encoding='utf-8').splitlines()))"
 rg -n 'supabase\.(table|rpc)|\.eq\("company_id"|COMPANY_ID' backend/main.py
+rg -n 'applicants-view|inquiries-view|/applicant/|/applicants' README.md docs backend frontend -g '!frontend/node_modules/**'
+rg --files -g 'render.y*ml' -g 'Dockerfile*' -g 'Procfile' -g 'docker-compose*' -g '.github/workflows/**'
 rg -n -i 'row level security|enable rls|disable rls|create policy|grant |revoke ' supabase/migrations docs README.md
 rg -n 'webhookEventId|last_event_id|requests\.post|async def webhook' backend/main.py
 npm exec tsc -- --noEmit --incremental false
@@ -34,7 +36,7 @@ The initial test and CI discovery excluded generated/dependency directories and 
 
 ### Confirmed facts
 
-- `backend/main.py` has 2,755 logical lines after the 2026-07-23 FAQ/status/session tenant-scope follow-up. It contains FastAPI setup, LINE Webhook handling, conversation state, Supabase access, LINE HTTP calls, legacy HTML views, schemas, and admin APIs.
+- `backend/main.py` has 2,772 logical lines after the 2026-07-23 legacy-route tenant-scope follow-up. It contains FastAPI setup, LINE Webhook handling, conversation state, Supabase access, LINE HTTP calls, legacy HTML views, schemas, and admin APIs.
 - `frontend/app/page.tsx` has 1,626 logical lines. It contains the dashboard and the applicant, inquiry, analytics, FAQ, question-tree, reminder, and general-settings views.
 - Browser API calls go to the same-origin Next.js proxy (`frontend/lib/api.ts:5-7`). The proxy attaches `X-Admin-Key` server-side (`frontend/app/api/admin/[...path]/route.ts:36-45`).
 - Four checked-in Supabase migrations add settings, company columns/indexes, application sessions, and applicant tags.
@@ -49,21 +51,23 @@ The initial test and CI discovery excluded generated/dependency directories and 
 
 **Fact:** `COMPANY_ID` is a process-wide environment value with a `default` fallback (`backend/main.py:39`). Company-scoped settings and application-session queries use it, for example `backend/main.py:226-229`, `253-256`, and `1022-1047`.
 
-**Fact:** The current management API paths for applicants, dashboard/inquiries, interviews/messages, FAQ, status settings, and application sessions now have application-level company predicates or explicit company insert values. The remaining known unscoped business-table paths are legacy JSON/HTML views:
+**Fact:** The current management API paths for applicants, dashboard/inquiries, interviews/messages, FAQ, status settings, and application sessions have application-level company predicates or explicit company insert values. The four compatibility JSON/HTML routes are now also scoped at the Supabase query:
 
-- Legacy applicant/inquiry aggregate views: `backend/main.py:1584-1610`
-- Legacy applicant detail HTML: `backend/main.py:1759-1765`
-- Legacy inquiry HTML: `backend/main.py:1851-1855`
+- Legacy applicant JSON and dashboard HTML reads: `backend/main.py:1584-1623`
+- Legacy applicant detail HTML read: `backend/main.py:1770-1779`
+- Legacy inquiry HTML read: `backend/main.py:1863-1872`
 
-**Fact:** The current interview-slot paths use company predicates for Webhook lookup, confirmation, cancellation, reset, management list, private lookup, applicant update, and PATCH (`backend/main.py:802-985`, `1986-2023`, `2177-2262`). Slot inserts contain `COMPANY_ID` (`backend/main.py:2200-2209`).
+The current call-site inventory found no remaining unscoped Supabase business-table operation in `backend/main.py`. This does not establish database-enforced or production-ready multi-tenancy.
 
-**Fact:** LINE message-log inserts contain `COMPANY_ID`, and history queries combine `company_id` with the optional `line_user_id` filter (`backend/main.py:1572-1580`, `2678-2694`).
+**Fact:** The current interview-slot paths use company predicates for Webhook lookup, confirmation, cancellation, reset, management list, private lookup, applicant update, and PATCH (`backend/main.py:802-985`, `2003-2040`, `2194-2279`). Slot inserts contain `COMPANY_ID` (`backend/main.py:2217-2226`).
 
-**Fact:** FAQ category/FAQ reads, ownership lookups, inserts, PATCH, and DELETE are now company-scoped (`backend/main.py:458-556`, `2345-2479`). Applicant status-name usage checks and bulk updates are scoped (`backend/main.py:2296-2321`), and application-session cancellation scopes both its lookup and update (`backend/main.py:1037-1048`, `1133-1152`). These paths are covered by offline two-company tests (`backend/tests/test_faq_status_session_tenant_scope.py:242-478`).
+**Fact:** LINE message-log inserts contain `COMPANY_ID`, and history queries combine `company_id` with the optional `line_user_id` filter (`backend/main.py:1572-1580`, `2695-2711`).
+
+**Fact:** FAQ category/FAQ reads, ownership lookups, inserts, PATCH, and DELETE are company-scoped (`backend/main.py:458-556`, `2362-2496`). Applicant status-name usage checks and bulk updates are scoped (`backend/main.py:2313-2338`), and application-session cancellation scopes both its lookup and update (`backend/main.py:1037-1048`, `1133-1152`). These paths are covered by offline two-company tests (`backend/tests/test_faq_status_session_tenant_scope.py:242-478`).
 
 **Fact:** Migrations add `company_id` to major legacy tables (`supabase/migrations/202607190001_mvp_security_foundation.sql:68-75`) and assign legacy rows/defaults to `default` (`supabase/migrations/202607190001_mvp_security_foundation.sql:77-96`), but the migrations contain no `ENABLE ROW LEVEL SECURITY` or `CREATE POLICY`. The project decision explicitly says RLS is not enabled (`docs/security-decisions.md:14-23`).
 
-**Inference:** Repository code and migrations still do not guarantee production multi-tenant isolation because the tenant is process-wide, legacy paths remain, and RLS is absent. This is not a claim that the checked management paths are unscoped; those now have focused application-level boundary tests.
+**Inference:** Repository code and migrations still do not guarantee production multi-tenant isolation because the tenant is process-wide and RLS is absent. Application-level predicates reduce cross-company access risk in the checked paths but do not replace user identity, authorization, or database policies.
 
 **Unverified:** The live Supabase project may have out-of-band RLS or policies. That cannot be inferred from this checkout and requires database inspection.
 
@@ -71,7 +75,7 @@ The initial test and CI discovery excluded generated/dependency directories and 
 
 **Initial fact:** Conventional test files/directories were not found outside dependency/generated directories. No `.github/workflows`, GitLab CI, CircleCI, Azure Pipelines, Bitbucket Pipelines, or Jenkins configuration was found.
 
-**Follow-up:** The current worktree contains 56 offline `unittest` cases under `backend/tests`: the previous 36 boundary tests plus 20 FAQ, applicant-status, and application-session tenant tests. Checked-in CI remains absent under the searched conventions.
+**Follow-up:** The current worktree contains 62 offline `unittest` cases under `backend/tests`: the previous 56 boundary tests plus six compatibility-route tenant tests. Checked-in CI remains absent under the searched conventions.
 
 **Fact:** Python AST parsing and TypeScript type checking passed during this audit. These checks do not exercise runtime behavior, Supabase calls, LINE calls, or migrations.
 
@@ -107,7 +111,7 @@ The initial test and CI discovery excluded generated/dependency directories and 
 
 **Fact:** Next.js middleware requires environment-backed Basic credentials and matches all paths except static/image/favicon paths (`frontend/middleware.ts:22-52`). Therefore it covers both the admin HTML and same-origin `/api/admin/*` routes.
 
-**Fact:** The proxy accepts only configured path prefixes and GET/POST/PATCH, then adds `X-Admin-Key` (`frontend/app/api/admin/[...path]/route.ts:5-45`). FastAPI management endpoints use `Depends(require_admin)`, whose shared-key check fails closed (`backend/main.py:70-75`; for example `backend/main.py:2031`, `backend/main.py:2125`). The newly added Backend FAQ DELETE routes are therefore not exposed through the current frontend proxy.
+**Fact:** The proxy accepts only configured path prefixes and GET/POST/PATCH, then adds `X-Admin-Key` (`frontend/app/api/admin/[...path]/route.ts:5-45`). FastAPI management endpoints use `Depends(require_admin)`, whose shared-key check fails closed (`backend/main.py:70-75`; for example `backend/main.py:2048`, `backend/main.py:2142`). The newly added Backend FAQ DELETE routes are therefore not exposed through the current frontend proxy.
 
 **Inference:** Basic authentication is the browser/user-facing gate; `ADMIN_API_KEY` is server-to-server authentication, not user identity or role authorization. Direct backend exposure is still protected by the shared key but has no per-user authorization.
 
@@ -115,7 +119,7 @@ The initial test and CI discovery excluded generated/dependency directories and 
 
 ### P1: Reminder automation is not connected
 
-**Fact:** Reminder values are loaded, normalized, validated, and saved (`backend/main.py:168-188`, `248-284`, `2545-2601`). The frontend provides editing UI and explicitly warns that automatic delivery is not connected (`frontend/app/page.tsx:1320-1405`, especially `frontend/app/page.tsx:1384`). Migration columns record three legacy sent timestamps (`supabase/migrations/202607200001_application_sessions.sql:19-22`, `supabase/migrations/202607200001_application_sessions.sql:42-45`).
+**Fact:** Reminder values are loaded, normalized, validated, and saved (`backend/main.py:168-188`, `248-284`, `2562-2618`). The frontend provides editing UI and explicitly warns that automatic delivery is not connected (`frontend/app/page.tsx:1320-1405`, especially `frontend/app/page.tsx:1384`). Migration columns record three legacy sent timestamps (`supabase/migrations/202607200001_application_sessions.sql:19-22`, `supabase/migrations/202607200001_application_sessions.sql:42-45`).
 
 **Fact:** No scheduler, queue worker, cron endpoint, or reminder-dispatch function was found in the repository. README also calls the periodic job unconnected (`README.md:105`).
 
@@ -153,9 +157,9 @@ The following is a **Proposal**, not current implementation status.
 
 ### Small next-work units
 
-1. Decide whether to scope and test legacy JSON/HTML routes or remove them through a separately approved change.
-2. Write webhook replay tests for application, inquiry, interview, FAQ, reply, and logging paths; document which duplicates must produce no side effect.
-3. Decide and document the deploy model and live RLS inspection procedure before writing policies.
+1. Write webhook replay tests for application, inquiry, interview, FAQ, reply, and logging paths; document which duplicates must produce no side effect.
+2. Decide and document the deploy model and live RLS inspection procedure before writing policies.
+3. Inspect live request logs and known external consumers before setting a deprecation date for compatibility routes.
 4. If FAQ deletion becomes a management-screen requirement, separately approve and test the Next.js DELETE forwarding, API client functions, confirmation UI, and deletion semantics. If that requirement is withdrawn, remove the currently unreachable Backend DELETE routes rather than retaining unused surface indefinitely.
 
 ## 7. Self-assessment
@@ -207,7 +211,7 @@ On 2026-07-21, the first approved audit actions were implemented:
 - Added `company_id = COMPANY_ID` predicates to those four applicant query paths.
 - Added `docs/SUPABASE_COMPANY_SCOPE.md` as the current operation-level scope inventory.
 
-The broader tenant-isolation finding remains open because legacy JSON/HTML paths are unscoped, tenant identity is still process-wide, and checked-in RLS is absent. The tested management API paths are now explicitly company-scoped.
+The broader tenant-isolation finding remains open because tenant identity is process-wide and checked-in RLS is absent. The tested management and compatibility paths are now explicitly company-scoped.
 
 ### 2026-07-22 dashboard and inquiry follow-up
 
@@ -242,3 +246,24 @@ The broader tenant-isolation finding remains open because legacy JSON/HTML paths
 - The current FAQ management screen loads and updates only `faq_settings`; it has no FAQ/category deletion control (`frontend/app/page.tsx:1134-1206`, `1224-1306`).
 - The API client declares FAQ GET/POST/PATCH helpers but no DELETE helper (`frontend/lib/api.ts:80-109`). The Next.js proxy allows and exports only GET/POST/PATCH (`frontend/app/api/admin/[...path]/route.ts:22-68`). A repository search found no production caller of `api_delete_faq_category` or `api_delete_faq`; only their definitions and Backend tests exist.
 - **Decision:** Keep the Backend DELETE routes in this change because deletion isolation was an explicit acceptance criterion, but do not expose an unused browser capability. Wiring the routes through the proxy/UI, or removing them if the product requirement is withdrawn, is a separately reviewed future change.
+
+### 2026-07-23 legacy JSON/HTML route follow-up
+
+**Fact:** FastAPI registers exactly four compatibility routes in this area. All four are GET-only, retain `Depends(require_admin)`, and have no forms, scripts, or mutation controls. No legacy applicant update route, inquiry detail route, or inquiry update route is registered. The modern Next.js client instead calls the proxied `/api/applicants*` and `/api/inquiries*` APIs (`frontend/lib/api.ts:36-52`; `frontend/app/api/admin/[...path]/route.ts:9-45`).
+
+| Method | URL | Processing | Supabase table(s) | Company condition | Checked-in caller | Current need | Decision | Effect if deleted | Unverified |
+|---|---|---|---|---|---|---|---|---|---|
+| GET | `/applicants` | Returns applicant rows as JSON | `applicants` | `company_id = COMPANY_ID` at `backend/main.py:1587-1590` | None found; Next.js uses `/api/applicants` | Compatibility need cannot be disproved | Maintain and scope | Could break direct legacy JSON consumers; modern alternative is `/api/applicants` | Live traffic, bookmarks, and external callers |
+| GET | `/applicants-view` | Renders applicant/inquiry counts and applicant rows as HTML | `applicants`, `inquiries` | Both selects scoped at `backend/main.py:1599-1623` | README compatibility URL; links to itself, applicant detail, and inquiry view | Explicitly documented compatibility route | Maintain and scope | Breaks the documented legacy dashboard URL and its navigation | Whether users still open it in production |
+| GET | `/applicant/{applicant_id}` | Renders one applicant as HTML; absent/other-company ID returns the existing not-found HTML | `applicants` | ID plus company at `backend/main.py:1774-1778` | Links generated by `/applicants-view` | Needed while the legacy dashboard is retained | Maintain and scope | Breaks applicant detail links emitted by the retained dashboard | External bookmarks and direct links |
+| GET | `/inquiries-view` | Renders inquiry rows as HTML | `inquiries` | Company predicate before ordering at `backend/main.py:1867-1871` | Link generated by `/applicants-view` | Needed while legacy dashboard navigation is retained | Maintain and scope | Breaks the documented compatibility dashboard's inquiry navigation | External bookmarks and live traffic |
+
+**Fact:** `README.md:80` explicitly says compatibility HTML screens remain. No checked-in Render manifest, Dockerfile, Procfile, compose file, or repository CI workflow was found by the documented search. Repository searches found no production-code caller beyond the compatibility HTML links and README reference.
+
+**Inference:** If the FastAPI `app` is exposed at the backend origin, registered routes are addressable there, but actual Render exposure and use cannot be established from this checkout.
+
+**Proposal applied:** Retain and scope all four routes. Deletion was not justified because compatibility is documented and live/external use is unverified. No route was deleted, redirected, or added.
+
+**TDD evidence:** Before the fix, five of six focused tests failed because other-company applicants and inquiries appeared in JSON, HTML, counts, and duplicate-ID detail lookup. After adding query-level predicates, all six focused tests and all 62 Backend tests pass. The tests also verify the current GET-only route surface, another-company not-found behavior, query predicates, and unchanged fake rows (`backend/tests/test_legacy_routes_tenant_scope.py:139-226`).
+
+**Remaining risk:** No known Supabase business-table call site in `backend/main.py` is currently unscoped, but `COMPANY_ID` remains process-wide, checked-in RLS is absent, and deployed schema/policies/routes/logs were not inspected.
