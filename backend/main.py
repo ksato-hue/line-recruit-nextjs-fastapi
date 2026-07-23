@@ -461,6 +461,7 @@ def get_active_faq_categories() -> list[dict[str, Any]]:
         lambda: (
             supabase.table("faq_categories")
             .select("*")
+            .eq("company_id", COMPANY_ID)
             .eq("is_active", True)
             .order("sort_order")
             .execute()
@@ -476,7 +477,12 @@ def is_public_faq(faq: dict[str, Any]) -> bool:
 
 def get_faqs(category_id: Optional[str] = None, public_only: bool = False) -> list[dict[str, Any]]:
     def fetch():
-        query = supabase.table("faqs").select("*").order("sort_order")
+        query = (
+            supabase.table("faqs")
+            .select("*")
+            .eq("company_id", COMPANY_ID)
+            .order("sort_order")
+        )
         if public_only:
             query = query.eq("is_visible", True)
         if category_id:
@@ -496,7 +502,13 @@ def get_faq_categories_with_faqs(public_only: bool = False) -> list[dict[str, An
     else:
         result = _safe_execute(
             "FAQカテゴリ一覧取得",
-            lambda: supabase.table("faq_categories").select("*").order("sort_order").execute(),
+            lambda: (
+                supabase.table("faq_categories")
+                .select("*")
+                .eq("company_id", COMPANY_ID)
+                .order("sort_order")
+                .execute()
+            ),
         )
         categories = result.data if result and result.data else _default_faq_categories()
 
@@ -514,6 +526,34 @@ def get_faq_categories_with_faqs(public_only: bool = False) -> list[dict[str, An
 
 def get_public_faq_categories() -> list[dict[str, Any]]:
     return get_faq_categories_with_faqs(public_only=True)
+
+
+def _get_faq_category_or_404(category_id: str) -> dict[str, Any]:
+    result = (
+        supabase.table("faq_categories")
+        .select("*")
+        .eq("id", category_id)
+        .eq("company_id", COMPANY_ID)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="FAQカテゴリが見つかりません")
+    return result.data[0]
+
+
+def _get_faq_or_404(faq_id: str) -> dict[str, Any]:
+    result = (
+        supabase.table("faqs")
+        .select("*")
+        .eq("id", faq_id)
+        .eq("company_id", COMPANY_ID)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="FAQが見つかりません")
+    return result.data[0]
 
 
 def find_faq_category_by_name(name: str) -> Optional[dict[str, Any]]:
@@ -1102,7 +1142,14 @@ def _cancel_application_session(user_id: str, event_id: Optional[str]) -> None:
         }
         if event_id:
             update_data["last_event_id"] = event_id
-        supabase.table("application_sessions").update(update_data).eq("id", row["id"]).eq("status", "active").execute()
+        (
+            supabase.table("application_sessions")
+            .update(update_data)
+            .eq("id", row["id"])
+            .eq("company_id", COMPANY_ID)
+            .eq("status", "active")
+            .execute()
+        )
     application_tree_sessions.pop(user_id, None)
     applicants.pop(user_id, None)
 
@@ -2248,7 +2295,14 @@ def api_update_status_settings(payload: ApplicantStatusSettingsPayload):
 
     for key, current in current_by_key.items():
         if key not in submitted_keys:
-            used = supabase.table("applicants").select("id").eq("status", current["name"]).limit(1).execute()
+            used = (
+                supabase.table("applicants")
+                .select("id")
+                .eq("company_id", COMPANY_ID)
+                .eq("status", current["name"])
+                .limit(1)
+                .execute()
+            )
             if used.data:
                 raise HTTPException(status_code=409, detail=f"「{current['name']}」は応募者が使用中のため削除できません")
 
@@ -2258,7 +2312,13 @@ def api_update_status_settings(payload: ApplicantStatusSettingsPayload):
         name = item.name.strip()
         previous = current_by_key.get(key, {}).get("name")
         if previous and previous != name:
-            supabase.table("applicants").update({"status": name}).eq("status", previous).execute()
+            (
+                supabase.table("applicants")
+                .update({"status": name})
+                .eq("company_id", COMPANY_ID)
+                .eq("status", previous)
+                .execute()
+            )
         rows.append({
             "company_id": COMPANY_ID,
             "status_key": key,
@@ -2295,6 +2355,7 @@ def api_create_faq_category(payload: FAQCategoryPayload):
     result = (
         supabase.table("faq_categories")
         .insert({
+            "company_id": COMPANY_ID,
             "name": payload.name.strip(),
             "sort_order": payload.sort_order or 0,
             "is_active": payload.is_active,
@@ -2316,6 +2377,21 @@ def api_update_faq_category(category_id: str, payload: FAQCategoryUpdatePayload)
         supabase.table("faq_categories")
         .update(update_data)
         .eq("id", category_id)
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="FAQカテゴリが見つかりません")
+    return result.data[0]
+
+
+@app.delete("/api/faq-categories/{category_id}", dependencies=[Depends(require_admin)])
+def api_delete_faq_category(category_id: str):
+    result = (
+        supabase.table("faq_categories")
+        .delete()
+        .eq("id", category_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
     if not result.data:
@@ -2330,6 +2406,7 @@ def api_faqs():
 
 @app.get("/api/faq-categories/{category_id}/faqs", dependencies=[Depends(require_admin)])
 def api_category_faqs(category_id: str):
+    _get_faq_category_or_404(category_id)
     return get_faqs(category_id=category_id, public_only=True)
 
 
@@ -2339,10 +2416,12 @@ def api_create_faq(payload: FAQPayload):
         raise HTTPException(status_code=400, detail="category_id と question が必要です")
     if payload.is_visible and not payload.answer.strip():
         raise HTTPException(status_code=400, detail="回答が空欄のFAQは公開できません")
+    _get_faq_category_or_404(payload.category_id)
 
     result = (
         supabase.table("faqs")
         .insert({
+            "company_id": COMPANY_ID,
             "category_id": payload.category_id,
             "question": payload.question.strip(),
             "answer": payload.answer.strip(),
@@ -2360,24 +2439,36 @@ def api_update_faq(faq_id: str, payload: FAQUpdatePayload):
     for key in ["question", "answer"]:
         if key in update_data:
             update_data[key] = update_data[key].strip()
+    if not update_data:
+        raise HTTPException(status_code=400, detail="更新内容がありません")
+    current = _get_faq_or_404(faq_id)
+    if "category_id" in update_data:
+        _get_faq_category_or_404(update_data["category_id"])
     if update_data.get("is_visible") and not update_data.get("answer"):
-        current = (
-            supabase.table("faqs")
-            .select("*")
-            .eq("id", faq_id)
-            .execute()
-        )
-        current_answer = (current.data or [{}])[0].get("answer", "")
+        current_answer = current.get("answer", "")
         next_answer = update_data.get("answer", current_answer)
         if not str(next_answer or "").strip():
             raise HTTPException(status_code=400, detail="回答が空欄のFAQは公開できません")
-    if not update_data:
-        raise HTTPException(status_code=400, detail="更新内容がありません")
 
     result = (
         supabase.table("faqs")
         .update(update_data)
         .eq("id", faq_id)
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="FAQが見つかりません")
+    return result.data[0]
+
+
+@app.delete("/api/faqs/{faq_id}", dependencies=[Depends(require_admin)])
+def api_delete_faq(faq_id: str):
+    result = (
+        supabase.table("faqs")
+        .delete()
+        .eq("id", faq_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
     if not result.data:
