@@ -8,8 +8,24 @@ Source: `backend/main.py` after the legacy JSON/HTML route tenant-scope changes 
 - **Scoped predicate**: the query explicitly filters `company_id = COMPANY_ID`.
 - **Scoped value**: an insert/upsert/RPC explicitly writes or receives `COMPANY_ID`.
 - **Unscoped**: the operation has no application-enforced company boundary at the call site.
-- This inventory describes checked-out application code. Live Supabase schema, RLS, grants, policies, service-role use, and migration application state are **unverified**.
-- Database defaults such as `company_id = 'default'` are not tenant authorization and are classified as unscoped unless the call site supplies or checks company ownership.
+- This inventory describes checked-out application code. Live base-table/column/constraint metadata and disabled RLS state are recorded below; FORCE RLS, grants, policies, service-role use, catalog definitions, and migration provenance remain **unverified**.
+- A redacted constant `company_id` fallback/default is not tenant authorization and is classified as unscoped unless the call site supplies or checks company ownership. Its concrete literal is not recorded here.
+
+## 2026-07-23 live Supabase scope preflight
+
+- **FACT:** live `public`には12 base tableが報告された。下記call-site inventoryの11 tableに加えて`contacts`が存在する。
+- **FACT:** `contacts`には`company_id`がなく、checked-in Backend sourceとmigrationにDDL/referenceが見つからない。用途とtenant semanticsは**UNVERIFIED**。
+- **FACT:** nullable text `company_id`とconstant defaultを持つのは`applicants`, `inquiries`, `interview_slots`, `faq_categories`, `faqs`, `line_message_logs`。non-null text `company_id`でdefaultなしは`faq_settings`, `app_settings`, `question_tree_settings`, `applicant_status_settings`, `application_sessions`。
+- **FACT:** live metadataで`company_id` FKは報告されなかった。distinct count、NULL count、index definitionはcatalog/aggregate call cancellationにより**UNVERIFIED**で、actual identifier valuesは取得していない。
+- **FACT:** 12 live tableはすべてRLS disabled。FORCE RLS、policy、grant/default privilege、function/RPC、trigger、PostgREST exposureは**UNVERIFIED**。
+- **INFERENCE:** application call siteの固定company predicateはcheckout内の防御であり、live DB tenant isolationまたはproduction-ready multi-tenancyを証明しない。
+- **FACT:** dedicated migration listはempty、repositoryには4 migration fileがあり、live provenanceは**UNVERIFIED**。このmaterial mismatchと未確認catalog evidenceによりPhase-B migration作成は**NO-GO**。
+
+### LINE binding boundary
+
+- **FACT:** company resolutionはprocess-wide `COMPANY_ID`で、Webhookはone path、one channel secret、one access tokenを使用し、body-level `destination`を読まない。
+- **PROPOSAL:** opaque pathまたはchannel-specific gatewayをtrusted bindingとして、bindingに対応するsecretで署名検証する。検証後に`destination`の一致を確認し、company/access tokenを解決する。
+- **PROPOSAL:** 未検証の`destination`に基づいてsecretを選択しない。設計・migration・state-key変更は別承認とし、今回は実装しない。
 
 ## Inventory
 
@@ -92,7 +108,7 @@ Source: `backend/main.py` after the legacy JSON/HTML route tenant-scope changes 
 - No unscoped Supabase business-table operation remains in the current `backend/main.py` inventory. This is a statement about checked-out call sites, not database-enforced isolation.
 - Supabase Auth and RLS are not implemented in checked-in migrations. Application predicates do not replace database policies.
 - Tenant identity remains the process-wide `COMPANY_ID`; this is not end-user identity or authorization.
-- Live database constraints, applied migrations, RLS state, grants, and service-role access remain **unverified** because no Supabase connection was made.
+- Live base-table constraints reported by the list operation and disabled RLS state are documented above. FORCE RLS, policy/grant details, service-role access, company aggregates, and the reason the project migration list is empty remain **unverified** because catalog SQL was canceled.
 
 ## Recommended next slices
 
