@@ -1312,6 +1312,7 @@ def handle_message(user_id: str, message: str, event_id: Optional[str] = None):
         user_states[user_id] = None
 
         supabase.table("inquiries").insert({
+            "company_id": COMPANY_ID,
             "line_user_id": user_id,
             "message": inquiry_text,
             "status": "未対応"
@@ -1917,6 +1918,7 @@ def _get_applicant_or_404(applicant_id: str) -> dict[str, Any]:
         supabase.table("applicants")
         .select("*")
         .eq("id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
     if not result.data:
@@ -1945,11 +1947,30 @@ def api_health():
 
 @app.get("/api/dashboard", dependencies=[Depends(require_admin)])
 def api_dashboard():
-    applicants_result = supabase.table("applicants").select("status,interview_status").execute()
-    inquiries_result = supabase.table("inquiries").select("status").execute()
+    applicants_result = (
+        supabase.table("applicants")
+        .select("status,interview_status")
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
+    inquiries_result = (
+        supabase.table("inquiries")
+        .select("status")
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
     recent_applicants_result = (
         supabase.table("applicants")
         .select("id,name,job,status,interview_status,interview_date,created_at,line_user_id,phone,motivation,memo,tags")
+        .eq("company_id", COMPANY_ID)
+        .order("created_at", desc=True)
+        .limit(6)
+        .execute()
+    )
+    recent_inquiries_result = (
+        supabase.table("inquiries")
+        .select("*")
+        .eq("company_id", COMPANY_ID)
         .order("created_at", desc=True)
         .limit(6)
         .execute()
@@ -2007,6 +2028,7 @@ def api_dashboard():
         "dropout_count": dropout_count,
         "unanswered_inquiry_count": unanswered_inquiry_count,
         "recent_applicants": recent_applicants_result.data or [],
+        "recent_inquiries": recent_inquiries_result.data or [],
         "status_counts": status_counts,
         "todo": {
             "in_progress": in_progress_count,
@@ -2022,6 +2044,7 @@ def api_applicants():
     result = (
         supabase.table("applicants")
         .select("*")
+        .eq("company_id", COMPANY_ID)
         .order("created_at", desc=True)
         .execute()
     )
@@ -2034,6 +2057,7 @@ def api_applicant_detail(applicant_id: str):
         supabase.table("applicants")
         .select("*")
         .eq("id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
     if not result.data:
@@ -2059,6 +2083,7 @@ def api_update_applicant(applicant_id: str, payload: ApplicantUpdate):
         supabase.table("applicants")
         .update(update_data)
         .eq("id", applicant_id)
+        .eq("company_id", COMPANY_ID)
         .execute()
     )
     if not result.data:
@@ -2536,10 +2561,25 @@ def api_inquiries():
     result = (
         supabase.table("inquiries")
         .select("*")
+        .eq("company_id", COMPANY_ID)
         .order("created_at", desc=True)
         .execute()
     )
     return result.data or []
+
+
+@app.get("/api/inquiries/{inquiry_id}", dependencies=[Depends(require_admin)])
+def api_inquiry_detail(inquiry_id: str):
+    result = (
+        supabase.table("inquiries")
+        .select("*")
+        .eq("id", inquiry_id)
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
+    if not result.data:
+        raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
+    return result.data[0]
 
 
 @app.patch("/api/inquiries/{inquiry_id}", dependencies=[Depends(require_admin)])
@@ -2547,7 +2587,13 @@ def api_update_inquiry(inquiry_id: str, payload: InquiryUpdate):
     status = payload.status.strip()
     if not status:
         raise HTTPException(status_code=400, detail="status が必要です")
-    result = supabase.table("inquiries").update({"status": status}).eq("id", inquiry_id).execute()
+    result = (
+        supabase.table("inquiries")
+        .update({"status": status})
+        .eq("id", inquiry_id)
+        .eq("company_id", COMPANY_ID)
+        .execute()
+    )
     if not result.data:
         raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
     return result.data[0]

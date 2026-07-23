@@ -41,6 +41,10 @@ export function getInquiries() {
   return adminRequest<Inquiry[]>("/inquiries");
 }
 
+export function getInquiry(id: Inquiry["id"]) {
+  return adminRequest<Inquiry>(`/inquiries/${id}`);
+}
+
 export function updateApplicant(id: Applicant["id"], data: Partial<Applicant>) {
   return adminRequest<Applicant>(`/applicants/${id}`, {
     method: "PATCH",

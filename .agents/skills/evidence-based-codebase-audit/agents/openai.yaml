@@ -1,0 +1,4 @@
+interface:
+  display_name: "Evidence-Based Codebase Audit"
+  short_description: "根拠を追跡できるコードベース監査と自己評価を標準化"
+  default_prompt: "Use $evidence-based-codebase-audit to audit this repository with traceable evidence and calibrated uncertainty."

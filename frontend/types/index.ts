@@ -200,6 +200,7 @@ export type Dashboard = {
   dropout_count: number;
   unanswered_inquiry_count: number;
   recent_applicants: Applicant[];
+  recent_inquiries: Inquiry[];
   status_counts?: Record<string, number>;
   todo: {
     in_progress: number;
