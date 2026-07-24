@@ -1,5 +1,30 @@
 # Auth Environment Preflight
 
+## 2026-07-24 browser key-exposure gate
+
+- **FACT:** `frontend/package.json:11-20` has no Supabase dependency, and no
+  frontend Supabase client module exists.
+- **FACT:** no current frontend env example or source declares
+  `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY`,
+  `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_URL`, or `SUPABASE_KEY`.
+  References in the future Auth implementation plan are proposals, not active
+  configuration.
+- **FACT:** browser code calls only `/api/admin/*`
+  (`frontend/lib/api.ts:3-13`). The Route Handler obtains backend URL and
+  `ADMIN_API_KEY` from server environment and forwards `X-Admin-Key`
+  (`frontend/app/api/admin/[...path]/route.ts:3-6`, `36-48`).
+- **FACT:** the checked-in Supabase client exists only in FastAPI and consumes
+  backend environment variables (`backend/main.py:16-24`).
+- **FACT:** current local `.next` JavaScript/JSON/HTML files contained no
+  Supabase URL/key variable reference. Deployed build artifacts and Render
+  variables remain **UNVERIFIED**.
+- **FACT:** no `SUPABASE_KEY` value exists in the inspected process, user,
+  machine, or local backend env file. The current classification is **不明**;
+  no key value was displayed or recorded.
+- **DECISION:** no checked-in browser public-key exposure blocker was found, so
+  a non-active baseline candidate may be prepared. This does not reduce the
+  confirmed live risk from disabled RLS and broad client-role grants.
+
 ## 2026-07-24 schema-reconciliation correction
 
 This section supersedes the 2026-07-23 `execute_sql` cancellation-related
@@ -8,7 +33,7 @@ are in `docs/SUPABASE_SCHEMA_RECONCILIATION.md` and
 `docs/schema/REMOTE_PUBLIC_SCHEMA_SANITIZED.sql`.
 
 - **FACT:** project-scoped/read-only MCP catalog SELECTs succeeded. `public` has
-  12 base tables, 2 functions, 7 non-internal triggers, and 42 indexes; no view,
+  12 base tables, 2 functions, 7 non-internal triggers, and 43 indexes; no view,
   materialized view, sequence, or foreign table was found.
 - **FACT:** all 12 tables have RLS and FORCE RLS disabled. No `public` or
   `storage` policy exists.

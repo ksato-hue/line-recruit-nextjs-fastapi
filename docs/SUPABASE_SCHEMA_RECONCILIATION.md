@@ -1,5 +1,42 @@
 # Supabase Schema Reconciliation
 
+## 2026-07-24 staging baseline preparation
+
+**Public-key exposure gate: GO for candidate preparation, not a production
+security clearance.**
+
+- **FACT:** the current frontend has no Supabase package, client factory, or
+  current `NEXT_PUBLIC_SUPABASE_*` variable. The tracked frontend env example
+  contains only server-side backend/admin/Basic variables
+  (`frontend/package.json:11-20`, `frontend/.env.local.example:1-4`).
+- **FACT:** the browser entry imports `frontend/lib/api.ts`, whose only network
+  call is same-origin `/api/admin/*` (`frontend/app/page.tsx:1-7`,
+  `frontend/lib/api.ts:3-13`). The Next.js Route Handler reads
+  `BACKEND_API_BASE_URL` and `ADMIN_API_KEY` only on the server and adds
+  `X-Admin-Key` while forwarding to FastAPI
+  (`frontend/app/api/admin/[...path]/route.ts:3-6`, `36-48`).
+- **FACT:** source search found no alternate browser connection to Supabase.
+  The current local `.next` JavaScript/JSON/HTML artifacts also contained no
+  Supabase URL/key variable reference. Generated artifacts are local evidence,
+  not proof of the deployed Render build.
+- **FACT:** FastAPI creates the only checked-in Supabase client from backend
+  `SUPABASE_URL` and `SUPABASE_KEY` (`backend/main.py:16-24`).
+- **UNVERIFIED:** the deployed backend `SUPABASE_KEY` type. No value is
+  available in process, user, machine, or `backend/.env`, so its classification
+  remains **不明**. No value was printed or recorded.
+- **CORRECTION:** a fresh read-only catalog count reports **43** public indexes,
+  not 42. The sanitized snapshot already represents 15 constraint-backed and
+  28 explicit indexes; the prior written total was an arithmetic error.
+- **PROPOSAL:** use migration-chain option 3: one reviewed baseline followed
+  only by future migrations. Keep the four current files unchanged as legacy
+  evidence until a separately approved chain-cutover commit.
+
+The non-active candidate is
+`supabase/baselines/2026-07-24-public-schema-baseline.sql`. It is outside
+`supabase/migrations/`, has no row data, does not invent a company default, and
+uses a fail-closed body for the unresolved data-changing RPC. Bootstrap steps
+are in `docs/STAGING_SUPABASE_BOOTSTRAP.md`.
+
 調査日: 2026-07-24 (Asia/Tokyo)
 
 対象ブランチ: `agent/supabase-schema-reconciliation`
@@ -14,7 +51,7 @@ sanitized snapshot: `docs/schema/REMOTE_PUBLIC_SCHEMA_SANITIZED.sql`
 
 **判定: production migrationはNO-GO、stagingでの再構築準備はCONDITIONAL GO。**
 
-- live `public`には12 base table、2 function、7 non-internal trigger、42 indexがある。view、materialized view、sequence、foreign tableはない。
+- live `public`には12 base table、2 function、7 non-internal trigger、43 indexがある。view、materialized view、sequence、foreign tableはない。
 - `supabase_migrations.schema_migrations`はliveに存在せず、dedicated migration listも空だった。一方、repositoryには4 migration fileがある。
 - 4 fileが作る・変更するDDL artifactはliveに広く一致するが、履歴行がないため「Supabase CLI migrationとして適用済み」とは扱えない。
 - `README.md:21-26` は4 fileをSupabase SQL Editorで番号順に実行する手順を示す。この手順ならmigration historyが作られないため、4 fileのartifactが存在し履歴が空である現在状態と整合する。ただし実際にその経路で実行されたこと自体は監査ログ未確認のため**高確度の推測**である。
