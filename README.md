@@ -77,7 +77,7 @@ Renderのfrontendサービスには`BACKEND_API_BASE_URL`、`ADMIN_API_KEY`、`A
 - Supabaseは既存の `applicants` / `inquiries` テーブルを維持し、マイグレーションで設定テーブルと`company_id`を追加
 - 既存の `/webhook` は残してあります
 - 管理画面のAPI通信はNext.jsサーバープロキシを経由し、管理キーをブラウザへ公開しない
-- 既存の `/applicants-view` などのHTML画面も互換用に残していますが、管理APIキーが必要です
+- 管理UIはNext.jsへ統一し、FastAPIは管理用JSON APIだけを提供
 
 ## 今回追加した安全対策
 

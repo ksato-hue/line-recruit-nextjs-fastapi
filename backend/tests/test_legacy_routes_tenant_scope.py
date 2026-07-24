@@ -3,6 +3,8 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from fastapi.testclient import TestClient
+
 from tests.support import load_backend_main
 
 
@@ -52,49 +54,26 @@ class LegacySupabase:
         self.rows = {
             "applicants": [
                 {
-                    "id": "shared-applicant", "company_id": "tenant-b",
-                    "line_user_id": "shared-line", "name": "Other Shared Applicant",
-                    "phone": "000-OTHER", "job": "Other Job", "motivation": "Other Motivation",
-                    "status": "採用", "interview_status": "面接確定",
-                    "interview_date": "2026-08-02", "memo": "Other Secret Memo",
+                    "id": "own-applicant",
+                    "company_id": "tenant-a",
+                    "created_at": "2026-07-24T10:00:00+00:00",
                 },
                 {
-                    "id": "shared-applicant", "company_id": "tenant-a",
-                    "line_user_id": "shared-line", "name": "Own Shared Applicant",
-                    "phone": "000-OWN", "job": "Own Job", "motivation": "Own Motivation",
-                    "status": "新規応募", "interview_status": "未設定",
-                    "interview_date": None, "memo": "Own Memo",
-                },
-                {
-                    "id": "own-applicant", "company_id": "tenant-a",
-                    "line_user_id": "own-line", "name": "Own Applicant",
-                    "phone": "111-OWN", "job": "Own Second Job", "motivation": "Own Second Motivation",
-                    "status": "採用", "interview_status": "面接調整中",
-                    "interview_date": "2026-08-01", "memo": "Own Second Memo",
-                },
-                {
-                    "id": "other-only-applicant", "company_id": "tenant-b",
-                    "line_user_id": "other-line", "name": "Other Only Applicant",
-                    "phone": "111-OTHER", "job": "Other Only Job", "motivation": "Other Only Motivation",
-                    "status": "新規応募", "interview_status": "未設定",
-                    "interview_date": None, "memo": "Other Only Secret",
+                    "id": "other-applicant",
+                    "company_id": "tenant-b",
+                    "created_at": "2026-07-24T11:00:00+00:00",
                 },
             ],
             "inquiries": [
                 {
-                    "id": "other-shared-inquiry", "company_id": "tenant-b",
-                    "line_user_id": "shared-line", "message": "Other Shared Inquiry",
-                    "status": "未対応", "created_at": "2026-07-23T12:00:00+00:00",
+                    "id": "own-inquiry",
+                    "company_id": "tenant-a",
+                    "created_at": "2026-07-24T10:00:00+00:00",
                 },
                 {
-                    "id": "own-inquiry", "company_id": "tenant-a",
-                    "line_user_id": "shared-line", "message": "Own Inquiry",
-                    "status": "対応済み", "created_at": "2026-07-23T11:00:00+00:00",
-                },
-                {
-                    "id": "other-only-inquiry", "company_id": "tenant-b",
-                    "line_user_id": "other-line", "message": "Other Only Inquiry",
-                    "status": "未対応", "created_at": "2026-07-23T10:00:00+00:00",
+                    "id": "other-inquiry",
+                    "company_id": "tenant-b",
+                    "created_at": "2026-07-24T11:00:00+00:00",
                 },
             ],
         }
@@ -113,7 +92,7 @@ class LegacySupabase:
         )
 
 
-class LegacyRouteTenantScopeTests(unittest.TestCase):
+class LegacyJsonTenantScopeTests(unittest.TestCase):
     def setUp(self):
         self.database = LegacySupabase()
         self.patches = [
@@ -127,103 +106,86 @@ class LegacyRouteTenantScopeTests(unittest.TestCase):
         for active_patch in reversed(self.patches):
             active_patch.stop()
 
-    def assert_query_is_company_scoped(self, table_name: str):
-        self.assertIn(
-            ("company_id", "tenant-a"),
-            self.database.last_query(table_name)["eq"],
-        )
-
-    def assert_rows_unchanged(self):
-        self.assertEqual(self.database.original_rows, self.database.rows)
-
     def test_legacy_json_applicant_list_excludes_other_company(self):
         result = main.get_applicants()
 
-        self.assertEqual(
-            ["shared-applicant", "own-applicant"],
-            [row["id"] for row in result],
+        self.assertEqual(["own-applicant"], [row["id"] for row in result])
+        self.assertIn(
+            ("company_id", "tenant-a"),
+            self.database.last_query("applicants")["eq"],
         )
-        self.assertTrue(all(row["company_id"] == "tenant-a" for row in result))
-        self.assert_query_is_company_scoped("applicants")
-        self.assert_rows_unchanged()
+        self.assertEqual(self.database.original_rows, self.database.rows)
 
-    def test_legacy_applicant_dashboard_html_excludes_other_company_data_and_counts(self):
-        html = main.applicants_view()
 
-        self.assertIn("Own Shared Applicant", html)
-        self.assertIn("Own Applicant", html)
-        self.assertNotIn("Other Shared Applicant", html)
-        self.assertNotIn("Other Only Applicant", html)
-        self.assertNotIn("Other Shared Inquiry", html)
-        self.assertNotIn("Other Only Inquiry", html)
-        self.assertIn('<div class="card-value">2</div>', html)
-        self.assert_query_is_company_scoped("applicants")
-        self.assert_query_is_company_scoped("inquiries")
-        self.assert_rows_unchanged()
+class LegacyAdminHtmlRemovalTests(unittest.TestCase):
+    def setUp(self):
+        self.database = LegacySupabase()
+        self.patches = [
+            patch.object(main, "supabase", self.database),
+            patch.object(main, "COMPANY_ID", "tenant-a"),
+            patch.object(main, "ADMIN_API_KEY", "test-admin-key"),
+        ]
+        for active_patch in self.patches:
+            active_patch.start()
+        self.client = TestClient(main.app)
+        self.admin_headers = {"X-Admin-Key": "test-admin-key"}
 
-    def test_legacy_applicant_detail_with_duplicate_id_returns_own_company_row(self):
-        html = main.applicant_detail("shared-applicant")
+    def tearDown(self):
+        self.client.close()
+        for active_patch in reversed(self.patches):
+            active_patch.stop()
 
-        self.assertIn("Own Shared Applicant", html)
-        self.assertIn("Own Memo", html)
-        self.assertNotIn("Other Shared Applicant", html)
-        self.assertNotIn("Other Secret Memo", html)
-        query = self.database.last_query("applicants")
-        self.assertIn(("id", "shared-applicant"), query["eq"])
-        self.assertIn(("company_id", "tenant-a"), query["eq"])
-        self.assert_rows_unchanged()
+    def test_legacy_applicant_dashboard_is_not_published(self):
+        response = self.client.get("/applicants-view", headers=self.admin_headers)
 
-    def test_legacy_other_company_applicant_detail_returns_not_found_without_leak(self):
-        html = main.applicant_detail("other-only-applicant")
+        self.assertEqual(404, response.status_code)
 
-        self.assertEqual("<h1>応募者が見つかりません</h1>", html)
-        self.assertNotIn("Other Only Applicant", html)
-        query = self.database.last_query("applicants")
-        self.assertIn(("id", "other-only-applicant"), query["eq"])
-        self.assertIn(("company_id", "tenant-a"), query["eq"])
-        self.assert_rows_unchanged()
+    def test_legacy_applicant_detail_is_not_published(self):
+        response = self.client.get(
+            "/applicant/example-id",
+            headers=self.admin_headers,
+        )
 
-    def test_legacy_inquiry_html_excludes_other_company_data(self):
-        html = main.inquiries_view()
+        self.assertEqual(404, response.status_code)
 
-        self.assertIn("Own Inquiry", html)
-        self.assertNotIn("Other Shared Inquiry", html)
-        self.assertNotIn("Other Only Inquiry", html)
-        self.assert_query_is_company_scoped("inquiries")
-        self.assert_rows_unchanged()
+    def test_legacy_inquiry_dashboard_is_not_published(self):
+        response = self.client.get("/inquiries-view", headers=self.admin_headers)
 
-    def test_legacy_route_surface_is_get_only_and_has_no_inquiry_detail(self):
+        self.assertEqual(404, response.status_code)
+
+    def test_json_applicant_api_remains_available(self):
+        response = self.client.get("/api/applicants", headers=self.admin_headers)
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("application/json", response.headers["content-type"])
+        self.assertEqual(["own-applicant"], [row["id"] for row in response.json()])
+
+    def test_json_inquiry_api_remains_available(self):
+        response = self.client.get("/api/inquiries", headers=self.admin_headers)
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("application/json", response.headers["content-type"])
+        self.assertEqual(["own-inquiry"], [row["id"] for row in response.json()])
+
+    def test_json_admin_apis_still_require_admin_key(self):
+        for path in ("/api/applicants", "/api/inquiries"):
+            with self.subTest(path=path):
+                response = self.client.get(path)
+                self.assertEqual(401, response.status_code)
+
+    def test_health_endpoint_remains_available(self):
+        response = self.client.get("/api/health")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("ok", response.json()["status"])
+
+    def test_webhook_endpoint_remains_registered(self):
         routes = {
-            route.path: route
+            (route.path, frozenset(route.methods or set()))
             for route in main.app.routes
-            if getattr(route, "path", "") in {
-                "/applicants",
-                "/applicants-view",
-                "/applicant/{applicant_id}",
-                "/inquiries-view",
-            }
         }
 
-        self.assertEqual(
-            {
-                "/applicants",
-                "/applicants-view",
-                "/applicant/{applicant_id}",
-                "/inquiries-view",
-            },
-            set(routes),
-        )
-        for route in routes.values():
-            self.assertEqual({"GET"}, route.methods)
-            dependencies = {
-                getattr(dependency.call, "__name__", "")
-                for dependency in route.dependant.dependencies
-            }
-            self.assertIn("require_admin", dependencies)
-
-        all_paths = {getattr(route, "path", "") for route in main.app.routes}
-        self.assertNotIn("/inquiry/{inquiry_id}", all_paths)
-        self.assertNotIn("/inquiries/{inquiry_id}", all_paths)
+        self.assertIn(("/webhook", frozenset({"POST"})), routes)
 
 
 if __name__ == "__main__":
