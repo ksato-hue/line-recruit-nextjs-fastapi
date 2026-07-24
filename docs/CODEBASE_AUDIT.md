@@ -1,11 +1,28 @@
 # Codebase Audit
 
+## 2026-07-23 live Supabase preflight correction
+
+- **FACT:** project-scoped `read_only=true` Supabase MCP（project ref `dcexrqivikbchxawjzsn`; features `database,docs,storage`）でlist operationが成功した。server-side write rejectionは試験していない。
+- **FACT:** live `public`は12 base tableを報告した: `applicants`, `inquiries`, `contacts`, `interview_slots`, `faq_categories`, `faqs`, `line_message_logs`, `faq_settings`, `app_settings`, `question_tree_settings`, `applicant_status_settings`, `application_sessions`。
+- **FACT:** proposed Auth-foundation 8 tableはreported `public`に存在しない。
+- **FACT:** 12 tableすべてRLS disabled。**UNVERIFIED:** FORCE RLS、policies、grants/default privileges、functions/RPC、triggers、views/materialized views/sequences、PostgREST exposed schema。read-only catalog `execute_sql`がMCP endpointでcancelされた。
+- **FACT:** six legacy tableはnullable text `company_id`とconstant default、five settings/session tableはnon-null text `company_id`でdefaultなし。いずれの`company_id`にもFKは報告されず、distinct/NULL countsとindex定義は**UNVERIFIED**。actual ID valuesは取得していない。
+- **FACT:** `contacts`は`company_id`を持たず、checked-in code/migrationにDDLまたはreferenceがない。
+- **FACT:** checked-in migrationがcreateする5 tableとalter-onlyの6 business tableはliveに存在する。`contacts`はlive-only classificationである。
+- **FACT:** dedicated project migration-listは0 rows、checked-in migrationは4 files。これはmaterial mismatchであり、live objectの作成経路は**UNVERIFIED**。
+- **FACT:** installed extensionは `pgcrypto`, `supabase_vault`, `pg_stat_statements`, `uuid-ossp`, `pg_graphql`, `plpgsql`。
+- **FACT:** aggregate-only Auth stateはusers 0、MFA factors 0、listed session/auth-flow tables 0、`auth.schema_migrations` 77。JWT/JWKS/provider/MFA/redirect/SMTPは**UNVERIFIED**。
+- **FACT:** Storage bucketは0でprivate export bucket candidateなし。object listingは行っていない。Storage policiesは**UNVERIFIED**。
+- **FACT:** current LINE tenant resolutionはprocess-wide fixed `COMPANY_ID`、one webhook path、one channel secret/tokenであり、body `destination`を利用しない。
+- **PROPOSAL:** future multi-channel ingressはtrusted opaque/channel bindingでsecretを選択し、署名検証後にdestinationを照合してcompanyを解決する。
+- **NO-GO:** このrunのPhase-B migration/SQL test作成、および外部Supabase環境への適用。migration-history mismatch、未取得catalog evidence、設計・計画競合、reset不能を仮定できないchecked-in chainが解消されるまで停止する。
+
 ## 1. Audit metadata
 
 - Audit date: 2026-07-21; implementation follow-up updated 2026-07-23 (Asia/Tokyo)
 - Scope: repository-tracked application code, dependency manifests, Supabase migrations, documentation, and repository-level automation/configuration
-- Excluded or unverified: deployed Supabase schema and policies, Supabase dashboard settings, deployed environment variables, Render configuration, LINE console settings, runtime logs, production data, and network dependency vulnerability status
-- Current follow-up constraint: only tenant-scope production code, offline tests, and audit/plan documents may change; no dependency, migration, environment, deployment, commit, or push action
+- Live base-table/column/constraint inventory and disabled RLS state were later inspected as recorded above. Still excluded or unverified: FORCE RLS, policies/grants/functions/triggers and other catalog dimensions, Supabase dashboard settings, deployed environment variables, Render configuration, LINE console settings, runtime logs, production row data, and network dependency vulnerability status
+- Current Task 2 constraint: only the four authorized audit/plan documents may change; one documentation commit may be created and amended for review findings; no dependency, migration, environment, deployment, production-code, or push action
 
 This document separates **Fact**, **Inference**, **Proposal**, and **Unverified**. A repository search proves what is present in this checkout; it does not prove deployed runtime state.
 
@@ -49,7 +66,7 @@ The initial test and CI discovery excluded generated/dependency directories and 
 
 ### P0: Tenant isolation is not comprehensively enforced by this checkout
 
-**Fact:** `COMPANY_ID` is a process-wide environment value with a `default` fallback (`backend/main.py:39`). Company-scoped settings and application-session queries use it, for example `backend/main.py:226-229`, `253-256`, and `1022-1047`.
+**Fact:** `COMPANY_ID` is a process-wide environment value with a fallback literal whose concrete value is redacted from this document (`backend/main.py:39`). Company-scoped settings and application-session queries use it, for example `backend/main.py:226-229`, `253-256`, and `1022-1047`.
 
 **Fact:** The current management API paths for applicants, dashboard/inquiries, interviews/messages, FAQ, status settings, and application sessions have application-level company predicates or explicit company insert values. The four compatibility JSON/HTML routes are now also scoped at the Supabase query:
 
@@ -65,11 +82,11 @@ The current call-site inventory found no remaining unscoped Supabase business-ta
 
 **Fact:** FAQ category/FAQ reads, ownership lookups, inserts, PATCH, and DELETE are company-scoped (`backend/main.py:458-556`, `2362-2496`). Applicant status-name usage checks and bulk updates are scoped (`backend/main.py:2313-2338`), and application-session cancellation scopes both its lookup and update (`backend/main.py:1037-1048`, `1133-1152`). These paths are covered by offline two-company tests (`backend/tests/test_faq_status_session_tenant_scope.py:242-478`).
 
-**Fact:** Migrations add `company_id` to major legacy tables (`supabase/migrations/202607190001_mvp_security_foundation.sql:68-75`) and assign legacy rows/defaults to `default` (`supabase/migrations/202607190001_mvp_security_foundation.sql:77-96`), but the migrations contain no `ENABLE ROW LEVEL SECURITY` or `CREATE POLICY`. The project decision explicitly says RLS is not enabled (`docs/security-decisions.md:14-23`).
+**Fact:** Migrations add `company_id` to major legacy tables (`supabase/migrations/202607190001_mvp_security_foundation.sql:68-75`) and assign legacy rows/defaults to a redacted constant literal (`supabase/migrations/202607190001_mvp_security_foundation.sql:77-96`), but the migrations contain no `ENABLE ROW LEVEL SECURITY` or `CREATE POLICY`. The project decision explicitly says RLS is not enabled (`docs/security-decisions.md:14-23`).
 
 **Inference:** Repository code and migrations still do not guarantee production multi-tenant isolation because the tenant is process-wide and RLS is absent. Application-level predicates reduce cross-company access risk in the checked paths but do not replace user identity, authorization, or database policies.
 
-**Unverified:** The live Supabase project may have out-of-band RLS or policies. That cannot be inferred from this checkout and requires database inspection.
+**Fact:** The live list operation reports RLS disabled on all 12 public base tables. **Unverified:** out-of-band policies, FORCE RLS, grants, and Data API exposure could not be catalog-inspected.
 
 ### P0: No project-owned automated tests or checked-in CI were found at initial audit
 
@@ -228,7 +245,7 @@ The broader tenant-isolation finding remains open because tenant identity is pro
 - Added `_get_interview_slot_or_404` for the existing PATCH path without adding a public detail endpoint. Both the preflight select and actual update are company-scoped.
 - Interview-slot and line-message-log inserts now write `company_id` explicitly. Line history is scoped before the optional `line_user_id` predicate, so another tenant's user returns an empty array.
 - The checked-in migration already adds `company_id` to both tables (`supabase/migrations/202607190001_mvp_security_foundation.sql:72-73`); no migration was created or executed.
-- Supabase Auth and RLS remain unimplemented in this checkout, and the deployed database state remains **Unverified**.
+- Supabase Auth and RLS remain unimplemented in this checkout. Live base-table inventory and disabled RLS state are confirmed; policies, grants, functions/triggers, FORCE RLS, and runtime access remain **Unverified**.
 
 ### 2026-07-23 FAQ, status-name, and application-session follow-up
 
@@ -238,7 +255,7 @@ The broader tenant-isolation finding remains open because tenant identity is pro
 - FAQ creation and category-changing FAQ updates validate that the category belongs to the current company before writing. Another company's resource ID produces 404 and leaves the original row unchanged.
 - Added the company predicate to both the applicant status-use lookup and the actual name-based bulk update. Added the same predicate to the actual application-session cancellation update while preserving safe no-op behavior.
 - The active LINE Webhook FAQ implementation already used company-scoped `faq_settings`; the older `faq_categories`/`faqs` search helpers are not called by that flow. No keyword-search or batch reorder implementation was found.
-- Checked-in migrations already add `company_id` to `faq_categories`, `faqs`, applicants/status settings, and application sessions; no migration was created or executed. Live migration state remains **Unverified**.
+- Checked-in migrations already add `company_id` to `faq_categories`, `faqs`, applicants/status settings, and application sessions; no migration was created or executed. The live project migration list reports no rows despite four checked-in files; the mismatch reason and object provenance remain **Unverified**.
 
 ### 2026-07-23 FAQ DELETE reachability follow-up
 
@@ -266,4 +283,4 @@ The broader tenant-isolation finding remains open because tenant identity is pro
 
 **TDD evidence:** Before the fix, five of six focused tests failed because other-company applicants and inquiries appeared in JSON, HTML, counts, and duplicate-ID detail lookup. After adding query-level predicates, all six focused tests and all 62 Backend tests pass. The tests also verify the current GET-only route surface, another-company not-found behavior, query predicates, and unchanged fake rows (`backend/tests/test_legacy_routes_tenant_scope.py:139-226`).
 
-**Remaining risk:** No known Supabase business-table call site in `backend/main.py` is currently unscoped, but `COMPANY_ID` remains process-wide, checked-in RLS is absent, and deployed schema/policies/routes/logs were not inspected.
+**Remaining risk:** No known Supabase business-table call site in `backend/main.py` is currently unscoped, but `COMPANY_ID` remains process-wide. Live base-table inventory and disabled RLS state were inspected; FORCE RLS, policies, grants, functions/RPC, triggers, deployed routes, and runtime logs were not inspected.
