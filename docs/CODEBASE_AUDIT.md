@@ -1,5 +1,46 @@
 # Codebase Audit
 
+## 2026-07-24 Supabase schema reconciliation
+
+**FACT:** The live project was inspected only through project-scoped,
+read-only Supabase MCP operations. No schema, data, Auth, Storage, migration
+history, or external service setting was changed.
+
+**FACT:** `public` contains 12 base tables, 2 functions, 7 non-internal
+triggers, and 42 indexes. It contains no view, materialized view, sequence, or
+foreign table. The repository has no base `CREATE TABLE` for seven live tables:
+`applicants`, `inquiries`, `contacts`, `interview_slots`, `faq_categories`,
+`faqs`, and `line_message_logs`.
+
+**FACT:** `supabase_migrations.schema_migrations` is absent and the remote
+migration list is empty. All post-DDL artifacts expected from the four
+checked-in migrations were observed, but DML provenance and the redacted
+constant company defaults were not compared. The four files are therefore
+classified as structurally matching but only **partially matched** overall.
+
+**INFERENCE (high confidence):** `README.md:21-26` directs operators to run the
+four files manually in Supabase SQL Editor. That documented route is consistent
+with live artifacts and an absent CLI migration-history table. The actual
+historical execution path remains unproven without audit logs.
+
+**FACT / P0:** RLS and FORCE RLS are disabled on all 12 tables, no public or
+storage policies exist, every table grants all table privileges to `anon` and
+`authenticated`, and both public functions grant `EXECUTE` to `PUBLIC`. This
+replaces the prior grant/policy uncertainty with confirmed live evidence.
+
+**FACT:** Eleven tables have text `company_id` with no FK. Six are nullable and
+retain a constant default (redacted), five are non-null without a default, and
+`contacts` has no company column. Aggregate-only checks found zero NULL company
+IDs; each non-empty scoped table currently has one distinct company identifier.
+That does not establish production-ready multi-tenancy.
+
+**DECISION:** Do not create the Auth foundation migration yet. Reconstruct and
+replay a clean chain in a new staging project, prove schema equivalence, then
+perform production migration-history reconciliation as a separately approved
+change. Evidence: `docs/SUPABASE_SCHEMA_RECONCILIATION.md`; snapshot:
+`docs/schema/REMOTE_PUBLIC_SCHEMA_SANITIZED.sql`; plan:
+`docs/superpowers/plans/2026-07-24-supabase-schema-reconciliation.md`.
+
 ## 2026-07-23 live Supabase preflight correction
 
 - **FACT:** project-scoped `read_only=true` Supabase MCP（project ref `dcexrqivikbchxawjzsn`; features `database,docs,storage`）でlist operationが成功した。server-side write rejectionは試験していない。

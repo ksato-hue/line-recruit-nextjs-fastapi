@@ -1,5 +1,45 @@
 # Auth Environment Preflight
 
+## 2026-07-24 schema-reconciliation correction
+
+This section supersedes the 2026-07-23 `execute_sql` cancellation-related
+`UNVERIFIED` items below. Full evidence and the non-applicable sanitized snapshot
+are in `docs/SUPABASE_SCHEMA_RECONCILIATION.md` and
+`docs/schema/REMOTE_PUBLIC_SCHEMA_SANITIZED.sql`.
+
+- **FACT:** project-scoped/read-only MCP catalog SELECTs succeeded. `public` has
+  12 base tables, 2 functions, 7 non-internal triggers, and 42 indexes; no view,
+  materialized view, sequence, or foreign table was found.
+- **FACT:** all 12 tables have RLS and FORCE RLS disabled. No `public` or
+  `storage` policy exists.
+- **FACT:** every public table grants all table privileges to `anon`,
+  `authenticated`, and `service_role`. Both public functions are executable by
+  `PUBLIC`, `anon`, `authenticated`, and `service_role`. Public default
+  privileges also grant client roles broad privileges for new tables,
+  sequences, and functions.
+- **FACT:** the 11 `company_id` columns are `text` and have no company FK.
+  Six legacy tables are nullable with a constant default (value not recorded);
+  five settings/session tables are non-null without a default. `contacts` still
+  has no `company_id`.
+- **FACT:** aggregate-only inspection found no NULL `company_id` in any of the
+  11 tables. Non-empty tables each reported one distinct identifier; empty
+  tables reported zero. No identifier value was read or recorded.
+- **FACT:** Storage bucket count and Storage policy count are both zero.
+- **FACT:** installed extensions are `pgcrypto`, `supabase_vault`,
+  `pg_stat_statements`, `uuid-ossp`, and `plpgsql`. The earlier statement that
+  `pg_graphql` was installed is corrected: it had no installed version.
+- **FACT:** `supabase_migrations.schema_migrations` does not exist, and the
+  dedicated migration list is empty. The four checked-in files have matching
+  live DDL artifacts but cannot be treated as CLI-recorded migrations.
+- **INFERENCE (high confidence):** `README.md:21-26` instructs operators to run
+  the four files through Supabase SQL Editor. That route explains matching
+  artifacts without migration-history rows, but execution logs were not
+  available to prove the historical route.
+- **BLOCKER:** Auth migration creation remains NO-GO until a clean migration
+  chain is replayed in staging and schema equivalence is demonstrated. The
+  recommended reconciliation route is documented in
+  `docs/superpowers/plans/2026-07-24-supabase-schema-reconciliation.md`.
+
 調査日時: 2026-07-23 (Asia/Tokyo; exact live-call timeは記録されていない)
 対象ブランチ: `agent/auth-foundation-preflight`
 基準: `origin/main` (`61e0a12`) + 認証実装計画コミット `120ebc9`
