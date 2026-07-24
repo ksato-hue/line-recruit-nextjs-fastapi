@@ -1,5 +1,34 @@
 # Codebase Audit
 
+## 2026-07-24 staging-baseline security gate
+
+**FACT:** No current browser Supabase client or dependency was found. The
+client component imports the local API wrapper (`frontend/app/page.tsx:1-7`);
+that wrapper fetches only same-origin `/api/admin/*`
+(`frontend/lib/api.ts:3-13`). The Route Handler reads backend URL and
+`ADMIN_API_KEY` from server-only environment and adds the key while forwarding
+to FastAPI (`frontend/app/api/admin/[...path]/route.ts:3-6`, `36-48`).
+
+**FACT:** The tracked frontend env example has no `NEXT_PUBLIC_*` or Supabase
+variable (`frontend/.env.local.example:1-4`), and the frontend dependency list
+has no Supabase package (`frontend/package.json:11-20`). Repository source and
+the current local `.next` artifacts contain no Supabase URL/key reference.
+Render/deployed build configuration remains **Unverified**.
+
+**FACT:** The only checked-in Supabase client is constructed by FastAPI from
+backend `SUPABASE_URL` and `SUPABASE_KEY` (`backend/main.py:16-24`). No local or
+process value was available, so `SUPABASE_KEY` remains classified as
+**unknown**. No value was displayed.
+
+**DECISION:** The checked-in browser exposure gate passes, allowing creation of
+a non-active candidate outside `supabase/migrations/`. Option 3 is selected:
+one approved baseline followed only by future migrations. Existing four
+migrations remain unchanged pending a separately approved active-chain
+cutover.
+
+**CORRECTION:** Read-only catalog recount found 43 public indexes, not 42. The
+baseline candidate represents 15 constraint-backed and 28 explicit indexes.
+
 ## 2026-07-24 Supabase schema reconciliation
 
 **FACT:** The live project was inspected only through project-scoped,
@@ -7,7 +36,7 @@ read-only Supabase MCP operations. No schema, data, Auth, Storage, migration
 history, or external service setting was changed.
 
 **FACT:** `public` contains 12 base tables, 2 functions, 7 non-internal
-triggers, and 42 indexes. It contains no view, materialized view, sequence, or
+triggers, and 43 indexes. It contains no view, materialized view, sequence, or
 foreign table. The repository has no base `CREATE TABLE` for seven live tables:
 `applicants`, `inquiries`, `contacts`, `interview_slots`, `faq_categories`,
 `faqs`, and `line_message_logs`.
