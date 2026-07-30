@@ -365,3 +365,15 @@ The broader tenant-isolation finding remains open because tenant identity is pro
 **Decision:** ESLint dependencies, configuration, and existing lint remediation are deferred to a separate task so the first CI gate reflects already-working typecheck/build behavior. pytest will be reconsidered only if pytest-specific functionality becomes necessary.
 
 **Unverified:** Remote GitHub Actions execution remains unverified until the branch is pushed and a run is available. No Supabase, LINE, Render, production, staging, migration, or application environment was contacted or changed by these checks.
+
+### 2026-07-30 manual LINE send input-validation follow-up
+
+**Fact:** `POST /api/line/send` now receives the strict Pydantic `LineSendRequest` instead of an untyped dictionary (`backend/main.py:2443-2450`, `backend/line_send_validation.py:15-43`). The two-field request and three-field success response used by the Next.js caller remain unchanged (`frontend/types/index.ts:39-48`, `frontend/lib/api.ts:66-70`).
+
+**Fact:** `line_user_id` must fully match `U[0-9a-f]{32}` without normalization. A message must be a non-whitespace strict string of at most 5,000 UTF-16 code units; valid whitespace is preserved and isolated surrogates become validation errors (`backend/line_send_validation.py:6-43`).
+
+**TDD evidence:** Before production code existed, the new suite failed to import `line_send_validation` with `ModuleNotFoundError`. After the minimal implementation and endpoint integration, all 57 new tests passed. They cover exact user-ID syntax, ASCII/Japanese/emoji UTF-16 boundaries, invalid Unicode, strict request shape, unchanged response/call order, 422 with no outbound or DB-log call, and the existing 401/503 admin-key boundary (`backend/tests/test_line_send_validation.py`).
+
+**Fact:** The complete offline Backend suite increased from 231 to 288 tests and passes without a Supabase or LINE connection. The implementation module imports only Python `re` and Pydantic; it performs no environment, DB, HTTP, file, or external-service access. Retry, rate limiting, idempotency, transactions, reminders, Auth, and RLS remain outside this change.
+
+**Unverified:** The staging MCP server name `supabase-staging` was not configured in the current Codex CLI, and the connector startup reported authentication required. Its project scope, `read_only=true` enforcement, and public table list could not be verified in this run. No production MCP fallback or write probe was used.

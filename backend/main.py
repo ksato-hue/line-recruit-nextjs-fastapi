@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Any, Optional
 from datetime import datetime, timedelta, timezone
+from line_send_validation import LineSendRequest
 import base64
 import hashlib
 import hmac
@@ -2440,12 +2441,10 @@ def api_update_inquiry(inquiry_id: str, payload: InquiryUpdate):
 
 
 @app.post("/api/line/send", dependencies=[Depends(require_admin)])
-def api_line_send(payload: dict[str, Any]):
+def api_line_send(payload: LineSendRequest):
     """管理画面から応募者へLINE Push APIで手動送信します。"""
-    line_user_id = payload.get("line_user_id")
-    message = payload.get("message")
-    if not line_user_id or not message:
-        raise HTTPException(status_code=400, detail="line_user_id と message が必要です")
+    line_user_id = payload.line_user_id
+    message = payload.message
 
     push_line_message(line_user_id, message)
     try_insert_line_message_log(line_user_id, message, "outbound", "manual")
