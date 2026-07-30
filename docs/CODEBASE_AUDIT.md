@@ -347,3 +347,17 @@ The broader tenant-isolation finding remains open because tenant identity is pro
 **Unverified:** Deployed Render traffic, direct external bookmarks, and runtime access logs were not inspected. The project requirement confirms that current management work has moved to Next.js; rollback should use the removal commit rather than reintroducing unescaped HTML.
 
 **Remaining risk:** No known Supabase business-table call site in `backend/main.py` is currently unscoped, but `COMPANY_ID` remains process-wide. Live base-table inventory and disabled RLS state were inspected; FORCE RLS, policies, grants, functions/RPC, triggers, deployed routes, and runtime logs were not inspected.
+
+### 2026-07-30 CI and dependency-pinning follow-up
+
+**Fact:** The local verified runtime is CPython 3.12.10, Node.js 24.18.0, and npm 11.16.0. The five direct Backend runtime requirements are pinned to the installed versions in `backend/requirements.txt`: FastAPI 0.139.2, Uvicorn 0.51.0, Supabase 2.31.0, Requests 2.34.2, and Pydantic 2.13.4. `backend/requirements-dev.txt` includes the runtime file and pins httpx 0.28.1 because the test suite directly uses FastAPI TestClient. pytest is not installed or adopted; the standard-library unittest command remains the test runner.
+
+**Fact:** A repository-root invocation with `-s backend/tests` produced seven import errors because the existing tests import `tests.support` and `authz_policy` relative to the Backend import root. The canonical command therefore runs from `backend`: `python -m unittest discover -s tests -p "test_*.py" -v`. It passed all 149 tests both in the original environment and in a repository-external clean virtual environment after installing `backend/requirements-dev.txt`. `pip check` and Python compilation also passed. The existing FastAPI TestClient deprecation warning remains unchanged and is not part of this CI change.
+
+**Fact:** Frontend direct dependencies now use the exact versions already present in package-lock: Next.js 14.2.35, React 18.3.1, React DOM 18.3.1, TypeScript 5.9.3, `@types/node` 20.19.43, `@types/react` 18.3.31, and `@types/react-dom` 18.3.7. TypeScript and type packages moved to devDependencies without changing resolved versions or integrity values. `npm ci`, `npm run typecheck`, and `npm run build` passed under Node.js 24.18.0/npm 11.16.0. The build emitted non-fatal webpack cache snapshot warnings but completed successfully.
+
+**Fact:** `.github/workflows/ci.yml` runs independent Backend and Frontend jobs for pull requests and pushes to `main`, cancels superseded runs for the same ref, and grants only `contents: read`. It uses GitHub-owned `actions/checkout@v6`, `actions/setup-python@v6`, and `actions/setup-node@v6`; no `${{ secrets.* }}` reference or write permission exists. The Backend job installs the dev requirements, runs `pip check`, compileall, and the canonical unittest command. The Frontend job uses `npm ci`, typecheck, and build.
+
+**Decision:** ESLint dependencies, configuration, and existing lint remediation are deferred to a separate task so the first CI gate reflects already-working typecheck/build behavior. pytest will be reconsidered only if pytest-specific functionality becomes necessary.
+
+**Unverified:** Remote GitHub Actions execution remains unverified until the branch is pushed and a run is available. No Supabase, LINE, Render, production, staging, migration, or application environment was contacted or changed by these checks.
