@@ -36,6 +36,42 @@ npm run dev
 
 ブラウザで `http://localhost:3000` を開きます。
 
+## 開発時の検証
+
+CIは確認済みのCPython 3.12.10、Node.js 24.18.0、npm 11.16.0へ合わせています。
+
+### Backend
+
+リポジトリルートから依存関係と構文を確認し、テストはimport rootを既存実装と一致させるため`backend`ディレクトリで実行します。
+
+```bash
+python -m pip install -r backend/requirements-dev.txt
+python -m pip check
+python -m compileall backend
+cd backend
+python -m unittest discover -s tests -p "test_*.py" -v
+```
+
+BackendはPython標準ライブラリのunittestを使用します。現在pytestは採用しておらず、pytest固有機能が必要になった場合は別タスクで検討します。
+
+### Frontend
+
+```bash
+cd frontend
+npm ci
+npm run typecheck
+npm run build
+```
+
+現在の必須gateはTypeScript型検査とNext.js production buildです。ESLintの依存・設定整備と既存lint修正は別タスクで扱います。
+
+### CI
+
+- pull requestと`main`へのpushで自動実行
+- BackendとFrontendを独立したjobで検証
+- ローカルと同じunittest、型検査、buildコマンドを使用
+- Supabase、LINE、管理API、Basic認証、Renderのproduction secretを使用しない
+
 ## 環境変数
 
 ### backend
