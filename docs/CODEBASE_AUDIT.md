@@ -206,9 +206,13 @@ The current call-site inventory found no remaining unscoped Supabase business-ta
 
 ### P1: Reminder automation is not connected
 
-**Fact:** Reminder values are loaded, normalized, validated, and saved (`backend/main.py:168-188`, `248-284`, `2562-2618`). The frontend provides editing UI and explicitly warns that automatic delivery is not connected (`frontend/app/page.tsx:1320-1405`, especially `frontend/app/page.tsx:1384`). Migration columns record three legacy sent timestamps (`supabase/migrations/202607200001_application_sessions.sql:19-22`, `supabase/migrations/202607200001_application_sessions.sql:42-45`).
+**Fact:** Reminder values are defaulted, loaded, normalized, validated, and saved (`backend/main.py:167-190`, `backend/main.py:247-284`, `backend/main.py:2247-2307`). The frontend provides editing UI and explicitly warns that automatic delivery is not connected (`frontend/app/page.tsx:1329-1426`, especially `frontend/app/page.tsx:1405`). Migration columns record three legacy sent timestamps (`supabase/migrations/202607200001_application_sessions.sql:19-21`, `supabase/migrations/202607200001_application_sessions.sql:42-44`).
 
-**Fact:** No scheduler, queue worker, cron endpoint, or reminder-dispatch function was found in the repository. README also calls the periodic job unconnected (`README.md:105`).
+**Fact:** Repository-wide searches found no application scheduler, queue worker, cron endpoint, or reminder-dispatch function. The npm transitive package named `scheduler` is React internals and is not reminder automation.
+
+**2026-07-30 follow-up fact:** `backend/reminder_policy.py` now provides a pure scheduling-policy boundary for due-time calculation, exact session-state checks, application-reception and company-state guards, sent-ID exclusion, duplicate-ID rejection, and deterministic oldest-one selection. It imports only the Python standard library and the existing company policy in `backend/authz_policy.py`; it is not imported by `backend/main.py` and does not connect to Supabase, LINE, FastAPI, environment variables, HTTP, or files. `backend/tests/test_reminder_policy.py` adds 82 direct unit tests for this boundary, bringing the verified Backend suite from 149 to 231 tests.
+
+**2026-07-30 follow-up limitation:** Automatic delivery remains non-operational. There is still no DB adapter, scheduler, LINE sender integration, or variable-reminder history schema. The three fixed timestamp columns can be mapped to `legacy_1h`, `legacy_24h`, and `legacy_3d`, but concurrent-worker idempotency for arbitrary IDs requires a future atomic DB claim/unique-history design. The live schema still has no `companies` table from which to load `CompanyState`, so the company-state argument cannot yet be supplied from production data.
 
 **Inference:** Configuration persistence exists; automatic execution does not exist in this checkout.
 
