@@ -221,6 +221,8 @@ shared/faq_templates.json
 
 手動LINE送信APIは`line_user_id`を`U[0-9a-f]{32}`への完全一致で検証し、本文を最大5,000 UTF-16符号単位に制限する。空白だけの本文、strictな文字列以外、未知field、不正Unicodeは422で拒否し、LINE送信・DBログ保存へ進めない。正常request/response契約と管理APIキー境界は維持する。詳細は`docs/LINE_SEND_INPUT_VALIDATION.md`を正とする。
 
+応募者詳細からの手動LINEメッセージと面接候補日は、送信ボタンから直接APIを呼ばず、応募者名、マスク済み送信先、本文またはJST候補日時を確認して確定した場合だけ送信する。確認時のpayload snapshotをAPIへ渡し、キャンセル・失敗時は入力を保持、成功時だけ初期化する。dialogはfocus trap、Escape、focus復帰、送信中のclose禁止と二重実行lockを備える。詳細は`docs/SEND_CONFIRMATION_UX.md`を正とする。
+
 ### 6.8 各種設定
 
 現在は企業名、採用担当者名、LINE Bot表示名、通知先メール、応募受付ON/OFF、および一部自動メッセージを設定できる。

@@ -74,11 +74,11 @@
 - 一覧から詳細を開き、ステータス、メモ、LINE、面接候補を操作できる（`frontend/app/page.tsx:526-558`, `frontend/app/page.tsx:697-826`）。
 - 任意質問の回答は応募確定時に`motivation`へラベル付き文字列として連結され、UIは「応募動機」1枠として表示する（`backend/main.py:1157-1177`, `frontend/app/page.tsx:709-716`）。
 - タグは表示だけで、`Applicant`型とBackend update modelには更新余地があるが、編集UIはない（`frontend/types/index.ts:1-14`, `frontend/app/page.tsx:796-801`）。
-- LINE送信・面接候補送信は入力画面からそのまま送信され、宛先・本文・候補日の確認stepがない（`frontend/app/page.tsx:649-695`, `frontend/app/page.tsx:718-775`）。
+- 2026-08-03時点では、LINE送信・面接候補送信は共通確認dialogを通り、宛先、本文またはJST候補日を確認して確定した場合だけsnapshotを送る（`frontend/app/page.tsx:677-806`, `frontend/app/page.tsx:949-1019`）。
 
 **推測:** 初心者でも一連の操作は発見できるが、優先順が同じ高さのblockに分散する。長い応募内容、履歴、メモを行き来しながら送信する際に誤送信や文脈見落としが起きやすい。
 
-**改善提案:** 詳細を「概要」「応募内容」「対応履歴」「面接」の4領域へ整理し、主要操作はsticky action areaへまとめる。LINEと面接候補は必ず確認stepを挟み、送信中は閉じる・二重操作・別応募者への切替を止める。
+**改善提案:** 詳細を「概要」「応募内容」「対応履歴」「面接」の4領域へ整理し、主要操作はsticky action areaへまとめる。LINEと面接候補の確認、送信中close禁止、二重実行lockは実装済み。drawer自体のfocus管理と別応募者切替の包括的な自動component testは残る。
 
 ### 4.3 問い合わせ対応
 
@@ -245,8 +245,8 @@ frontend/
 
 | ID | 画面 | 現状 / 問題 | 利用者への影響 | 改善案 | 優先度 | 難易度 | 関連ファイル | DB | Auth |
 |---|---|---|---|---|---|---|---|---|---|
-| UX-001 | 応募者詳細 | LINEを確認なしで即送信 | 誤送信・取消不能 | 宛先/本文確認、二重click防止、不明結果時の再送警告 | P0 | M | `frontend/app/page.tsx`, `backend/main.py` | 不要、厳密な冪等性は必要 | なし |
-| UX-002 | 応募者詳細 | 面接候補をDB更新後にLINE送信し、失敗時に部分反映し得る | 失敗表示後の再送で重複・状態不整合 | frontend確認に加え、APIを原子的/冪等にし構造化結果を返す | P0 | L | `frontend/app/page.tsx`, `backend/main.py` | 必要な可能性 | なし |
+| UX-001 | 応募者詳細 | 宛先/本文確認、snapshot、二重click防止は実装済み。送信結果不明時の照会・冪等性はない | timeout等で再送判断ができない | Backendへidempotency keyと結果照会を追加する | P0 | M | `frontend/app/page.tsx`, `backend/main.py` | 厳密な冪等性は必要 | なし |
+| UX-002 | 応募者詳細 | 候補日確認と二重click防止は実装済み。ただしBackendはDB更新後にLINE送信し、失敗時に部分反映し得る | 失敗表示後の再送で重複・状態不整合 | APIを原子的/冪等にし構造化結果を返す | P0 | L | `frontend/app/page.tsx`, `backend/main.py` | 必要な可能性 | なし |
 | UX-003 | 全画面 | Basic認証共有利用者にrole別表示・read-onlyがない | 送信・設定変更を必要以上の利用者が実行可能 | Auth/RBAC/MFA接続後にserver判定を正としてactionを制御 | P0 | L | `frontend/middleware.ts`, `backend/authz_policy.py` | 必要 | 必須 |
 | UX-004 | Dashboard | 要対応4項目が非クリック | 対象を再検索し対応漏れ | 条件付き一覧へ遷移 | P1 | S | `frontend/app/page.tsx` | 離脱一覧はAPI必要 | なし |
 | UX-005 | Dashboard | 新規応募が表示されず、期間/更新時刻なし | 朝の優先順位を判断できない | `new_count`表示、現在/累計label、更新時刻 | P1 | S | `frontend/app/page.tsx` | 不要 | なし |
@@ -280,8 +280,8 @@ frontend/
 
 ## 12. Quick Win 上位10件
 
-1. 手動LINE送信に宛先・本文の確認stepを追加する（UX-001のfrontend部分）。
-2. 面接候補送信に候補日一覧の確認stepを追加し、失敗時は「未送信」と断定しない（UX-002のfrontend部分）。
+1. **実装済み:** 手動LINE送信に宛先・本文の確認stepを追加した（UX-001のFrontend部分）。
+2. **実装済み:** 面接候補送信に候補日一覧の確認stepを追加し、generic failure表示で断定を避けた（UX-002のFrontend部分）。
 3. ダッシュボードの未対応問い合わせ・面接調整・新規応募を条件付き画面へつなぐ。
 4. 直近問い合わせをお問い合わせ画面へ遷移可能にする。
 5. LINE履歴にloading / error / emptyと再試行を分けて表示する。

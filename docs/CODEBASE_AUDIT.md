@@ -377,3 +377,15 @@ The broader tenant-isolation finding remains open because tenant identity is pro
 **Fact:** The complete offline Backend suite increased from 231 to 288 tests and passes without a Supabase or LINE connection. The implementation module imports only Python `re` and Pydantic; it performs no environment, DB, HTTP, file, or external-service access. Retry, rate limiting, idempotency, transactions, reminders, Auth, and RLS remain outside this change.
 
 **Unverified:** The staging MCP server name `supabase-staging` was not configured in the current Codex CLI, and the connector startup reported authentication required. Its project scope, `read_only=true` enforcement, and public table list could not be verified in this run. No production MCP fallback or write probe was used.
+
+### 2026-08-03 applicant outbound confirmation follow-up
+
+**Fact:** Manual LINE and interview-slot buttons no longer call their API clients directly. They validate the draft, create a typed snapshot, and open the shared `ConfirmationDialog`; only `confirmLineSend` and `confirmInterviewSend` call `sendLineMessage` and `createInterviewSlots` respectively (`frontend/app/page.tsx:677-806`, `frontend/app/page.tsx:949-1019`).
+
+**Fact:** The shared dialog implements dialog labelling, initial cancel focus, Tab/Shift+Tab trapping, Escape cancellation before submission, focus restoration, body scroll lock cleanup, disabled close/cancel/confirm controls while busy, and a mobile-constrained scrollable body (`frontend/components/ui/ConfirmationDialog.tsx:26-158`, `frontend/app/globals.css`). Backdrop click intentionally does not close the dialog.
+
+**Fact:** LINE drafts are checked for a non-whitespace value and a maximum of 5,000 UTF-16 code units while preserving the exact original message in the snapshot. Interview drafts retain the existing trim/empty-removal and order, require 2-5 valid local date-time values, and are formatted with weekday and explicit JST labelling for confirmation (`frontend/lib/send-confirmation.ts:33-86`, `frontend/lib/datetime.ts`). Synchronous ref locks and submission phases guard both confirm handlers from duplicate execution.
+
+**Verification scope:** The pure snapshot helper was exercised with four temporary Node standard-library tests after first observing the expected missing-module RED. Frontend has no checked-in test runner, so focus behavior and API call gating are protected by TypeScript strict checking, the Next.js production build, and static call-site inspection rather than an automated component test. No package dependency was added.
+
+**Known limitation:** `POST /api/line/send` still swallows `line_message_logs` insert exceptions after a successful LINE push (`backend/main.py:1572-1582`, `backend/main.py:2443-2456`). Its current response cannot tell the Frontend that delivery succeeded but history persistence failed. This Frontend-only change therefore cannot guarantee the requested “DB-log failure is not success” distinction; changing that requires a future Backend partial-result/outbox contract and was outside this task.
