@@ -799,14 +799,28 @@ def _format_interview_datetime(value: Optional[str]) -> str:
     return normalized
 
 
+def _normalize_interview_slot_choice(value: str) -> Optional[str]:
+    normalized = value.replace("T", " ")
+    for fmt in ("%Y-%m-%d %H:%M", "%Y-%m-%d %H:%M:%S"):
+        try:
+            datetime.strptime(normalized, fmt)
+            return normalized
+        except ValueError:
+            continue
+    return None
+
+
 def _find_active_interview_slot(line_user_id: str, slot_datetime: str) -> Optional[dict[str, Any]]:
-    normalized_datetime = slot_datetime.replace("T", " ")
+    normalized_datetime = _normalize_interview_slot_choice(slot_datetime)
+    if not normalized_datetime:
+        return None
     result = (
         supabase.table("interview_slots")
         .select("*")
         .eq("company_id", COMPANY_ID)
         .eq("line_user_id", line_user_id)
         .eq("slot_datetime", normalized_datetime)
+        .eq("status", "候補")
         .order("created_at", desc=True)
         .execute()
     )
@@ -940,6 +954,15 @@ def _reset_interview_confirmation(user_id: str) -> dict[str, Any]:
     return text_response("ご都合の良い日時をもう一度選択してください。", buttons[:5] or None)
 
 
+def _release_interview_confirmation(user_id: str) -> None:
+    try:
+        _reset_interview_confirmation(user_id)
+    except Exception as exc:
+        _log_event("interview.confirm.release", "error", subject_id=user_id, error=exc)
+        user_states[user_id] = None
+        interview_confirmations.pop(user_id, None)
+
+
 def handle_interview_confirmation(user_id: str, message: str) -> Optional[dict[str, Any]]:
     if user_states.get(user_id) != "confirming_interview_slot":
         return None
@@ -999,6 +1022,8 @@ def handle_interview_slot_selection(user_id: str, message: str) -> Optional[dict
         )
     except Exception as exc:
         _log_event("interview.slot.select", "error", subject_id=user_id, error=exc)
+        user_states[user_id] = None
+        interview_confirmations.pop(user_id, None)
         return text_response(
             "面接候補日の確認中にエラーが発生しました。\n"
             "恐れ入りますが、担当者からの連絡をお待ちください。"
@@ -1246,14 +1271,25 @@ def handle_message(user_id: str, message: str, event_id: Optional[str] = None):
             if state == "confirming":
                 _application_confirmation(user_id)
 
-    confirmation_response = handle_interview_confirmation(user_id, message)
-    if confirmation_response:
-        return confirmation_response
+    global_commands = {
+        "メニュー", "menu", "メニューに戻る",
+        "応募", "応募する",
+        "よくある質問", "よくあるお問い合わせ",
+        "お問い合わせ",
+        "キャンセル",
+    }
+    if message in global_commands:
+        _release_interview_confirmation(user_id)
+        state = None
+    else:
+        confirmation_response = handle_interview_confirmation(user_id, message)
+        if confirmation_response:
+            return confirmation_response
 
-    if not state:
-        interview_response = handle_interview_slot_selection(user_id, message)
-        if interview_response:
-            return interview_response
+        if not state:
+            interview_response = handle_interview_slot_selection(user_id, message)
+            if interview_response:
+                return interview_response
 
     if state in [None, "browsing_faq_categories", "browsing_faq_questions"]:
         faq_response = handle_db_faq_message(user_id, message)
