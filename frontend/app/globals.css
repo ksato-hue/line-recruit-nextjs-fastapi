@@ -267,6 +267,28 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .confirmDialog { width: min(460px, 100%); border-radius: 20px; background: #fff; padding: 24px; box-shadow: 0 24px 80px rgba(15, 23, 42, .28); }
 .confirmDialog p { margin: 14px 0 22px; color: var(--muted); line-height: 1.7; }
 .confirmDialogActions { display: flex; flex-direction: row-reverse; gap: 10px; justify-content: flex-start; flex-wrap: wrap; }
+.confirmationDialogBackdrop { position: fixed; inset: 0; z-index: 110; display: grid; place-items: center; padding: 16px; background: rgba(15, 23, 42, .52); }
+.confirmationDialog { width: min(620px, 100%); max-height: calc(100dvh - 32px); display: grid; grid-template-rows: auto minmax(0, 1fr) auto; overflow: hidden; border: 1px solid var(--line); border-radius: 18px; background: #fff; box-shadow: 0 18px 54px rgba(15, 23, 42, .22); }
+.confirmationDialogHeader { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; padding: 22px 24px 18px; border-bottom: 1px solid var(--line); }
+.confirmationDialogHeader h2 { line-height: 1.4; }
+.confirmationDialogHeader p { margin: 8px 0 0; color: var(--muted); line-height: 1.65; }
+.confirmationDialogClose { width: 44px; height: 44px; flex: 0 0 44px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: #44506a; font-size: 24px; line-height: 1; }
+.confirmationDialogContent { min-height: 0; overflow-y: auto; padding: 20px 24px; overscroll-behavior: contain; }
+.confirmationDialogActions { display: flex; justify-content: flex-end; gap: 10px; padding: 16px 24px; border-top: 1px solid var(--line); background: #f8fafc; }
+.confirmationDialogActions .primaryButton { margin-top: 0; }
+.confirmationDialogActions button { min-height: 44px; }
+.confirmationDialog button:disabled { opacity: .5; }
+.confirmationDialog :focus-visible { outline: 3px solid rgba(47, 128, 237, .42); outline-offset: 2px; }
+.confirmationDetails { display: grid; gap: 14px; }
+.confirmationRecipient { display: grid; gap: 5px; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; }
+.confirmationRecipient span, .confirmationSectionLabel { color: var(--muted); font-size: 12px; font-weight: 800; }
+.confirmationRecipient small { color: var(--muted); }
+.confirmationPreview { max-height: 240px; overflow-y: auto; margin: 0; padding: 14px; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; color: #344054; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.confirmationMeta { display: flex; justify-content: space-between; gap: 12px; color: var(--muted); font-size: 12px; }
+.confirmationWarning { margin: 0; padding: 12px 14px; border: 1px solid #f5cf72; border-radius: 12px; background: #fff9e8; color: #7c5700; line-height: 1.6; }
+.confirmationSlotList { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.confirmationSlotList li { display: grid; grid-template-columns: 28px 1fr; gap: 10px; align-items: center; padding: 11px 12px; border: 1px solid var(--line); border-radius: 12px; background: #f8fafc; line-height: 1.5; }
+.confirmationSlotOrder { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 999px; background: #e7f1fe; color: var(--blueDark); font-size: 12px; font-weight: 800; }
 .barChart { margin-top: 20px; height: 22px; background: #edf2f7; border-radius: 999px; overflow: hidden; }
 .barChart div { height: 100%; background: linear-gradient(90deg, var(--green), var(--blue)); border-radius: inherit; }
 @media (max-width: 1180px) {
@@ -289,6 +311,14 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   .reminderCardActions { align-items: stretch; flex-direction: column; }
   .reminderCardActions .dangerButton { width: 100%; }
   .confirmDialogActions { display: grid; grid-template-columns: 1fr; }
+  .confirmationDialogBackdrop { align-items: end; padding: 12px; }
+  .confirmationDialog { max-height: calc(100dvh - 24px); border-radius: 16px; }
+  .confirmationDialogHeader { padding: 18px 16px 14px; }
+  .confirmationDialogContent { padding: 16px; }
+  .confirmationDialogActions { display: grid; grid-template-columns: 1fr; padding: 14px 16px calc(14px + env(safe-area-inset-bottom)); }
+  .confirmationDialogActions button { width: 100%; min-height: 44px; }
+  .confirmationMeta { align-items: flex-start; flex-direction: column; gap: 4px; }
+  .confirmationPreview { max-height: min(240px, 32dvh); }
   .statusStep { grid-template-columns: 42px 1fr; }
   .statusStep .textButton { grid-column: 2; justify-self: start; }
   .addStatusBox { align-items: stretch; flex-direction: column; }
