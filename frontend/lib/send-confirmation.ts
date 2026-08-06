@@ -37,8 +37,8 @@ export function utf16CodeUnitLength(value: string) {
 
 export function maskLineUserId(value?: string) {
   if (!value) return "未設定";
-  if (value.length <= 8) return `${value.slice(0, 2)}・・・・`;
-  return `${value.slice(0, 4)}・・・・${value.slice(-4)}`;
+  if (value.length <= 8) return `${value.slice(0, 2)}••••`;
+  return `${value.slice(0, 4)}••••${value.slice(-4)}`;
 }
 
 export function isValidInterviewSlot(value: string) {

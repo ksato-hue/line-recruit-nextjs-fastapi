@@ -4,7 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getInquiries, getLineMessages, getQuestionTree, getSettings, getStatusSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings, updateStatusSettings } from "../lib/api";
 import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree, QuestionTreeQuestion, ReminderSetting, ReminderUnit } from "../types";
 import faqTemplatesJson from "../../shared/faq_templates.json";
-import { formatJstDateTime } from "../lib/datetime";
+import { formatJstDateTime, formatJstDateTimeWithWeekday } from "../lib/datetime";
+import { ConfirmationDialog } from "../components/ui/ConfirmationDialog";
+import { createInterviewSendSnapshot, createLineSendSnapshot, isValidInterviewSlot, maskLineUserId, utf16CodeUnitLength, type InterviewSendSnapshot, type LineSendSnapshot } from "../lib/send-confirmation";
 
 const faqTemplates = faqTemplatesJson as FAQTemplateCategory[];
 
@@ -19,15 +21,12 @@ const settingsMenuItems = ["基本設定", "ステータス設定", "FAQ設定",
 const interviewTypeOptions = ["カジュアル面接", "1次面接", "2次面接", "3次面接", "4次面接", "5次面接"];
 const allMenuItems = [...topMenuItems, ...settingsMenuItems];
 type DirtyAwareSettingsProps = { onDirtyChange: (dirty: boolean) => void };
+type OutboundSubmissionState<T> =
+  | { phase: "editing" | "success"; snapshot: null }
+  | { phase: "confirmation_open" | "submitting" | "failure"; snapshot: T };
 
 function snapshot(value: unknown) {
   return JSON.stringify(value);
-}
-
-function maskLineUserId(value?: string) {
-  if (!value) return "未設定";
-  if (value.length <= 8) return `${value.slice(0, 2)}••••`;
-  return `${value.slice(0, 4)}••••${value.slice(-4)}`;
 }
 
 function statusClass(status?: string) {
@@ -580,12 +579,14 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
   const [interviewType, setInterviewType] = useState(interviewTypeOptions[1]);
   const [interviewNotice, setInterviewNotice] = useState<string | null>(null);
   const [interviewError, setInterviewError] = useState<string | null>(null);
-  const [isSendingInterview, setIsSendingInterview] = useState(false);
+  const [interviewSubmission, setInterviewSubmission] = useState<OutboundSubmissionState<InterviewSendSnapshot>>({ phase: "editing", snapshot: null });
+  const interviewSubmitLockRef = useRef(false);
   const [showLineForm, setShowLineForm] = useState(false);
   const [lineMessage, setLineMessage] = useState("");
   const [lineNotice, setLineNotice] = useState<string | null>(null);
   const [lineError, setLineError] = useState<string | null>(null);
-  const [isSendingLine, setIsSendingLine] = useState(false);
+  const [lineSubmission, setLineSubmission] = useState<OutboundSubmissionState<LineSendSnapshot>>({ phase: "editing", snapshot: null });
+  const lineSubmitLockRef = useRef(false);
   const [applicantLogs, setApplicantLogs] = useState<LineMessageLog[]>([]);
   const [statusDraft, setStatusDraft] = useState(applicant.status || "");
   const [statusNotice, setStatusNotice] = useState<string | null>(null);
@@ -609,10 +610,14 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
     setInterviewType(interviewTypeOptions[1]);
     setInterviewNotice(null);
     setInterviewError(null);
+    setInterviewSubmission({ phase: "editing", snapshot: null });
+    interviewSubmitLockRef.current = false;
     setShowLineForm(false);
     setLineMessage("");
     setLineNotice(null);
     setLineError(null);
+    setLineSubmission({ phase: "editing", snapshot: null });
+    lineSubmitLockRef.current = false;
     setStatusDraft(applicant.status || "");
     setStatusNotice(null);
     setStatusError(null);
@@ -636,65 +641,176 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
 
   function updateInterviewSlot(index: number, value: string) {
     setInterviewSlots((current) => current.map((slot, slotIndex) => slotIndex === index ? value : slot));
+    setInterviewSubmission({ phase: "editing", snapshot: null });
+    setInterviewNotice(null);
+    setInterviewError(null);
   }
 
   function addInterviewSlot() {
     setInterviewSlots((current) => current.length >= 5 ? current : [...current, ""]);
+    setInterviewSubmission({ phase: "editing", snapshot: null });
+    setInterviewNotice(null);
+    setInterviewError(null);
   }
 
   function removeInterviewSlot(index: number) {
     setInterviewSlots((current) => current.length <= 2 ? current : current.filter((_, slotIndex) => slotIndex !== index));
-  }
-
-  async function handleInterviewSubmit() {
-    const slots = interviewSlots.map((slot) => slot.trim()).filter(Boolean);
+    setInterviewSubmission({ phase: "editing", snapshot: null });
     setInterviewNotice(null);
     setInterviewError(null);
-    if (slots.length < 2 || slots.length > 5) {
-      setInterviewError("候補日は2〜5件入力してください");
+  }
+
+  function updateInterviewType(value: string) {
+    setInterviewType(value);
+    setInterviewSubmission({ phase: "editing", snapshot: null });
+    setInterviewNotice(null);
+    setInterviewError(null);
+  }
+
+  function updateLineMessage(value: string) {
+    setLineMessage(value);
+    setLineSubmission({ phase: "editing", snapshot: null });
+    setLineNotice(null);
+    setLineError(null);
+  }
+
+  function openInterviewConfirmation() {
+    if (interviewSubmission.phase === "submitting") return;
+    setInterviewNotice(null);
+    setInterviewError(null);
+    if (!applicant.line_user_id) {
+      setInterviewError("LINEユーザーIDがないため送信できません");
       return;
     }
 
-    setIsSendingInterview(true);
+    const snapshot = createInterviewSendSnapshot({
+      applicantId: applicant.id,
+      applicantName: applicant.name,
+      lineUserId: applicant.line_user_id,
+      interviewType,
+      slots: interviewSlots
+    });
+    if (snapshot.payload.slots.length < 2 || snapshot.payload.slots.length > 5) {
+      setInterviewError("候補日は2〜5件入力してください");
+      return;
+    }
+    if (!snapshot.payload.slots.every(isValidInterviewSlot)) {
+      setInterviewError("候補日時を正しく入力してください");
+      return;
+    }
+
+    setInterviewSubmission({ phase: "confirmation_open", snapshot });
+  }
+
+  function cancelInterviewConfirmation() {
+    if (interviewSubmission.phase === "submitting") return;
+    setInterviewSubmission({ phase: "editing", snapshot: null });
+  }
+
+  async function confirmInterviewSend() {
+    const snapshot = interviewSubmission.snapshot;
+    if (!snapshot || interviewSubmission.phase === "submitting" || interviewSubmitLockRef.current) return;
+
+    interviewSubmitLockRef.current = true;
+    setInterviewSubmission({ phase: "submitting", snapshot });
+    setInterviewError(null);
     try {
-      const result = await createInterviewSlots(applicant.id, { slots, interview_type: interviewType });
-      setInterviewNotice("面接候補日をLINE送信しました");
-      setShowInterviewForm(false);
-      await onInterviewSent(result.applicant);
+      const result = await createInterviewSlots(snapshot.applicantId, snapshot.payload);
+      setInterviewSlots(["", "", ""]);
+      setInterviewType(interviewTypeOptions[1]);
+      setInterviewSubmission({ phase: "success", snapshot: null });
+      setInterviewNotice("面接候補日を送信しました。");
+      try {
+        await onInterviewSent(result.applicant);
+      } catch {
+        setInterviewNotice("面接候補日を送信しました。応募者情報を再読み込みしてください。");
+      }
     } catch (err) {
-      setInterviewError(err instanceof Error ? err.message : "面接候補日の送信に失敗しました");
+      const message = err instanceof TypeError
+        ? "通信に失敗しました。候補日は保持されています。もう一度お試しください。"
+        : err instanceof Error
+          ? "面接候補日を送信できませんでした。候補日は保持されています。"
+          : "予期しないエラーが発生しました。候補日は保持されています。";
+      setInterviewError(message);
+      setInterviewSubmission({ phase: "failure", snapshot });
     } finally {
-      setIsSendingInterview(false);
+      interviewSubmitLockRef.current = false;
     }
   }
 
-  async function handleLineSubmit() {
+  function openLineConfirmation() {
+    if (lineSubmission.phase === "submitting") return;
     setLineNotice(null);
     setLineError(null);
-    const message = lineMessage.trim();
     if (!applicant.line_user_id) {
       setLineError("LINEユーザーIDがないため送信できません");
       return;
     }
-    if (!message) {
+    if (!lineMessage.trim()) {
       setLineError("送信メッセージを入力してください");
       return;
     }
+    if (utf16CodeUnitLength(lineMessage) > 5000) {
+      setLineError("送信メッセージは5,000文字以内で入力してください");
+      return;
+    }
 
-    setIsSendingLine(true);
+    setLineSubmission({
+      phase: "confirmation_open",
+      snapshot: createLineSendSnapshot({
+        applicantId: applicant.id,
+        applicantName: applicant.name,
+        lineUserId: applicant.line_user_id,
+        message: lineMessage
+      })
+    });
+  }
+
+  function cancelLineConfirmation() {
+    if (lineSubmission.phase === "submitting") return;
+    setLineSubmission({ phase: "editing", snapshot: null });
+  }
+
+  async function confirmLineSend() {
+    const snapshot = lineSubmission.snapshot;
+    if (!snapshot || lineSubmission.phase === "submitting" || lineSubmitLockRef.current) return;
+
+    lineSubmitLockRef.current = true;
+    setLineSubmission({ phase: "submitting", snapshot });
+    setLineError(null);
     try {
-      await sendLineMessage({ line_user_id: applicant.line_user_id, message });
-      setLineNotice("LINEメッセージを送信しました");
+      await sendLineMessage(snapshot.payload);
+      let historyReloadFailed = false;
+      try {
+        setApplicantLogs(await getLineMessages(snapshot.payload.line_user_id, 20));
+      } catch {
+        historyReloadFailed = true;
+      }
       setLineMessage("");
-      setShowLineForm(false);
+      setLineSubmission({ phase: "success", snapshot: null });
+      setLineNotice(historyReloadFailed
+        ? "LINEメッセージを送信しました。履歴を再読み込みしてください。"
+        : "LINEメッセージを送信しました。");
     } catch (err) {
-      setLineError(err instanceof Error ? err.message : "LINE送信に失敗しました");
+      const message = err instanceof TypeError
+        ? "通信に失敗しました。内容を保持しています。もう一度お試しください。"
+        : err instanceof Error
+          ? "メッセージを送信できませんでした。内容を保持しています。"
+          : "予期しないエラーが発生しました。内容を保持しています。";
+      setLineError(message);
+      setLineSubmission({ phase: "failure", snapshot });
     } finally {
-      setIsSendingLine(false);
+      lineSubmitLockRef.current = false;
     }
   }
 
+  const isSendingInterview = interviewSubmission.phase === "submitting";
+  const isSendingLine = lineSubmission.phase === "submitting";
+  const interviewSnapshot = interviewSubmission.snapshot;
+  const lineSnapshot = lineSubmission.snapshot;
+
   return (
+    <>
     <aside className="drawerBackdrop">
       <section className="drawer">
         <header className="drawerHeader">
@@ -722,13 +838,13 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
               面接候補日をLINE送信
             </button>
           </div>
-          {interviewNotice && <div className="successBox">{interviewNotice}</div>}
-          {interviewError && <div className="inlineError">{interviewError}</div>}
+          {interviewNotice && <div className="successBox" role="status">{interviewNotice}</div>}
+          {interviewError && !interviewSubmission.snapshot && <div className="inlineError" role="alert">{interviewError}</div>}
           {showInterviewForm && (
             <div className="interviewForm">
               <label>
                 面接種別
-                <select value={interviewType} onChange={(event) => setInterviewType(event.target.value)}>
+                <select value={interviewType} onChange={(event) => updateInterviewType(event.target.value)}>
                   {interviewTypeOptions.map((type) => <option key={type}>{type}</option>)}
                 </select>
               </label>
@@ -747,7 +863,7 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
               ))}
               <div className="formActions">
                 <button className="secondaryButton" onClick={addInterviewSlot} disabled={interviewSlots.length >= 5}>候補日を追加</button>
-                <button className="primaryButton" onClick={handleInterviewSubmit} disabled={isSendingInterview || !applicant.line_user_id}>
+                <button className="primaryButton" onClick={openInterviewConfirmation} disabled={isSendingInterview || !applicant.line_user_id}>
                   {isSendingInterview ? "LINE送信中..." : "LINE送信"}
                 </button>
               </div>
@@ -761,12 +877,15 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
             <label>LINE送信</label>
             <button className="secondaryButton" onClick={() => setShowLineForm((value) => !value)}>メッセージを入力</button>
           </div>
-          {lineNotice && <div className="successBox">{lineNotice}</div>}
-          {lineError && <div className="inlineError">{lineError}</div>}
+          {lineNotice && <div className="successBox" role="status">{lineNotice}</div>}
+          {lineError && !lineSubmission.snapshot && <div className="inlineError" role="alert">{lineError}</div>}
           {showLineForm && (
             <div className="lineSendForm">
-              <textarea value={lineMessage} onChange={(event) => setLineMessage(event.target.value)} placeholder="応募者へ送るメッセージを入力" />
-              <button className="primaryButton" onClick={handleLineSubmit} disabled={isSendingLine || !applicant.line_user_id}>
+              <textarea value={lineMessage} onChange={(event) => updateLineMessage(event.target.value)} placeholder="応募者へ送るメッセージを入力" />
+              <div className="confirmationMeta" aria-live="polite">
+                <span>{utf16CodeUnitLength(lineMessage).toLocaleString("ja-JP")} / 5,000 UTF-16符号単位</span>
+              </div>
+              <button className="primaryButton" onClick={openLineConfirmation} disabled={isSendingLine || !applicant.line_user_id}>
                 {isSendingLine ? "送信中..." : "送信する"}
               </button>
               {!applicant.line_user_id && <small className="muted">LINEユーザーIDがないため送信できません</small>}
@@ -826,6 +945,79 @@ function ApplicantDrawer({ applicant, draftMemo, setDraftMemo, onClose, onStatus
         </div>
       </section>
     </aside>
+
+    <ConfirmationDialog
+      open={Boolean(lineSnapshot)}
+      title="LINEメッセージを送信しますか？"
+      description="送信先とメッセージ本文を確認してください。"
+      confirmLabel="この内容で送信"
+      cancelLabel="編集に戻る"
+      isSubmitting={isSendingLine}
+      onConfirm={confirmLineSend}
+      onCancel={cancelLineConfirmation}
+    >
+      {lineSnapshot && (
+        <div className="confirmationDetails">
+          <div className="confirmationRecipient">
+            <span>送信先</span>
+            <strong>{lineSnapshot.applicantName}</strong>
+            <small>LINEユーザーID: {lineSnapshot.maskedLineUserId}</small>
+          </div>
+          <div>
+            <div className="confirmationMeta">
+              <span className="confirmationSectionLabel">メッセージ本文</span>
+              <span>{lineSnapshot.messageCodeUnits.toLocaleString("ja-JP")} / 5,000 UTF-16符号単位</span>
+            </div>
+            <p className="confirmationPreview">{lineSnapshot.payload.message}</p>
+          </div>
+          <p className="confirmationWarning">
+            送信後は取り消せません。送信内容はLINE履歴へ記録されます。
+          </p>
+          {lineError && <div className="inlineError" role="alert">{lineError}</div>}
+        </div>
+      )}
+    </ConfirmationDialog>
+
+    <ConfirmationDialog
+      open={Boolean(interviewSnapshot)}
+      title="面接候補日を送信しますか？"
+      description="候補日時は入力した順に応募者のLINEへ送信されます。"
+      confirmLabel="候補日を送信"
+      cancelLabel="編集に戻る"
+      isSubmitting={isSendingInterview}
+      onConfirm={confirmInterviewSend}
+      onCancel={cancelInterviewConfirmation}
+    >
+      {interviewSnapshot && (
+        <div className="confirmationDetails">
+          <div className="confirmationRecipient">
+            <span>送信先</span>
+            <strong>{interviewSnapshot.applicantName}</strong>
+            <small>LINEユーザーID: {interviewSnapshot.maskedLineUserId}</small>
+          </div>
+          <div className="confirmationMeta">
+            <span>面接種別: <strong>{interviewSnapshot.payload.interview_type || "面接"}</strong></span>
+            <span>候補数: <strong>{interviewSnapshot.payload.slots.length}件</strong></span>
+          </div>
+          <div>
+            <span className="confirmationSectionLabel">候補日時（JST・送信順）</span>
+            <ol className="confirmationSlotList">
+              {interviewSnapshot.payload.slots.map((slot, index) => (
+                <li key={`${slot}-${index}`}>
+                  <span className="confirmationSlotOrder">{index + 1}</span>
+                  <span>{formatJstDateTimeWithWeekday(slot)}</span>
+                </li>
+              ))}
+            </ol>
+          </div>
+          <p className="confirmationWarning">
+            送信後は取り消せません。応募者のLINEへ候補日を送り、ステータスを面接調整中へ更新します。
+          </p>
+          {interviewError && <div className="inlineError" role="alert">{interviewError}</div>}
+        </div>
+      )}
+    </ConfirmationDialog>
+    </>
   );
 }
 
