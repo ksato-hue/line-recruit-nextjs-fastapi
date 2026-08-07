@@ -20,6 +20,46 @@ INQUIRY_REPLIES_MIGRATION_PATH = (
 )
 
 
+def _has_exact_inquiry_replies_grant_contract(sql: str) -> bool:
+    """Return whether inquiry_replies has only its server-role table grant."""
+    expected_privileges = {"select", "insert", "update"}
+    target_grants = []
+
+    for raw_statement in sql.split(";"):
+        statement = " ".join(
+            line.split("--", 1)[0] for line in raw_statement.splitlines()
+        ).strip().lower()
+        if not statement.startswith("grant "):
+            continue
+        if "public.inquiry_replies" not in statement:
+            continue
+
+        match = re.fullmatch(
+            r"grant (?P<privileges>.+?) on table "
+            r"(?P<table>public\.inquiry_replies) to "
+            r"(?P<grantees>.+)",
+            statement,
+        )
+        if match is None:
+            return False
+
+        privileges = tuple(
+            privilege.strip() for privilege in match.group("privileges").split(",")
+        )
+        grantees = tuple(
+            grantee.strip() for grantee in match.group("grantees").split(",")
+        )
+        if (
+            len(privileges) != len(expected_privileges)
+            or set(privileges) != expected_privileges
+            or grantees != ("service_role",)
+        ):
+            return False
+        target_grants.append(match.group("table"))
+
+    return target_grants == ["public.inquiry_replies"]
+
+
 class InquiryWorkflowMigrationTests(unittest.TestCase):
     def test_inquiry_metadata_contract(self) -> None:
         """Protect inquiry metadata DDL from unsafe tenant or status backfills."""
@@ -163,16 +203,8 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             "revoke all on table public.inquiry_replies from authenticated",
             normalized,
         )
-        self.assertIn(
-            "grant select, insert, update on table public.inquiry_replies to service_role",
-            normalized,
-        )
-        self.assertNotRegex(normalized, r"grant\s+[^;]*delete[^;]*inquiry_replies")
+        self.assertTrue(_has_exact_inquiry_replies_grant_contract(sql))
         self.assertNotRegex(normalized, r"create policy\s+[^;]*inquiry_replies")
-        self.assertNotRegex(
-            normalized,
-            r"grant\s+[^;]*on table public\.inquiry_replies to (?:anon|authenticated)",
-        )
         self.assertNotRegex(normalized, r"foreign key \(actor_user_id\)")
         self.assertNotIn("references auth.", normalized)
         self.assertIn(
@@ -183,6 +215,26 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             sql,
             r"(?im)^\s*(?:insert\s+into|update\s+|delete\s+from)\s+",
         )
+
+    def test_inquiry_replies_grant_contract_rejects_broader_statements(self) -> None:
+        """A grant checker must reject broad privileges and mixed browser roles."""
+        valid = (
+            "grant select, insert, update on table public.inquiry_replies "
+            "to service_role;"
+        )
+        self.assertTrue(_has_exact_inquiry_replies_grant_contract(valid))
+
+        for malicious in (
+            "grant all on table public.inquiry_replies to service_role;",
+            "grant all privileges on table public.inquiry_replies to service_role;",
+            "grant select, insert, update, delete on table public.inquiry_replies "
+            "to service_role;",
+            "grant select, insert, update on table public.inquiry_replies "
+            "to service_role, authenticated;",
+            "grant select on table public.inquiry_replies to service_role;",
+        ):
+            with self.subTest(malicious=malicious):
+                self.assertFalse(_has_exact_inquiry_replies_grant_contract(malicious))
 
 
 if __name__ == "__main__":
