@@ -185,6 +185,99 @@ export type Inquiry = {
   status?: string;
 };
 
+export type InquiryStatus = "未対応" | "対応中" | "対応済み";
+
+export type InquirySummary = {
+  id: string;
+  message_preview: string;
+  created_at: string;
+  status: InquiryStatus;
+  assignee_name: string | null;
+  last_replied_at: string | null;
+  updated_at: string;
+  related_applicant_exists: boolean;
+  unanswered_age_seconds: number | null;
+};
+
+export type InquiryListResponse = {
+  items: InquirySummary[];
+  next_cursor: string | null;
+};
+
+export type InquiryRecord = {
+  id: string;
+  message: string;
+  created_at: string;
+  status: InquiryStatus;
+  assignee_name: string | null;
+  last_replied_at: string | null;
+  updated_at: string;
+};
+
+export type InquiryReplyDeliveryStatus =
+  | "pending"
+  | "sending"
+  | "sent"
+  | "failed"
+  | "delivery_unknown";
+
+export type InquiryReply = {
+  id: string;
+  assignee_name: string;
+  message: string;
+  delivery_status: InquiryReplyDeliveryStatus;
+  safe_error_code: string | null;
+  created_at: string;
+  updated_at: string;
+  sent_at: string | null;
+};
+
+export type InquiryRelatedApplicant = Pick<
+  Applicant,
+  "id" | "name" | "job" | "status" | "interview_status" | "created_at"
+>;
+
+export type InquiryDetailResponse = {
+  inquiry: InquiryRecord;
+  default_assignee_name: string;
+  masked_destination: string;
+  related_applicants: InquiryRelatedApplicant[];
+  replies: InquiryReply[];
+  reply_enabled: boolean;
+};
+
+export type InquiryUpdateRequest = (
+  | { status: InquiryStatus; assignee_name?: string }
+  | { status?: InquiryStatus; assignee_name: string }
+) & { expected_updated_at: string };
+
+export type InquiryReplyRequest = {
+  assignee_name: string;
+  message: string;
+  idempotency_key: string;
+  expected_updated_at: string;
+};
+
+export type InquiryReplySentResponse = {
+  outcome: "sent";
+  reply_id: string;
+  delivery_status: "sent";
+  inquiry_status: "対応済み";
+  sent_at: string;
+  idempotent_replay: boolean;
+};
+
+export type InquiryReplyUnknownResponse = {
+  outcome: "delivery_unknown";
+  reply_id: string;
+  delivery_status: "delivery_unknown";
+  reason_code: "DELIVERY_RESULT_UNKNOWN";
+};
+
+export type InquiryReplyResponse =
+  | InquiryReplySentResponse
+  | InquiryReplyUnknownResponse;
+
 export type Dashboard = {
   applicant_count: number;
   inquiry_count: number;
