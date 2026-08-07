@@ -1,11 +1,12 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getInquiries, getLineMessages, getQuestionTree, getSettings, getStatusSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings, updateStatusSettings } from "../lib/api";
-import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree, QuestionTreeQuestion, ReminderSetting, ReminderUnit } from "../types";
+import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getLineMessages, getQuestionTree, getSettings, getStatusSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings, updateStatusSettings } from "../lib/api";
+import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, LineMessageLog, QuestionTree, QuestionTreeQuestion, ReminderSetting, ReminderUnit } from "../types";
 import faqTemplatesJson from "../../shared/faq_templates.json";
 import { formatJstDateTime, formatJstDateTimeWithWeekday } from "../lib/datetime";
 import { ConfirmationDialog } from "../components/ui/ConfirmationDialog";
+import { InquiryWorkspace } from "../features/inquiries/InquiryWorkspace";
 import { createInterviewSendSnapshot, createLineSendSnapshot, isValidInterviewSlot, maskLineUserId, utf16CodeUnitLength, type InterviewSendSnapshot, type LineSendSnapshot } from "../lib/send-confirmation";
 
 const faqTemplates = faqTemplatesJson as FAQTemplateCategory[];
@@ -48,18 +49,15 @@ export default function AdminPage() {
   const [activeMenu, setActiveMenuState] = useState("ダッシュボード");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [applicants, setApplicants] = useState<Applicant[]>([]);
-  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [selectedApplicant, setSelectedApplicant] = useState<Applicant | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("すべて");
   const [isReady, setIsReady] = useState(false);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [applicantsLoading, setApplicantsLoading] = useState(false);
-  const [inquiriesLoading, setInquiriesLoading] = useState(false);
   const [statusesLoading, setStatusesLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [applicantsError, setApplicantsError] = useState<string | null>(null);
-  const [inquiriesError, setInquiriesError] = useState<string | null>(null);
   const [statusesError, setStatusesError] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [draftMemo, setDraftMemo] = useState("");
@@ -120,14 +118,6 @@ export default function AdminPage() {
     try { setApplicants(await getApplicants()); }
     catch (err) { setApplicantsError(err instanceof Error ? err.message : "応募者の取得に失敗しました"); }
     finally { setApplicantsLoading(false); }
-  }
-
-  async function loadInquiries() {
-    setInquiriesLoading(true);
-    setInquiriesError(null);
-    try { setInquiries(await getInquiries()); }
-    catch (err) { setInquiriesError(err instanceof Error ? err.message : "お問い合わせの取得に失敗しました"); }
-    finally { setInquiriesLoading(false); }
   }
 
   async function loadStatuses() {
@@ -192,7 +182,6 @@ export default function AdminPage() {
     if (!isReady) return;
     if (["ダッシュボード", "簡易分析"].includes(activeMenu)) void loadDashboard();
     if (["応募者一覧", "簡易分析"].includes(activeMenu)) void loadApplicants();
-    if (activeMenu === "お問い合わせ") void loadInquiries();
     if (["応募者一覧", "簡易分析", "ステータス設定"].includes(activeMenu)) void loadStatuses();
   }, [activeMenu, isReady]);
 
@@ -256,7 +245,6 @@ export default function AdminPage() {
   function reloadActiveMenu() {
     if (["ダッシュボード", "簡易分析"].includes(activeMenu)) void loadDashboard();
     if (["応募者一覧", "簡易分析"].includes(activeMenu)) void loadApplicants();
-    if (activeMenu === "お問い合わせ") void loadInquiries();
     if (["応募者一覧", "簡易分析", "ステータス設定"].includes(activeMenu)) void loadStatuses();
   }
 
@@ -332,10 +320,9 @@ export default function AdminPage() {
               </>
             )}
 
-            {activeMenu === "お問い合わせ" && <>
-              {inquiriesError && <div className="errorBox">{inquiriesError}</div>}
-              {inquiriesLoading && inquiries.length === 0 ? <div className="loadingCard">お問い合わせを取得中...</div> : <InquiriesView inquiries={inquiries} />}
-            </>}
+            {activeMenu === "お問い合わせ" && (
+              <InquiryWorkspace onDashboardRefresh={loadDashboard} />
+            )}
             {activeMenu === "質問ツリー設定" && <QuestionTreeSettings onDirtyChange={handleSettingsDirtyChange} />}
             {activeMenu === "FAQ設定" && <FAQSettings onDirtyChange={handleSettingsDirtyChange} />}
             {activeMenu === "リマインド・メッセージテンプレート" && <MessageAndReminderSettings onDirtyChange={handleSettingsDirtyChange} />}
@@ -1135,44 +1122,6 @@ function HistoryView({ applicants }: { applicants: Applicant[] }) {
           </table>
         </div>
       )}
-    </section>
-  );
-}
-
-function InquiriesView({ inquiries }: { inquiries: Inquiry[] }) {
-  return (
-    <section className="panel">
-      <div className="panelHeader">
-        <div>
-          <p className="eyebrow">Inquiries</p>
-          <h2>お問い合わせ</h2>
-        </div>
-        <span className="pill">{inquiries.length}件</span>
-      </div>
-      <p className="sectionDescription">応募者からのお問い合わせ対応はここで確認します。</p>
-      <div className="tableWrap">
-        <table>
-          <thead>
-            <tr>
-              <th>日時</th>
-              <th>LINEユーザーID</th>
-              <th>内容</th>
-              <th>ステータス</th>
-            </tr>
-          </thead>
-          <tbody>
-            {inquiries.map((inquiry) => (
-              <tr key={inquiry.id}>
-                <td>{formatJstDateTime(inquiry.created_at)}</td>
-                <td>{maskLineUserId(inquiry.line_user_id)}</td>
-                <td>{inquiry.message || "-"}</td>
-                <td><span className="badge">{inquiry.status || "未対応"}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {inquiries.length === 0 && <div className="emptyState">まだお問い合わせはありません。</div>}
     </section>
   );
 }

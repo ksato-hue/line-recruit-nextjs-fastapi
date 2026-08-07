@@ -1,4 +1,20 @@
-import type { InquiryReplyRequest } from "../../types";
+import type { InquiryReplyRequest, InquiryStatus } from "../../types";
+
+export type InquiryWorkspaceQuery = Readonly<{
+  status: InquiryStatus | null;
+  sort: "oldest" | "newest";
+}>;
+
+export type InquiryWorkspaceState = Readonly<{
+  query: InquiryWorkspaceQuery;
+  selectedInquiryId: string | null;
+}>;
+
+export type InquiryWorkspaceCopyState =
+  | "loading"
+  | "empty"
+  | "error"
+  | "read-only";
 
 export type InquiryReplyStatus =
   | "idle"

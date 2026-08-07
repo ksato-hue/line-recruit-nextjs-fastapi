@@ -24,9 +24,14 @@ registerHooks({
 
 const { AdminApiError } = require("../lib/api.ts") as typeof import("../lib/api");
 const {
+  createInitialInquiryWorkspaceState,
   createInitialInquiryReplyState,
+  getInquiryWorkspaceCopy,
   inquiryReplyReducer,
+  resetInquiryWorkspaceFilter,
+  selectInquiryAfterRefresh,
   serializeInquiryReplyRequest,
+  sortInquiryRepliesChronologically,
   validateInquiryReplyDraft
 } = require("../features/inquiries/inquiry-response.ts") as typeof import(
   "../features/inquiries/inquiry-response"
@@ -69,6 +74,31 @@ const relatedApplicantFixture: InquiryRelatedApplicant = {
   created_at: null
 };
 
+const inquirySummaries: import("../types").InquirySummary[] = [
+  {
+    id: inquiryId,
+    message_preview: "最初のお問い合わせ",
+    created_at: "2026-08-07T00:00:00+00:00",
+    status: "未対応",
+    assignee_name: null,
+    last_replied_at: null,
+    updated_at: "2026-08-07T00:00:00+00:00",
+    related_applicant_exists: false,
+    unanswered_age_seconds: 60
+  },
+  {
+    id: "10000000-0000-0000-0000-000000000002",
+    message_preview: "次のお問い合わせ",
+    created_at: "2026-08-06T00:00:00+00:00",
+    status: "対応中",
+    assignee_name: "佐藤",
+    last_replied_at: null,
+    updated_at: "2026-08-06T00:00:00+00:00",
+    related_applicant_exists: true,
+    unanswered_age_seconds: null
+  }
+];
+
 function editingState() {
   return inquiryReplyReducer(createInitialInquiryReplyState(), {
     type: "edit",
@@ -94,6 +124,104 @@ test("the initial reply draft is idle and empty", () => {
     snapshot: null,
     errorMessage: null
   });
+});
+
+test("workspace query state initializes with a supplied Dashboard filter and inquiry", () => {
+  assert.deepEqual(
+    createInitialInquiryWorkspaceState({
+      initialInquiryId: inquiryId,
+      initialStatus: "未対応"
+    }),
+    {
+      query: { status: "未対応", sort: "newest" },
+      selectedInquiryId: inquiryId
+    }
+  );
+  assert.deepEqual(createInitialInquiryWorkspaceState(), {
+    query: { status: null, sort: "newest" },
+    selectedInquiryId: null
+  });
+});
+
+test("list refresh preserves a selected inquiry and otherwise selects the first result", () => {
+  const selectedId = inquirySummaries[1].id;
+
+  assert.equal(
+    selectInquiryAfterRefresh(selectedId, inquirySummaries),
+    selectedId
+  );
+  assert.equal(
+    selectInquiryAfterRefresh("removed-inquiry", inquirySummaries),
+    inquiryId
+  );
+  assert.equal(selectInquiryAfterRefresh(null, []), null);
+});
+
+test("a supplied Dashboard inquiry opens even when it is outside the current list", () => {
+  const dashboardInquiryId = "10000000-0000-0000-0000-000000000099";
+
+  assert.equal(
+    selectInquiryAfterRefresh(dashboardInquiryId, inquirySummaries, dashboardInquiryId),
+    dashboardInquiryId
+  );
+});
+
+test("resetting the workspace filter keeps the current selection", () => {
+  const state = createInitialInquiryWorkspaceState({
+    initialInquiryId: inquiryId,
+    initialStatus: "未対応"
+  });
+
+  assert.deepEqual(resetInquiryWorkspaceFilter(state), {
+    query: { status: null, sort: "newest" },
+    selectedInquiryId: inquiryId
+  });
+  assert.deepEqual(state.query, { status: "未対応", sort: "newest" });
+});
+
+test("reply history is copied and sorted from oldest to newest", () => {
+  const newest: import("../types").InquiryReply = {
+    id: "reply-newest",
+    assignee_name: "佐藤",
+    message: "後の返信",
+    delivery_status: "sent",
+    safe_error_code: null,
+    created_at: "2026-08-07T02:00:00+00:00",
+    updated_at: "2026-08-07T02:00:00+00:00",
+    sent_at: "2026-08-07T02:00:00+00:00"
+  };
+  const oldest: import("../types").InquiryReply = {
+    ...newest,
+    id: "reply-oldest",
+    message: "先の返信",
+    created_at: "2026-08-07T01:00:00+00:00",
+    updated_at: "2026-08-07T01:00:00+00:00",
+    sent_at: "2026-08-07T01:00:00+00:00"
+  };
+  const replies = [newest, oldest];
+
+  assert.deepEqual(
+    sortInquiryRepliesChronologically(replies).map((reply) => reply.id),
+    ["reply-oldest", "reply-newest"]
+  );
+  assert.deepEqual(replies.map((reply) => reply.id), ["reply-newest", "reply-oldest"]);
+});
+
+test("workspace state copy distinguishes loading, empty, filtered, error and read-only", () => {
+  assert.equal(getInquiryWorkspaceCopy("loading"), "お問い合わせを取得中...");
+  assert.equal(getInquiryWorkspaceCopy("empty"), "まだお問い合わせはありません。");
+  assert.equal(
+    getInquiryWorkspaceCopy("empty", { isFiltered: true }),
+    "選択した条件に一致するお問い合わせはありません。"
+  );
+  assert.equal(
+    getInquiryWorkspaceCopy("error", { errorMessage: "通信に失敗しました" }),
+    "通信に失敗しました"
+  );
+  assert.equal(
+    getInquiryWorkspaceCopy("read-only"),
+    "返信機能は現在利用できません。内容と履歴のみ確認できます。"
+  );
 });
 
 test("opening confirmation freezes an exact snapshot and generates one key", () => {

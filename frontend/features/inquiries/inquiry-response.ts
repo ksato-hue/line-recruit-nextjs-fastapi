@@ -1,12 +1,78 @@
 import { utf16CodeUnitLength } from "../../lib/send-confirmation";
+import type { InquiryReply, InquiryStatus, InquirySummary } from "../../types";
 import type {
   InquiryReplyAction,
   InquiryReplyDraft,
   InquiryReplyDraftErrors,
   InquiryReplySnapshot,
   InquiryReplyState,
+  InquiryWorkspaceCopyState,
+  InquiryWorkspaceState,
   SerializedInquiryReplyRequest
 } from "./types";
+
+export function createInitialInquiryWorkspaceState(options: {
+  initialInquiryId?: string;
+  initialStatus?: InquiryStatus;
+} = {}): InquiryWorkspaceState {
+  return {
+    query: {
+      status: options.initialStatus || null,
+      sort: "newest"
+    },
+    selectedInquiryId: options.initialInquiryId || null
+  };
+}
+
+export function selectInquiryAfterRefresh(
+  selectedInquiryId: string | null,
+  inquiries: readonly InquirySummary[],
+  suppliedInquiryId?: string
+) {
+  if (selectedInquiryId === suppliedInquiryId) return selectedInquiryId;
+  if (selectedInquiryId && inquiries.some((inquiry) => inquiry.id === selectedInquiryId)) {
+    return selectedInquiryId;
+  }
+  return inquiries[0]?.id || null;
+}
+
+export function resetInquiryWorkspaceFilter(
+  state: InquiryWorkspaceState
+): InquiryWorkspaceState {
+  return {
+    ...state,
+    query: { ...state.query, status: null }
+  };
+}
+
+export function sortInquiryRepliesChronologically(
+  replies: readonly InquiryReply[]
+) {
+  return [...replies].sort((left, right) => {
+    const leftTime = Date.parse(left.created_at);
+    const rightTime = Date.parse(right.created_at);
+    const timeDifference = leftTime - rightTime;
+    return timeDifference || left.id.localeCompare(right.id);
+  });
+}
+
+export function getInquiryWorkspaceCopy(
+  state: InquiryWorkspaceCopyState,
+  options: { isFiltered?: boolean; errorMessage?: string } = {}
+) {
+  switch (state) {
+    case "loading":
+      return "お問い合わせを取得中...";
+    case "empty":
+      return options.isFiltered
+        ? "選択した条件に一致するお問い合わせはありません。"
+        : "まだお問い合わせはありません。";
+    case "error":
+      return options.errorMessage || "お問い合わせの取得に失敗しました。";
+    case "read-only":
+      return "返信機能は現在利用できません。内容と履歴のみ確認できます。";
+  }
+}
 
 const EMPTY_DRAFT: InquiryReplyDraft = Object.freeze({
   assigneeName: "",
