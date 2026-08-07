@@ -195,6 +195,12 @@ def validate_timezone_aware_datetime(value: datetime) -> datetime:
     return value
 
 
+def inquiry_timestamps_match(stored_updated_at: object, expected_updated_at: datetime) -> bool:
+    stored = _parse_aware_datetime(stored_updated_at, "updated_at")
+    expected = validate_timezone_aware_datetime(expected_updated_at)
+    return stored.astimezone(timezone.utc) == expected.astimezone(timezone.utc)
+
+
 class InquiryUpdateRequest(BaseModel):
     """Browser request contract for an inquiry status or assignee update."""
 

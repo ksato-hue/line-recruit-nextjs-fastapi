@@ -14,6 +14,7 @@ from inquiry_response import (
     extract_default_assignee_name,
     inquiry_cursor_filter,
     inquiry_summary,
+    inquiry_timestamps_match,
     mask_line_destination,
     safe_inquiry_detail,
     validate_operator_status_transition,
@@ -2622,7 +2623,7 @@ def api_update_inquiry(inquiry_id: str, payload: InquiryUpdateRequest):
     try:
         current_result = (
             supabase.table("inquiries")
-            .select("status,updated_at")
+            .select(INQUIRY_DETAIL_SELECT)
             .eq("id", inquiry_id)
             .eq("company_id", COMPANY_ID)
             .limit(1)
@@ -2643,6 +2644,16 @@ def api_update_inquiry(inquiry_id: str, payload: InquiryUpdateRequest):
             exclude={"expected_updated_at"},
             exclude_none=True,
         )
+        if payload.status is not None and payload.status.value == current.get("status"):
+            update_data.pop("status", None)
+        if not update_data:
+            if not inquiry_timestamps_match(current.get("updated_at"), payload.expected_updated_at):
+                raise HTTPException(
+                    status_code=409,
+                    detail=InquiryReasonCode.INQUIRY_CONFLICT.value,
+                )
+            return safe_inquiry_detail(current)
+
         expected_updated_at = payload.expected_updated_at.isoformat()
         result = (
             supabase.table("inquiries")
@@ -2653,7 +2664,7 @@ def api_update_inquiry(inquiry_id: str, payload: InquiryUpdateRequest):
             .execute()
         )
         if result.data:
-            return result.data[0]
+            return safe_inquiry_detail(result.data[0])
 
         remaining_result = (
             supabase.table("inquiries")
