@@ -26,6 +26,13 @@ LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH = (
     / "202608070003_line_message_log_inquiry_reply.sql"
 )
 
+FINALIZE_INQUIRY_REPLY_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "supabase"
+    / "migrations"
+    / "202608070004_finalize_inquiry_reply.sql"
+)
+
 
 def _has_exact_inquiry_replies_grant_contract(sql: str) -> bool:
     """Return whether inquiry_replies has only its server-role table grant."""
@@ -38,6 +45,17 @@ def _has_exact_inquiry_replies_grant_contract(sql: str) -> bool:
     ]
     return grants == [
         "grant select, insert, update on table public.inquiry_replies to service_role"
+    ]
+
+
+def _finalizer_execute_statements(sql: str) -> list[str]:
+    """Return every normalized privilege statement in the finalizer migration."""
+    without_block_comments = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
+    without_comments = re.sub(r"--[^\r\n]*", "", without_block_comments)
+    return [
+        " ".join(statement.lower().split())
+        for statement in without_comments.split(";")
+        if re.match(r"^\s*(?:grant|revoke)\b", statement, flags=re.IGNORECASE)
     ]
 
 
@@ -279,6 +297,155 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             sql,
             r"(?im)^\s*(?:insert\s+into|update\s+|delete\s+from)\s+",
         )
+
+    def test_finalize_inquiry_reply_function_contract(self) -> None:
+        """Protect tenant-scoped, locked and idempotent reply finalization."""
+        self.assertTrue(
+            FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.is_file(),
+            "missing finalize inquiry reply migration: "
+            f"{FINALIZE_INQUIRY_REPLY_MIGRATION_PATH}",
+        )
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        self.assertRegex(
+            normalized,
+            r"create function public\.finalize_inquiry_reply\( "
+            r"p_company_id text, p_inquiry_id uuid, p_reply_id uuid "
+            r"\) returns jsonb language plpgsql security invoker "
+            r"set search_path = pg_catalog",
+        )
+        self.assertNotIn("security definer", normalized)
+        self.assertNotRegex(normalized, r"p_(?:message|assignee|line_user_id)\b")
+
+        self.assertRegex(
+            normalized,
+            r"from public\.inquiry_replies (?:as )?r "
+            r"where r\.company_id = p_company_id "
+            r"and r\.inquiry_id = p_inquiry_id "
+            r"and r\.id = p_reply_id for update",
+        )
+        self.assertRegex(
+            normalized,
+            r"from public\.inquiries (?:as )?i "
+            r"where i\.company_id = p_company_id "
+            r"and i\.id = p_inquiry_id for update",
+        )
+        self.assertEqual(normalized.count("for update"), 2)
+
+        sent_branch_match = re.search(
+            r"if v_reply_delivery_status = 'sent' then (.*?) end if;",
+            normalized,
+        )
+        self.assertIsNotNone(sent_branch_match)
+        sent_branch = sent_branch_match.group(1) if sent_branch_match else ""
+        self.assertRegex(
+            sent_branch,
+            r"from public\.line_message_logs (?:as )?l "
+            r"where l\.company_id = p_company_id "
+            r"and l\.inquiry_reply_id = p_reply_id",
+        )
+        self.assertIn("return pg_catalog.jsonb_build_object(", sent_branch)
+        self.assertLess(
+            sent_branch_match.end() if sent_branch_match else -1,
+            normalized.index("update public.inquiry_replies"),
+        )
+        self.assertRegex(
+            normalized,
+            r"update public\.inquiry_replies (?:as )?r set "
+            r"delivery_status = 'sent', safe_error_code = null, "
+            r"sent_at = v_sent_at where r\.company_id = p_company_id "
+            r"and r\.inquiry_id = p_inquiry_id and r\.id = p_reply_id",
+        )
+        self.assertRegex(
+            normalized,
+            r"insert into public\.line_message_logs \( company_id, line_user_id, "
+            r"message, direction, message_type, inquiry_reply_id \) "
+            r"select p_company_id, v_line_user_id, v_reply_message, "
+            r"'outbound', 'inquiry_reply', p_reply_id where not exists \( "
+            r"select 1 from public\.line_message_logs (?:as )?existing_log "
+            r"where existing_log\.company_id = p_company_id "
+            r"and existing_log\.inquiry_reply_id = p_reply_id \)",
+        )
+        self.assertRegex(
+            normalized,
+            r"if v_inquiry_status <> '対応中' then .*? end if; .*? "
+            r"update public\.inquiries (?:as )?i set status = '対応済み', "
+            r"assignee_name = v_reply_assignee_name, "
+            r"last_replied_at = v_sent_at, updated_at = v_sent_at "
+            r"where i\.company_id = p_company_id "
+            r"and i\.id = p_inquiry_id and i\.status = '対応中'",
+        )
+        result_payloads = re.findall(
+            r"jsonb_build_object\((.*?)\)", normalized
+        )
+        self.assertEqual(len(result_payloads), 2)
+        for payload in result_payloads:
+            with self.subTest(payload=payload):
+                self.assertNotIn("'line_user_id'", payload)
+                self.assertNotIn("'message'", payload)
+                self.assertNotIn("'assignee_name'", payload)
+
+    def test_finalize_inquiry_reply_execute_grant_contract(self) -> None:
+        """Only the server role may execute the exact finalizer signature."""
+        self.assertTrue(
+            FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.is_file(),
+            "missing finalize inquiry reply migration: "
+            f"{FINALIZE_INQUIRY_REPLY_MIGRATION_PATH}",
+        )
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            _finalizer_execute_statements(sql),
+            [
+                "revoke execute on function "
+                "public.finalize_inquiry_reply(text, uuid, uuid) from public",
+                "revoke execute on function "
+                "public.finalize_inquiry_reply(text, uuid, uuid) from anon",
+                "revoke execute on function "
+                "public.finalize_inquiry_reply(text, uuid, uuid) from authenticated",
+                "grant execute on function "
+                "public.finalize_inquiry_reply(text, uuid, uuid) to service_role",
+            ],
+        )
+
+    def test_finalizer_grant_contract_rejects_broad_execute_statements(
+        self,
+    ) -> None:
+        """A finalizer grant checker must reject schema-wide browser access."""
+        valid = """
+            revoke execute on function
+              public.finalize_inquiry_reply(text, uuid, uuid) from public;
+            revoke execute on function
+              public.finalize_inquiry_reply(text, uuid, uuid) from anon;
+            revoke execute on function
+              public.finalize_inquiry_reply(text, uuid, uuid) from authenticated;
+            grant execute on function
+              public.finalize_inquiry_reply(text, uuid, uuid) to service_role;
+        """
+        expected = [
+            "revoke execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) from public",
+            "revoke execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) from anon",
+            "revoke execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) from authenticated",
+            "grant execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) to service_role",
+        ]
+        self.assertEqual(_finalizer_execute_statements(valid), expected)
+
+        for forbidden in (
+            "grant execute on all functions in schema public to authenticated;",
+            "grant execute on all functions in schema public to anon;",
+            "grant all privileges on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) to public;",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotEqual(
+                    _finalizer_execute_statements(f"{valid}\n{forbidden}"),
+                    expected,
+                )
 
 
 if __name__ == "__main__":
