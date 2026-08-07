@@ -1,9 +1,20 @@
 from supabase import create_client
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Any, Optional
+from typing import Annotated, Any, Optional
 from datetime import datetime, timedelta, timezone
+from inquiry_response import (
+    InquirySort,
+    InquiryStatus,
+    decode_inquiry_cursor,
+    encode_inquiry_cursor,
+    extract_default_assignee_name,
+    inquiry_cursor_filter,
+    inquiry_summary,
+    mask_line_destination,
+    safe_inquiry_detail,
+)
 from line_send_validation import LineSendRequest
 import base64
 import hashlib
@@ -39,6 +50,10 @@ app.add_middleware(
 COMPANY_ID = os.getenv("COMPANY_ID", "default")
 ADMIN_API_KEY = os.getenv("ADMIN_API_KEY")
 APPLICATION_DROPOUT_HOURS = max(int(os.getenv("APPLICATION_DROPOUT_HOURS", "24")), 1)
+INQUIRY_REPLY_WORKFLOW_ENABLED = os.getenv(
+    "INQUIRY_REPLY_WORKFLOW_ENABLED",
+    "false",
+).strip().lower() in {"1", "true", "yes", "on"}
 logger = logging.getLogger("line_recruit")
 
 
@@ -1791,7 +1806,7 @@ def api_dashboard():
     )
     recent_inquiries_result = (
         supabase.table("inquiries")
-        .select("*")
+        .select("id,message,status,created_at,assignee_name,last_replied_at,updated_at")
         .eq("company_id", COMPANY_ID)
         .order("created_at", desc=True)
         .limit(6)
@@ -1850,7 +1865,14 @@ def api_dashboard():
         "dropout_count": dropout_count,
         "unanswered_inquiry_count": unanswered_inquiry_count,
         "recent_applicants": recent_applicants_result.data or [],
-        "recent_inquiries": recent_inquiries_result.data or [],
+        "recent_inquiries": [
+            inquiry_summary(
+                row,
+                related_applicant_exists=False,
+                now=datetime.now(timezone.utc),
+            )
+            for row in (recent_inquiries_result.data or [])
+        ],
         "status_counts": status_counts,
         "todo": {
             "in_progress": in_progress_count,
@@ -2433,30 +2455,154 @@ def api_line_messages(line_user_id: Optional[str] = None, limit: int = 100):
         return []
 
 
+INQUIRY_LIST_SELECT = (
+    "id,line_user_id,message,created_at,status,assignee_name,"
+    "last_replied_at,updated_at"
+)
+INQUIRY_DETAIL_SELECT = (
+    "id,line_user_id,message,created_at,status,assignee_name,"
+    "last_replied_at,updated_at"
+)
+RELATED_APPLICANT_SELECT = "id,name,job,status,interview_status,created_at"
+INQUIRY_REPLY_SELECT = (
+    "id,assignee_name,message,delivery_status,safe_error_code,"
+    "created_at,updated_at,sent_at"
+)
+
+
+def _inquiry_read_unavailable(event: str, exc: BaseException, inquiry_id: str | None = None):
+    _log_event(event, "error", subject_id=inquiry_id, http_status=503, error=exc)
+    raise HTTPException(status_code=503, detail="問い合わせデータを取得できません") from exc
+
+
 @app.get("/api/inquiries", dependencies=[Depends(require_admin)])
-def api_inquiries():
-    result = (
-        supabase.table("inquiries")
-        .select("*")
-        .eq("company_id", COMPANY_ID)
-        .order("created_at", desc=True)
-        .execute()
-    )
-    return result.data or []
+def api_inquiries(
+    status: Annotated[InquiryStatus | None, Query()] = None,
+    sort: Annotated[InquirySort, Query()] = InquirySort.NEWEST,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    cursor: Annotated[str | None, Query(min_length=1)] = None,
+):
+    sort_value = InquirySort(sort)
+    decoded_cursor = None
+    if cursor is not None:
+        try:
+            decoded_cursor = decode_inquiry_cursor(cursor)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail="cursor が不正です") from exc
+
+    try:
+        query = (
+            supabase.table("inquiries")
+            .select(INQUIRY_LIST_SELECT)
+            .eq("company_id", COMPANY_ID)
+        )
+        if status is not None:
+            query = query.eq("status", InquiryStatus(status).value)
+        if decoded_cursor is not None:
+            query = query.or_(inquiry_cursor_filter(decoded_cursor, sort_value))
+        descending = sort_value == InquirySort.NEWEST
+        result = (
+            query.order("created_at", desc=descending)
+            .order("id", desc=descending)
+            .limit(limit + 1)
+            .execute()
+        )
+        rows = result.data or []
+        page_rows = rows[:limit]
+        now = datetime.now(timezone.utc)
+        items = []
+        for row in page_rows:
+            line_user_id = row.get("line_user_id")
+            related_applicant_exists = False
+            if line_user_id:
+                applicant_result = (
+                    supabase.table("applicants")
+                    .select("id")
+                    .eq("company_id", COMPANY_ID)
+                    .eq("line_user_id", line_user_id)
+                    .limit(1)
+                    .execute()
+                )
+                related_applicant_exists = bool(applicant_result.data)
+            items.append(
+                inquiry_summary(
+                    row,
+                    related_applicant_exists=related_applicant_exists,
+                    now=now,
+                )
+            )
+        next_cursor = None
+        if len(rows) > limit and page_rows:
+            last_row = page_rows[-1]
+            next_cursor = encode_inquiry_cursor(last_row.get("created_at"), last_row.get("id"))
+        return {"items": items, "next_cursor": next_cursor}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _inquiry_read_unavailable("inquiries.list", exc)
 
 
 @app.get("/api/inquiries/{inquiry_id}", dependencies=[Depends(require_admin)])
 def api_inquiry_detail(inquiry_id: str):
-    result = (
-        supabase.table("inquiries")
-        .select("*")
-        .eq("id", inquiry_id)
-        .eq("company_id", COMPANY_ID)
-        .execute()
-    )
-    if not result.data:
-        raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
-    return result.data[0]
+    try:
+        result = (
+            supabase.table("inquiries")
+            .select(INQUIRY_DETAIL_SELECT)
+            .eq("id", inquiry_id)
+            .eq("company_id", COMPANY_ID)
+            .limit(1)
+            .execute()
+        )
+        if not result.data:
+            raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
+        row = result.data[0]
+        line_user_id = row.get("line_user_id")
+
+        related_applicants = []
+        if line_user_id:
+            applicants_result = (
+                supabase.table("applicants")
+                .select(RELATED_APPLICANT_SELECT)
+                .eq("company_id", COMPANY_ID)
+                .eq("line_user_id", line_user_id)
+                .order("created_at", desc=True)
+                .execute()
+            )
+            related_applicants = applicants_result.data or []
+
+        replies_result = (
+            supabase.table("inquiry_replies")
+            .select(INQUIRY_REPLY_SELECT)
+            .eq("company_id", COMPANY_ID)
+            .eq("inquiry_id", inquiry_id)
+            .order("created_at")
+            .order("id")
+            .execute()
+        )
+        settings_result = (
+            supabase.table("app_settings")
+            .select("value")
+            .eq("company_id", COMPANY_ID)
+            .eq("key", "recruiter_name")
+            .limit(1)
+            .execute()
+        )
+        recruiter_name = ""
+        if settings_result.data:
+            value = settings_result.data[0].get("value")
+            recruiter_name = value if isinstance(value, str) else ""
+        return {
+            "inquiry": safe_inquiry_detail(row),
+            "default_assignee_name": extract_default_assignee_name(recruiter_name),
+            "masked_destination": mask_line_destination(line_user_id or ""),
+            "related_applicants": related_applicants,
+            "replies": replies_result.data or [],
+            "reply_enabled": INQUIRY_REPLY_WORKFLOW_ENABLED,
+        }
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _inquiry_read_unavailable("inquiries.detail", exc, inquiry_id)
 
 
 @app.patch("/api/inquiries/{inquiry_id}", dependencies=[Depends(require_admin)])

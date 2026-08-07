@@ -18,6 +18,7 @@ class LegacyQuery:
         self.equal_filters: list[tuple[str, object]] = []
         self.order_column: str | None = None
         self.order_desc = False
+        self.row_limit: int | None = None
 
     def select(self, _columns: str):
         return self
@@ -29,6 +30,10 @@ class LegacyQuery:
     def order(self, column: str, desc: bool = False):
         self.order_column = column
         self.order_desc = desc
+        return self
+
+    def limit(self, value: int):
+        self.row_limit = value
         return self
 
     def execute(self):
@@ -46,6 +51,8 @@ class LegacyQuery:
                 key=lambda row: str(row.get(self.order_column) or ""),
                 reverse=self.order_desc,
             )
+        if self.row_limit is not None:
+            matched = matched[: self.row_limit]
         return SimpleNamespace(data=copy.deepcopy(matched))
 
 
@@ -56,6 +63,7 @@ class LegacySupabase:
                 {
                     "id": "own-applicant",
                     "company_id": "tenant-a",
+                    "line_user_id": "U1234567890abcdef1234567890abcdef",
                     "created_at": "2026-07-24T10:00:00+00:00",
                 },
                 {
@@ -68,12 +76,24 @@ class LegacySupabase:
                 {
                     "id": "own-inquiry",
                     "company_id": "tenant-a",
+                    "line_user_id": "U1234567890abcdef1234567890abcdef",
+                    "message": "own inquiry",
+                    "status": "未対応",
                     "created_at": "2026-07-24T10:00:00+00:00",
+                    "assignee_name": None,
+                    "last_replied_at": None,
+                    "updated_at": "2026-07-24T10:00:00+00:00",
                 },
                 {
                     "id": "other-inquiry",
                     "company_id": "tenant-b",
+                    "line_user_id": "Uffffffffffffffffffffffffffffffff",
+                    "message": "other inquiry",
+                    "status": "未対応",
                     "created_at": "2026-07-24T11:00:00+00:00",
+                    "assignee_name": None,
+                    "last_replied_at": None,
+                    "updated_at": "2026-07-24T11:00:00+00:00",
                 },
             ],
         }
@@ -165,7 +185,12 @@ class LegacyAdminHtmlRemovalTests(unittest.TestCase):
 
         self.assertEqual(200, response.status_code)
         self.assertEqual("application/json", response.headers["content-type"])
-        self.assertEqual(["own-inquiry"], [row["id"] for row in response.json()])
+        self.assertEqual(
+            ["own-inquiry"],
+            [row["id"] for row in response.json()["items"]],
+        )
+        self.assertIn("next_cursor", response.json())
+        self.assertNotIn("U1234567890abcdef1234567890abcdef", response.text)
 
     def test_json_admin_apis_still_require_admin_key(self):
         for path in ("/api/applicants", "/api/inquiries"):
