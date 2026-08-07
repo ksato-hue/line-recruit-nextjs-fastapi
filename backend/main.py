@@ -2509,25 +2509,34 @@ def api_inquiries(
         )
         rows = result.data or []
         page_rows = rows[:limit]
+        line_user_ids = sorted({
+            line_user_id
+            for row in page_rows
+            if isinstance((line_user_id := row.get("line_user_id")), str)
+            and line_user_id
+        })
+        related_line_user_ids = set()
+        if line_user_ids:
+            applicant_result = (
+                supabase.table("applicants")
+                .select("line_user_id")
+                .eq("company_id", COMPANY_ID)
+                .in_("line_user_id", line_user_ids)
+                .execute()
+            )
+            related_line_user_ids = {
+                row.get("line_user_id")
+                for row in (applicant_result.data or [])
+                if isinstance(row.get("line_user_id"), str)
+            }
         now = datetime.now(timezone.utc)
         items = []
         for row in page_rows:
             line_user_id = row.get("line_user_id")
-            related_applicant_exists = False
-            if line_user_id:
-                applicant_result = (
-                    supabase.table("applicants")
-                    .select("id")
-                    .eq("company_id", COMPANY_ID)
-                    .eq("line_user_id", line_user_id)
-                    .limit(1)
-                    .execute()
-                )
-                related_applicant_exists = bool(applicant_result.data)
             items.append(
                 inquiry_summary(
                     row,
-                    related_applicant_exists=related_applicant_exists,
+                    related_applicant_exists=line_user_id in related_line_user_ids,
                     now=now,
                 )
             )

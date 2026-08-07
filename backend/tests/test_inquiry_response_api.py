@@ -28,6 +28,11 @@ def encode_test_cursor(payload: dict) -> str:
     return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
 
+def encode_raw_test_cursor(payload: str, *, urlsafe: bool = True) -> str:
+    encoder = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    return encoder(payload.encode("utf-8")).decode("ascii").rstrip("=")
+
+
 class InquiryQuery:
     def __init__(self, database, table_name: str):
         self.database = database
@@ -35,6 +40,7 @@ class InquiryQuery:
         self.database.queries.append(self)
         self.selected_columns: str | None = None
         self.equal_filters: list[tuple[str, object]] = []
+        self.in_filters: list[tuple[str, tuple[object, ...]]] = []
         self.or_filter: str | None = None
         self.orders: list[tuple[str, bool]] = []
         self.row_limit: int | None = None
@@ -45,6 +51,10 @@ class InquiryQuery:
 
     def eq(self, column: str, value: object):
         self.equal_filters.append((column, value))
+        return self
+
+    def in_(self, column: str, values: list[object]):
+        self.in_filters.append((column, tuple(values)))
         return self
 
     def or_(self, expression: str):
@@ -82,6 +92,7 @@ class InquiryQuery:
             row
             for row in self.database.rows[self.table_name]
             if all(row.get(column) == value for column, value in self.equal_filters)
+            and all(row.get(column) in values for column, values in self.in_filters)
             and self._matches_cursor(row)
         ]
         for column, desc in reversed(self.orders):
@@ -164,6 +175,16 @@ class InquirySupabase:
                     "status": "新規応募",
                     "interview_status": "未設定",
                     "created_at": "2026-07-31T00:00:00+00:00",
+                },
+                {
+                    "id": "other-only-batch-applicant",
+                    "company_id": TENANT_B,
+                    "line_user_id": "Uaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    "name": "他社のみ 応募者",
+                    "job": "管理",
+                    "status": "新規応募",
+                    "interview_status": "未設定",
+                    "created_at": "2026-07-31T01:00:00+00:00",
                 },
             ],
             "inquiry_replies": [
@@ -279,8 +300,43 @@ class InquiryListApiTests(InquiryApiTestCase):
         self.assertEqual([("created_at", True), ("id", True)], inquiry_queries[-1].orders)
 
     def test_list_rejects_invalid_cursor_components_before_querying(self):
+        canonical = encode_test_cursor({
+            "created_at": "2026-08-01T00:00:00+00:00",
+            "id": INQUIRY_1,
+        })
+        duplicate_id_json = (
+            '{"id":"00000000-0000-0000-0000-000000000099",'
+            '"created_at":"2026-08-01T00:00:00+00:00",'
+            f'"id":"{INQUIRY_1}"}}'
+        )
+        duplicate_created_at_json = (
+            '"created_at":"2026-08-02T00:00:00+00:00",'
+            '"created_at":"2026-08-01T00:00:00+00:00",'
+            f'"id":"{INQUIRY_1}"'
+        )
+        standard_plus = encode_raw_test_cursor(
+            '{"id":"¾","created_at":"2026-08-01T00:00:00+00:00",'
+            f'"id":"{INQUIRY_1}"}}',
+            urlsafe=False,
+        )
+        standard_slash = encode_raw_test_cursor(
+            '{"id":"¿","created_at":"2026-08-01T00:00:00+00:00",'
+            f'"id":"{INQUIRY_1}"}}',
+            urlsafe=False,
+        )
+        self.assertIn("+", standard_plus)
+        self.assertIn("/", standard_slash)
         invalid_cursors = [
             "not-base64!",
+            canonical + "=",
+            encode_raw_test_cursor(
+                '{ "created_at": "2026-08-01T00:00:00+00:00", '
+                f'"id": "{INQUIRY_1}" }}'
+            ),
+            encode_raw_test_cursor(duplicate_id_json),
+            encode_raw_test_cursor("{" + duplicate_created_at_json + "}"),
+            standard_plus,
+            standard_slash,
             encode_test_cursor({
                 "created_at": "2026-08-01T00:00:00+00:00",
                 "id": INQUIRY_1,
@@ -296,6 +352,18 @@ class InquiryListApiTests(InquiryApiTestCase):
                 response = self.client.get(
                     "/api/inquiries",
                     params={"cursor": cursor},
+                    headers=self.headers,
+                )
+                self.assertEqual(422, response.status_code)
+                self.assertEqual([], self.database.queries)
+
+    def test_list_rejects_invalid_status_and_sort_before_querying(self):
+        for params in ({"status": "unknown"}, {"sort": "sideways"}):
+            with self.subTest(params=params):
+                self.database.queries.clear()
+                response = self.client.get(
+                    "/api/inquiries",
+                    params=params,
                     headers=self.headers,
                 )
                 self.assertEqual(422, response.status_code)
@@ -332,6 +400,53 @@ class InquiryListApiTests(InquiryApiTestCase):
         self.assertIsNone(second.json()["next_cursor"])
         self.assertIsNotNone(self.database.queries_for("inquiries")[-1].or_filter)
 
+    def test_list_newest_cursor_keeps_equal_timestamp_uuid_boundary(self):
+        first = self.client.get(
+            "/api/inquiries",
+            params={"sort": "newest", "limit": 2},
+            headers=self.headers,
+        )
+        second = self.client.get(
+            "/api/inquiries",
+            params={
+                "sort": "newest",
+                "limit": 2,
+                "cursor": first.json()["next_cursor"],
+            },
+            headers=self.headers,
+        )
+
+        self.assertEqual([INQUIRY_3, INQUIRY_2], [row["id"] for row in first.json()["items"]])
+        self.assertEqual([INQUIRY_1], [row["id"] for row in second.json()["items"]])
+        self.assertIsNone(second.json()["next_cursor"])
+
+    def test_list_batches_related_applicant_existence_in_one_company_scoped_read(self):
+        response = self.client.get("/api/inquiries", headers=self.headers)
+
+        self.assertEqual(200, response.status_code)
+        applicant_queries = self.database.queries_for("applicants")
+        self.assertEqual(1, len(applicant_queries))
+        self.assertEqual(
+            ["inquiries", "applicants"],
+            [query.table_name for query in self.database.queries],
+        )
+        query = applicant_queries[0]
+        self.assertEqual("line_user_id", query.selected_columns)
+        self.assertEqual([("company_id", TENANT_A)], query.equal_filters)
+        self.assertEqual(
+            {
+                RAW_LINE_ID,
+                "Uaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "Ubbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            },
+            set(query.in_filters[0][1]),
+        )
+        items = {item["id"]: item for item in response.json()["items"]}
+        self.assertTrue(items[INQUIRY_1]["related_applicant_exists"])
+        self.assertFalse(items[INQUIRY_2]["related_applicant_exists"])
+        self.assertFalse(items[INQUIRY_3]["related_applicant_exists"])
+        self.assertNotIn(RAW_LINE_ID, response.text)
+
     def test_list_returns_only_safe_summary_fields_and_a_message_preview(self):
         response = self.client.get("/api/inquiries", headers=self.headers)
 
@@ -365,6 +480,7 @@ class InquiryListApiTests(InquiryApiTestCase):
         ]
         empty_response = self.client.get("/api/inquiries", headers=self.headers)
         self.assertEqual({"items": [], "next_cursor": None}, empty_response.json())
+        self.assertEqual([], self.database.queries_for("applicants"))
 
         self.database.fail_tables.add("inquiries")
         failed_response = self.client.get("/api/inquiries", headers=self.headers)

@@ -18,6 +18,7 @@ class TenantQuery:
         self.database.queries.append(self)
         self.selected_columns: str | None = None
         self.filters: list[tuple[str, object]] = []
+        self.in_filters: list[tuple[str, tuple[object, ...]]] = []
         self.update_data: dict | None = None
         self.insert_data: dict | None = None
         self.orders: list[tuple[str, bool]] = []
@@ -43,6 +44,10 @@ class TenantQuery:
         self.orders.append((column, desc))
         return self
 
+    def in_(self, column: str, values: list[object]):
+        self.in_filters.append((column, tuple(values)))
+        return self
+
     def limit(self, value: int):
         self.row_limit = value
         return self
@@ -58,6 +63,7 @@ class TenantQuery:
         matched = [
             row for row in rows
             if all(row.get(column) == value for column, value in self.filters)
+            and all(row.get(column) in values for column, values in self.in_filters)
         ]
         for column, desc in reversed(self.orders):
             matched.sort(

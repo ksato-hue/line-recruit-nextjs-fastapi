@@ -47,6 +47,7 @@ class InquiryCursor:
 
 
 INQUIRY_MESSAGE_PREVIEW_LENGTH = 160
+_CANONICAL_BASE64URL = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
 def _parse_aware_datetime(value: object, field_name: str) -> datetime:
@@ -77,9 +78,20 @@ def encode_inquiry_cursor(created_at: object, inquiry_id: object) -> str:
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
+def _reject_duplicate_json_keys(pairs: list[tuple[str, object]]) -> dict:
+    payload = {}
+    for key, value in pairs:
+        if key in payload:
+            raise ValueError("cursor contains a duplicate JSON key")
+        payload[key] = value
+    return payload
+
+
 def decode_inquiry_cursor(token: str) -> InquiryCursor:
     if not isinstance(token, str) or not token:
         raise ValueError("cursor must be a non-empty string")
+    if _CANONICAL_BASE64URL.fullmatch(token) is None:
+        raise ValueError("cursor must use unpadded base64url")
     padding = "=" * (-len(token) % 4)
     try:
         decoded = base64.b64decode(
@@ -87,7 +99,10 @@ def decode_inquiry_cursor(token: str) -> InquiryCursor:
             altchars=b"-_",
             validate=True,
         )
-        payload = json.loads(decoded.decode("utf-8"))
+        payload = json.loads(
+            decoded.decode("utf-8"),
+            object_pairs_hook=_reject_duplicate_json_keys,
+        )
     except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise ValueError("cursor is invalid") from exc
     if not isinstance(payload, dict) or set(payload) != {"created_at", "id"}:
@@ -97,7 +112,10 @@ def decode_inquiry_cursor(token: str) -> InquiryCursor:
         inquiry_id = UUID(payload["id"])
     except (TypeError, ValueError, AttributeError) as exc:
         raise ValueError("id must be a UUID") from exc
-    return InquiryCursor(created_at=created_at, inquiry_id=inquiry_id)
+    cursor = InquiryCursor(created_at=created_at, inquiry_id=inquiry_id)
+    if token != encode_inquiry_cursor(cursor.created_at.isoformat(), cursor.inquiry_id):
+        raise ValueError("cursor is not canonical")
+    return cursor
 
 
 def inquiry_cursor_filter(cursor: InquiryCursor, sort: InquirySort) -> str:

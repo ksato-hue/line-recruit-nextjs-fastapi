@@ -16,6 +16,7 @@ class LegacyQuery:
         self.database = database
         self.table_name = table_name
         self.equal_filters: list[tuple[str, object]] = []
+        self.in_filters: list[tuple[str, tuple[object, ...]]] = []
         self.order_column: str | None = None
         self.order_desc = False
         self.row_limit: int | None = None
@@ -32,6 +33,10 @@ class LegacyQuery:
         self.order_desc = desc
         return self
 
+    def in_(self, column: str, values: list[object]):
+        self.in_filters.append((column, tuple(values)))
+        return self
+
     def limit(self, value: int):
         self.row_limit = value
         return self
@@ -45,6 +50,7 @@ class LegacyQuery:
         matched = [
             row for row in self.database.rows[self.table_name]
             if all(row.get(column) == value for column, value in self.equal_filters)
+            and all(row.get(column) in values for column, values in self.in_filters)
         ]
         if self.order_column:
             matched.sort(
