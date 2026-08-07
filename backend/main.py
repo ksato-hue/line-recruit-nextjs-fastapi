@@ -2591,6 +2591,31 @@ def _update_inquiry_reply(
     return query.execute()
 
 
+def _stored_inquiry_reply_matches(
+    *,
+    inquiry_id: str,
+    reply_id: str,
+    delivery_status: InquiryDeliveryStatus,
+    safe_error_code: str,
+) -> bool:
+    result = (
+        supabase.table("inquiry_replies")
+        .select(INQUIRY_REPLY_ORCHESTRATION_SELECT)
+        .eq("id", reply_id)
+        .eq("inquiry_id", inquiry_id)
+        .eq("company_id", COMPANY_ID)
+        .limit(1)
+        .execute()
+    )
+    if not result.data:
+        return False
+    reply = result.data[0]
+    return (
+        reply.get("delivery_status") == delivery_status.value
+        and reply.get("safe_error_code") == safe_error_code
+    )
+
+
 def _sent_inquiry_reply_response(reply: dict, *, idempotent_replay: bool) -> dict:
     return {
         "outcome": "sent",
@@ -3014,7 +3039,7 @@ def api_create_inquiry_reply(inquiry_id: str, payload: InquiryReplyRequest):
                 _inquiry_reply_unavailable("inquiry_transition", exc, inquiry_id)
             if not inquiry_update_result.data:
                 try:
-                    _update_inquiry_reply(
+                    conflict_result = _update_inquiry_reply(
                         inquiry_id=inquiry_id,
                         reply_id=str(reply["id"]),
                         current_status=InquiryDeliveryStatus.PENDING.value,
@@ -3023,6 +3048,22 @@ def api_create_inquiry_reply(inquiry_id: str, payload: InquiryReplyRequest):
                     )
                 except Exception as exc:
                     _inquiry_reply_unavailable("conflict_record", exc, inquiry_id)
+                if not conflict_result.data:
+                    try:
+                        conflict_recorded = _stored_inquiry_reply_matches(
+                            inquiry_id=inquiry_id,
+                            reply_id=str(reply["id"]),
+                            delivery_status=InquiryDeliveryStatus.FAILED,
+                            safe_error_code=InquiryReasonCode.INQUIRY_CONFLICT.value,
+                        )
+                    except Exception as exc:
+                        _inquiry_reply_unavailable("conflict_verify", exc, inquiry_id)
+                    if not conflict_recorded:
+                        _inquiry_reply_unavailable(
+                            "conflict_record",
+                            RuntimeError("inquiry conflict marker was not persisted"),
+                            inquiry_id,
+                        )
                 raise HTTPException(
                     status_code=409,
                     detail=InquiryReasonCode.INQUIRY_CONFLICT.value,
@@ -3135,7 +3176,7 @@ def api_create_inquiry_reply(inquiry_id: str, payload: InquiryReplyRequest):
 
     if push_result.disposition == LinePushDisposition.REJECTED:
         try:
-            _update_inquiry_reply(
+            rejection_result = _update_inquiry_reply(
                 inquiry_id=inquiry_id,
                 reply_id=reply_id,
                 current_status=InquiryDeliveryStatus.SENDING.value,
@@ -3153,6 +3194,36 @@ def api_create_inquiry_reply(inquiry_id: str, payload: InquiryReplyRequest):
                 error=exc,
             )
             return _unknown_inquiry_reply_response(reply_id)
+        if not rejection_result.data:
+            try:
+                rejection_recorded = _stored_inquiry_reply_matches(
+                    inquiry_id=inquiry_id,
+                    reply_id=reply_id,
+                    delivery_status=InquiryDeliveryStatus.FAILED,
+                    safe_error_code=InquiryReasonCode.LINE_REJECTED.value,
+                )
+            except Exception as exc:
+                _log_event(
+                    "inquiry.reply.orchestrate",
+                    InquiryDeliveryStatus.DELIVERY_UNKNOWN.value,
+                    subject_id=inquiry_id,
+                    stage="rejection_verify",
+                    reason_code=InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+                    http_status=push_result.http_status,
+                    error=exc,
+                )
+                return _unknown_inquiry_reply_response(reply_id)
+            if not rejection_recorded:
+                _log_event(
+                    "inquiry.reply.orchestrate",
+                    InquiryDeliveryStatus.DELIVERY_UNKNOWN.value,
+                    subject_id=inquiry_id,
+                    stage="rejection_record",
+                    reason_code=InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+                    http_status=push_result.http_status,
+                    error=RuntimeError("LINE rejection marker was not persisted"),
+                )
+                return _unknown_inquiry_reply_response(reply_id)
         raise HTTPException(
             status_code=502,
             detail=InquiryReasonCode.LINE_REJECTED.value,

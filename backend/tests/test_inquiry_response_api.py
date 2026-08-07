@@ -179,6 +179,18 @@ class InquiryQuery:
             if self.table_name == "inquiry_replies" and self.database.zero_next_reply_update:
                 self.database.zero_next_reply_update = False
                 return SimpleNamespace(data=[])
+            if self.table_name == "inquiry_replies":
+                update_key = (
+                    self.update_data.get("delivery_status"),
+                    self.update_data.get("safe_error_code"),
+                )
+                if update_key in self.database.zero_reply_update_results:
+                    raced_state = self.database.zero_reply_update_results[update_key]
+                    if raced_state is not None:
+                        for row in rows:
+                            row.update(copy.deepcopy(raced_state))
+                            row["updated_at"] = self.database.reply_trigger_updated_at
+                    return SimpleNamespace(data=[])
             for row in rows:
                 row.update(copy.deepcopy(self.update_data))
                 if self.table_name == "inquiries":
@@ -409,6 +421,9 @@ class InquirySupabase:
         self.reply_insert_race_row: dict | None = None
         self.fail_reply_update_statuses: set[str] = set()
         self.zero_next_reply_update = False
+        self.zero_reply_update_results: dict[
+            tuple[str | None, str | None], dict | None
+        ] = {}
         self.fail_finalize = False
         self.next_reply_sequence = 1
         self.reply_created_at = "2026-08-07T01:00:00+00:00"
@@ -1358,6 +1373,42 @@ class InquiryReplyApiTests(InquiryApiTestCase):
         self.assertEqual({"detail": "INQUIRY_CONFLICT"}, replay.json())
         self.assertEqual([], self.line_transport.calls)
 
+    def test_pre_send_conflict_marker_zero_rows_returns_unavailable_without_line(self):
+        self.database.zero_next_inquiry_update = True
+        self.database.zero_reply_update_results[("failed", "INQUIRY_CONFLICT")] = None
+
+        response = self.post_reply()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual({"detail": "INQUIRY_REPLY_UNAVAILABLE"}, response.json())
+        self.assertEqual([], self.line_transport.calls)
+        reply = self.replies_for(TENANT_A)[-1]
+        self.assertEqual("pending", reply["delivery_status"])
+        self.assertIsNone(reply["safe_error_code"])
+
+    def test_pre_send_conflict_accepts_verified_matching_race_winner(self):
+        self.database.zero_next_inquiry_update = True
+        self.database.zero_reply_update_results[("failed", "INQUIRY_CONFLICT")] = {
+            "delivery_status": "failed",
+            "safe_error_code": "INQUIRY_CONFLICT",
+        }
+
+        response = self.post_reply()
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "INQUIRY_CONFLICT"}, response.json())
+        self.assertEqual([], self.line_transport.calls)
+        reply = self.replies_for(TENANT_A)[-1]
+        verification_reads = [
+            query
+            for query in self.database.queries_for("inquiry_replies")
+            if query.selected_columns is not None
+            and ("id", reply["id"]) in query.equal_filters
+            and ("inquiry_id", INQUIRY_1) in query.equal_filters
+            and ("company_id", TENANT_A) in query.equal_filters
+        ]
+        self.assertEqual(1, len(verification_reads))
+
     def test_completed_inquiry_requires_explicit_reopen_before_new_reply(self):
         completed = self.inquiry_row(INQUIRY_2)
 
@@ -1496,6 +1547,23 @@ class InquiryReplyApiTests(InquiryApiTestCase):
         self.assertIn(("updated_at", reply["updated_at"]), claim.equal_filters)
         self.assertEqual([], self.line_transport.calls)
 
+    def test_future_sending_timestamp_remains_active_without_claim_or_line(self):
+        reply = self.add_reply(delivery_status="sending")
+        reply["updated_at"] = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+        self.inquiry_row()["status"] = "対応中"
+
+        response = self.post_reply()
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "REPLY_IN_PROGRESS"}, response.json())
+        self.assertEqual([], self.line_transport.calls)
+        self.assertFalse(
+            any(
+                query.update_data is not None
+                for query in self.database.queries_for("inquiry_replies")
+            )
+        )
+
     def test_timeout_and_five_xx_are_unknown_without_automatic_retry(self):
         self.line_transport.results = [
             LinePushResult(LinePushDisposition.UNKNOWN, None),
@@ -1522,6 +1590,49 @@ class InquiryReplyApiTests(InquiryApiTestCase):
         self.assertEqual("failed", reply["delivery_status"])
         self.assertEqual("LINE_REJECTED", reply["safe_error_code"])
         self.assertEqual([], self.database.rpc_calls)
+
+    def test_line_rejection_zero_row_write_returns_unknown_and_does_not_resend(self):
+        self.database.zero_reply_update_results[("failed", "LINE_REJECTED")] = None
+        self.line_transport.results = [LinePushResult(LinePushDisposition.REJECTED, 400)]
+
+        first = self.post_reply()
+        same_key = self.post_reply()
+
+        self.assertEqual(202, first.status_code)
+        self.assertEqual("delivery_unknown", first.json()["outcome"])
+        self.assertEqual("DELIVERY_RESULT_UNKNOWN", first.json()["reason_code"])
+        self.assertEqual(409, same_key.status_code)
+        self.assertEqual({"detail": "REPLY_IN_PROGRESS"}, same_key.json())
+        self.assertEqual(1, len(self.line_transport.calls))
+        reply = self.replies_for(TENANT_A)[-1]
+        self.assertEqual("sending", reply["delivery_status"])
+        self.assertIsNone(reply["safe_error_code"])
+
+    def test_line_rejection_accepts_verified_matching_race_winner(self):
+        self.database.zero_reply_update_results[("failed", "LINE_REJECTED")] = {
+            "delivery_status": "failed",
+            "safe_error_code": "LINE_REJECTED",
+        }
+        self.line_transport.results = [LinePushResult(LinePushDisposition.REJECTED, 400)]
+
+        first = self.post_reply()
+        same_key = self.post_reply()
+
+        self.assertEqual(502, first.status_code)
+        self.assertEqual({"detail": "LINE_REJECTED"}, first.json())
+        self.assertEqual(502, same_key.status_code)
+        self.assertEqual({"detail": "LINE_REJECTED"}, same_key.json())
+        self.assertEqual(1, len(self.line_transport.calls))
+        reply = self.replies_for(TENANT_A)[-1]
+        verification_reads = [
+            query
+            for query in self.database.queries_for("inquiry_replies")
+            if query.selected_columns is not None
+            and ("id", reply["id"]) in query.equal_filters
+            and ("inquiry_id", INQUIRY_1) in query.equal_filters
+            and ("company_id", TENANT_A) in query.equal_filters
+        ]
+        self.assertEqual(1, len(verification_reads))
 
     def test_unknown_retry_within_twenty_four_hours_reuses_stored_line_key(self):
         line_retry_key = "40000000-0000-0000-0000-000000000024"

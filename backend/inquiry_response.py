@@ -250,7 +250,7 @@ def inquiry_reply_attempt_active(
     if now.tzinfo is None or now.utcoffset() is None:
         raise ValueError("now must include a timezone")
     age = now.astimezone(timezone.utc) - updated.astimezone(timezone.utc)
-    return timedelta(0) <= age < timedelta(seconds=lease_seconds)
+    return age < timedelta(seconds=lease_seconds)
 
 
 class InquiryUpdateRequest(BaseModel):
