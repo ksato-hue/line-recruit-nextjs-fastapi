@@ -30,6 +30,19 @@ class InquiryDeliveryStatus(str, Enum):
     DELIVERY_UNKNOWN = "delivery_unknown"
 
 
+class LinePushDisposition(str, Enum):
+    ACCEPTED = "accepted"
+    ALREADY_ACCEPTED = "already_accepted"
+    REJECTED = "rejected"
+    UNKNOWN = "unknown"
+
+
+@dataclass(frozen=True)
+class LinePushResult:
+    disposition: LinePushDisposition
+    http_status: int | None = None
+
+
 class InquiryReasonCode(str, Enum):
     INQUIRY_CONFLICT = "INQUIRY_CONFLICT"
     INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"

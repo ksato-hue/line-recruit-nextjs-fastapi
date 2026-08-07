@@ -4,11 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Annotated, Any, Optional
 from datetime import datetime, timedelta, timezone
+from uuid import UUID
 from inquiry_response import (
     InquiryReasonCode,
     InquirySort,
     InquiryStatus,
     InquiryUpdateRequest,
+    LinePushDisposition,
+    LinePushResult,
     decode_inquiry_cursor,
     encode_inquiry_cursor,
     extract_default_assignee_name,
@@ -1584,6 +1587,60 @@ def make_quick_reply(buttons):
             for button in buttons
         ]
     }
+
+
+def _push_inquiry_reply(
+    line_user_id: str,
+    message: str,
+    line_retry_key: UUID,
+) -> LinePushResult:
+    if not LINE_ACCESS_TOKEN:
+        raise HTTPException(status_code=500, detail="LINE_ACCESS_TOKEN is not configured")
+
+    try:
+        response = requests.post(
+            "https://api.line.me/v2/bot/message/push",
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {LINE_ACCESS_TOKEN}",
+                "X-Line-Retry-Key": str(line_retry_key),
+            },
+            json={
+                "to": line_user_id,
+                "messages": [{"type": "text", "text": message}],
+            },
+            timeout=10,
+        )
+    except requests.RequestException as exc:
+        result = LinePushResult(LinePushDisposition.UNKNOWN)
+        _log_event(
+            "inquiry.reply.push",
+            result.disposition.value,
+            subject_id=line_user_id,
+            error=exc,
+        )
+        return result
+
+    if 200 <= response.status_code < 300:
+        disposition = LinePushDisposition.ACCEPTED
+    elif (
+        response.status_code == 409
+        and response.headers.get("x-line-accepted-request-id") is not None
+    ):
+        disposition = LinePushDisposition.ALREADY_ACCEPTED
+    elif 400 <= response.status_code < 500:
+        disposition = LinePushDisposition.REJECTED
+    else:
+        disposition = LinePushDisposition.UNKNOWN
+
+    result = LinePushResult(disposition, response.status_code)
+    _log_event(
+        "inquiry.reply.push",
+        result.disposition.value,
+        subject_id=line_user_id,
+        http_status=response.status_code,
+    )
+    return result
 
 
 def push_line_message(line_user_id: str, text: str, buttons: Optional[list[str]] = None) -> None:
