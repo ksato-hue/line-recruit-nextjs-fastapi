@@ -22,6 +22,11 @@ declare
   v_inquiry_updated_at timestamptz;
   v_sent_at timestamptz;
   v_log_id uuid;
+  v_log_direction text;
+  v_log_message_type text;
+  v_log_message text;
+  v_log_line_user_id text;
+  v_updated_reply_id uuid;
 begin
   select
     r.message,
@@ -103,7 +108,15 @@ begin
     sent_at = v_sent_at
   where r.company_id = p_company_id
     and r.inquiry_id = p_inquiry_id
-    and r.id = p_reply_id;
+    and r.id = p_reply_id
+    and r.delivery_status = v_reply_delivery_status
+  returning r.id into v_updated_reply_id;
+
+  if not found then
+    raise exception using
+      errcode = '55000',
+      message = 'INQUIRY_REPLY_UPDATE_CONFLICT';
+  end if;
 
   insert into public.line_message_logs (
     company_id,
@@ -129,11 +142,38 @@ begin
   returning id into v_log_id;
 
   if v_log_id is null then
-    select l.id
-    into v_log_id
+    select
+      l.id,
+      l.direction,
+      l.message_type,
+      l.message,
+      l.line_user_id
+    into
+      v_log_id,
+      v_log_direction,
+      v_log_message_type,
+      v_log_message,
+      v_log_line_user_id
     from public.line_message_logs as l
     where l.company_id = p_company_id
-      and l.inquiry_reply_id = p_reply_id;
+      and l.inquiry_reply_id = p_reply_id
+    for update;
+
+    if not found then
+      raise exception using
+        errcode = '23514',
+        message = 'INQUIRY_REPLY_LOG_INTEGRITY_ERROR';
+    end if;
+
+    if v_log_direction is distinct from 'outbound'
+      or v_log_message_type is distinct from 'inquiry_reply'
+      or v_log_message is distinct from v_reply_message
+      or v_log_line_user_id is distinct from v_line_user_id
+    then
+      raise exception using
+        errcode = '23514',
+        message = 'INQUIRY_REPLY_LOG_INTEGRITY_ERROR';
+    end if;
   end if;
 
   update public.inquiries as i

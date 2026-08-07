@@ -49,14 +49,39 @@ def _has_exact_inquiry_replies_grant_contract(sql: str) -> bool:
 
 
 def _finalizer_execute_statements(sql: str) -> list[str]:
-    """Return every normalized privilege statement in the finalizer migration."""
+    """Return every security-sensitive privilege statement in the migration."""
     without_block_comments = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
     without_comments = re.sub(r"--[^\r\n]*", "", without_block_comments)
     return [
         " ".join(statement.lower().split())
         for statement in without_comments.split(";")
-        if re.match(r"^\s*(?:grant|revoke)\b", statement, flags=re.IGNORECASE)
+        if re.match(
+            r"^\s*(?:grant|revoke|alter\s+function|"
+            r"alter\s+default\s+privileges)\b",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            r"\bexecute\s+(?:format\s*\(|['$])",
+            statement,
+            flags=re.IGNORECASE,
+        )
     ]
+
+
+def _finalizer_result_key_sets(sql: str) -> list[list[str]]:
+    """Return ordered JSON keys from each simple finalizer result object."""
+    normalized = " ".join(sql.lower().split())
+    payloads = re.findall(r"jsonb_build_object\((.*?)\)", normalized)
+    key_sets: list[list[str]] = []
+    for payload in payloads:
+        arguments = [argument.strip() for argument in payload.split(",")]
+        if len(arguments) % 2 != 0:
+            return []
+        key_sets.append(
+            [argument.strip("'") for argument in arguments[::2]]
+        )
+    return key_sets
 
 
 class InquiryWorkflowMigrationTests(unittest.TestCase):
@@ -331,7 +356,7 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             r"where i\.company_id = p_company_id "
             r"and i\.id = p_inquiry_id for update",
         )
-        self.assertEqual(normalized.count("for update"), 2)
+        self.assertEqual(normalized.count("for update"), 3)
 
         sent_branch_match = re.search(
             r"if v_reply_delivery_status = 'sent' then (.*?) end if;",
@@ -376,15 +401,75 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             r"where i\.company_id = p_company_id "
             r"and i\.id = p_inquiry_id and i\.status = '対応中'",
         )
-        result_payloads = re.findall(
-            r"jsonb_build_object\((.*?)\)", normalized
+        expected_result_keys = [
+            "inquiry_id",
+            "reply_id",
+            "line_message_log_id",
+            "delivery_status",
+            "inquiry_status",
+            "sent_at",
+            "inquiry_updated_at",
+        ]
+        self.assertEqual(
+            _finalizer_result_key_sets(sql),
+            [expected_result_keys, expected_result_keys],
         )
-        self.assertEqual(len(result_payloads), 2)
-        for payload in result_payloads:
-            with self.subTest(payload=payload):
-                self.assertNotIn("'line_user_id'", payload)
-                self.assertNotIn("'message'", payload)
-                self.assertNotIn("'assignee_name'", payload)
+
+    def test_finalizer_validates_an_existing_log_before_completion(self) -> None:
+        """A stale or mismatched correlation must abort finalization."""
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        fallback_match = re.search(
+            r"if v_log_id is null then (.*?) end if; "
+            r"update public\.inquiries",
+            normalized,
+        )
+        self.assertIsNotNone(fallback_match)
+        fallback = fallback_match.group(1) if fallback_match else ""
+        self.assertRegex(
+            fallback,
+            r"select l\.id, l\.direction, l\.message_type, l\.message, "
+            r"l\.line_user_id into v_log_id, v_log_direction, "
+            r"v_log_message_type, v_log_message, v_log_line_user_id "
+            r"from public\.line_message_logs (?:as )?l "
+            r"where l\.company_id = p_company_id "
+            r"and l\.inquiry_reply_id = p_reply_id for update",
+        )
+        self.assertRegex(
+            fallback,
+            r"if not found then raise exception using errcode = '23514', "
+            r"message = 'inquiry_reply_log_integrity_error'; end if;",
+        )
+        for comparison in (
+            "v_log_direction is distinct from 'outbound'",
+            "v_log_message_type is distinct from 'inquiry_reply'",
+            "v_log_message is distinct from v_reply_message",
+            "v_log_line_user_id is distinct from v_line_user_id",
+        ):
+            with self.subTest(comparison=comparison):
+                self.assertIn(comparison, fallback)
+        self.assertEqual(
+            fallback.count("message = 'inquiry_reply_log_integrity_error'"),
+            2,
+        )
+
+    def test_finalizer_requires_the_locked_reply_update_to_match(self) -> None:
+        """A vanished or changed locked reply must abort before completion."""
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        self.assertRegex(
+            normalized,
+            r"update public\.inquiry_replies (?:as )?r set "
+            r"delivery_status = 'sent', safe_error_code = null, "
+            r"sent_at = v_sent_at where r\.company_id = p_company_id "
+            r"and r\.inquiry_id = p_inquiry_id and r\.id = p_reply_id "
+            r"and r\.delivery_status = v_reply_delivery_status "
+            r"returning r\.id into v_updated_reply_id; "
+            r"if not found then raise exception using errcode = '55000', "
+            r"message = 'inquiry_reply_update_conflict'; end if;",
+        )
 
     def test_finalize_inquiry_reply_execute_grant_contract(self) -> None:
         """Only the server role may execute the exact finalizer signature."""
@@ -409,10 +494,10 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             ],
         )
 
-    def test_finalizer_grant_contract_rejects_broad_execute_statements(
+    def test_finalizer_grant_contract_rejects_forbidden_privilege_ddl(
         self,
     ) -> None:
-        """A finalizer grant checker must reject schema-wide browser access."""
+        """A finalizer grant checker must reject indirect browser access."""
         valid = """
             revoke execute on function
               public.finalize_inquiry_reply(text, uuid, uuid) from public;
@@ -440,6 +525,13 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             "grant execute on all functions in schema public to anon;",
             "grant all privileges on function "
             "public.finalize_inquiry_reply(text, uuid, uuid) to public;",
+            "do $$ begin execute 'grant execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) "
+            "to authenticated'; end $$;",
+            "alter function public.finalize_inquiry_reply(text, uuid, uuid) "
+            "owner to authenticated;",
+            "alter default privileges in schema public "
+            "grant execute on functions to anon;",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotEqual(
