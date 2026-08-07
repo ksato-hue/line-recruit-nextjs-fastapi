@@ -22,42 +22,16 @@ INQUIRY_REPLIES_MIGRATION_PATH = (
 
 def _has_exact_inquiry_replies_grant_contract(sql: str) -> bool:
     """Return whether inquiry_replies has only its server-role table grant."""
-    expected_privileges = {"select", "insert", "update"}
-    target_grants = []
-
-    for raw_statement in sql.split(";"):
-        statement = " ".join(
-            line.split("--", 1)[0] for line in raw_statement.splitlines()
-        ).strip().lower()
-        if not statement.startswith("grant "):
-            continue
-        if "public.inquiry_replies" not in statement:
-            continue
-
-        match = re.fullmatch(
-            r"grant (?P<privileges>.+?) on table "
-            r"(?P<table>public\.inquiry_replies) to "
-            r"(?P<grantees>.+)",
-            statement,
-        )
-        if match is None:
-            return False
-
-        privileges = tuple(
-            privilege.strip() for privilege in match.group("privileges").split(",")
-        )
-        grantees = tuple(
-            grantee.strip() for grantee in match.group("grantees").split(",")
-        )
-        if (
-            len(privileges) != len(expected_privileges)
-            or set(privileges) != expected_privileges
-            or grantees != ("service_role",)
-        ):
-            return False
-        target_grants.append(match.group("table"))
-
-    return target_grants == ["public.inquiry_replies"]
+    without_block_comments = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
+    without_comments = re.sub(r"--[^\r\n]*", "", without_block_comments)
+    grants = [
+        " ".join(statement.lower().split())
+        for statement in without_comments.split(";")
+        if re.match(r"^\s*grant\b", statement, flags=re.IGNORECASE)
+    ]
+    return grants == [
+        "grant select, insert, update on table public.inquiry_replies to service_role"
+    ]
 
 
 class InquiryWorkflowMigrationTests(unittest.TestCase):
@@ -235,6 +209,19 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
         ):
             with self.subTest(malicious=malicious):
                 self.assertFalse(_has_exact_inquiry_replies_grant_contract(malicious))
+
+        for additional_grant in (
+            'grant delete on table "public"."inquiry_replies" to service_role;',
+            "grant select on all tables in schema public to authenticated;",
+            "/* legacy exception */\ngrant delete on table public.inquiry_replies "
+            "to service_role;",
+        ):
+            with self.subTest(additional_grant=additional_grant):
+                self.assertFalse(
+                    _has_exact_inquiry_replies_grant_contract(
+                        f"{valid}\n{additional_grant}"
+                    )
+                )
 
 
 if __name__ == "__main__":
