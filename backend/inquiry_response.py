@@ -1,6 +1,12 @@
 from dataclasses import dataclass
+from datetime import datetime
 from enum import Enum
 import re
+from uuid import UUID
+
+from pydantic import BaseModel, ConfigDict, StrictStr, field_validator, model_validator
+
+from line_send_validation import validate_line_message_text
 
 
 class InquiryStatus(str, Enum):
@@ -43,6 +49,66 @@ def normalize_assignee_name(value: str) -> str:
     if not normalized or len(normalized) > 80:
         raise ValueError("assignee name must contain 1 to 80 characters")
     return normalized
+
+
+def validate_timezone_aware_datetime(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("expected_updated_at must include a timezone")
+    return value
+
+
+class InquiryUpdateRequest(BaseModel):
+    """Browser request contract for an inquiry status or assignee update."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: InquiryStatus | None = None
+    assignee_name: StrictStr | None = None
+    expected_updated_at: datetime
+
+    @field_validator("assignee_name")
+    @classmethod
+    def validate_assignee_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return normalize_assignee_name(value)
+
+    @field_validator("expected_updated_at")
+    @classmethod
+    def validate_expected_updated_at(cls, value: datetime) -> datetime:
+        return validate_timezone_aware_datetime(value)
+
+    @model_validator(mode="after")
+    def require_mutable_field(self) -> "InquiryUpdateRequest":
+        if self.status is None and self.assignee_name is None:
+            raise ValueError("status or assignee_name is required")
+        return self
+
+
+class InquiryReplyRequest(BaseModel):
+    """Browser request contract for sending an inquiry reply."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    assignee_name: StrictStr
+    message: StrictStr
+    idempotency_key: UUID
+    expected_updated_at: datetime
+
+    @field_validator("assignee_name")
+    @classmethod
+    def validate_assignee_name(cls, value: str) -> str:
+        return normalize_assignee_name(value)
+
+    @field_validator("message")
+    @classmethod
+    def validate_message(cls, value: str) -> str:
+        return validate_line_message_text(value)
+
+    @field_validator("expected_updated_at")
+    @classmethod
+    def validate_expected_updated_at(cls, value: datetime) -> datetime:
+        return validate_timezone_aware_datetime(value)
 
 
 def validate_operator_status_transition(

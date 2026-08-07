@@ -12,6 +12,23 @@ def utf16_code_unit_length(value: str) -> int:
     return len(value.encode("utf-16-le")) // 2
 
 
+def validate_line_message_text(value: object) -> str:
+    """Validate a LINE text message while preserving its valid formatting."""
+    if not isinstance(value, str):
+        raise ValueError("message must be a string")
+    if not value.strip():
+        raise ValueError("message must contain non-whitespace text")
+    try:
+        length = utf16_code_unit_length(value)
+    except UnicodeEncodeError:
+        raise ValueError("message contains invalid Unicode") from None
+    if length > MAX_MESSAGE_UTF16_CODE_UNITS:
+        raise ValueError(
+            f"message must be at most {MAX_MESSAGE_UTF16_CODE_UNITS} UTF-16 code units"
+        )
+    return value
+
+
 class LineSendRequest(BaseModel):
     """Strict request boundary for the manual LINE push endpoint."""
 
@@ -30,14 +47,4 @@ class LineSendRequest(BaseModel):
     @field_validator("message")
     @classmethod
     def validate_message(cls, value: str) -> str:
-        if not value.strip():
-            raise ValueError("message must contain non-whitespace text")
-        try:
-            length = utf16_code_unit_length(value)
-        except UnicodeEncodeError:
-            raise ValueError("message contains invalid Unicode") from None
-        if length > MAX_MESSAGE_UTF16_CODE_UNITS:
-            raise ValueError(
-                f"message must be at most {MAX_MESSAGE_UTF16_CODE_UNITS} UTF-16 code units"
-            )
-        return value
+        return validate_line_message_text(value)
