@@ -15,6 +15,7 @@ class TenantQuery:
     def __init__(self, database, table_name: str):
         self.database = database
         self.table_name = table_name
+        self.database.queries.append(self)
         self.filters: list[tuple[str, object]] = []
         self.update_data: dict | None = None
         self.insert_data: dict | None = None
@@ -125,6 +126,7 @@ class TenantSupabase:
             ],
         }
         self.inserted: list[dict] = []
+        self.queries: list[TenantQuery] = []
 
     def table(self, name: str):
         if name not in self.rows:
@@ -192,22 +194,30 @@ class InquiryTenantScopeTests(TenantScopeTestCase):
             ["own-inquiry-new", "own-inquiry-old"],
             [row["id"] for row in result],
         )
+        self.assertIn(("company_id", "tenant-a"), self.database.queries[-1].filters)
 
     def test_inquiry_detail_returns_own_company_record(self):
         self.assertTrue(hasattr(main, "api_inquiry_detail"), "問い合わせ詳細APIが未実装です")
         result = main.api_inquiry_detail("own-inquiry-new")
         self.assertEqual("own-inquiry-new", result["id"])
+        self.assertEqual(
+            {"id", "company_id", "status", "message", "created_at"},
+            set(result),
+        )
+        self.assertIn(("company_id", "tenant-a"), self.database.queries[-1].filters)
 
     def test_inquiry_detail_returns_not_found_for_other_company(self):
         self.assertTrue(hasattr(main, "api_inquiry_detail"), "問い合わせ詳細APIが未実装です")
         with self.assertRaises(HTTPException) as raised:
             main.api_inquiry_detail("other-inquiry")
         self.assertEqual(404, raised.exception.status_code)
+        self.assertIn(("company_id", "tenant-a"), self.database.queries[-1].filters)
 
     def test_inquiry_update_does_not_change_other_company(self):
         with self.assertRaises(HTTPException) as raised:
             main.api_update_inquiry("other-inquiry", main.InquiryUpdate(status="対応済み"))
         self.assertEqual(404, raised.exception.status_code)
+        self.assertIn(("company_id", "tenant-a"), self.database.queries[-1].filters)
         other = next(
             row for row in self.database.rows["inquiries"]
             if row["id"] == "other-inquiry"
