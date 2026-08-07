@@ -19,6 +19,13 @@ INQUIRY_REPLIES_MIGRATION_PATH = (
     / "202608070002_inquiry_replies.sql"
 )
 
+LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "supabase"
+    / "migrations"
+    / "202608070003_line_message_log_inquiry_reply.sql"
+)
+
 
 def _has_exact_inquiry_replies_grant_contract(sql: str) -> bool:
     """Return whether inquiry_replies has only its server-role table grant."""
@@ -222,6 +229,56 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
                         f"{valid}\n{additional_grant}"
                     )
                 )
+
+    def test_line_message_log_inquiry_reply_correlation_contract(self) -> None:
+        """Protect nullable, tenant-scoped reply-to-log correlation DDL."""
+        self.assertTrue(
+            LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH.is_file(),
+            "missing line message log inquiry reply migration: "
+            f"{LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH}",
+        )
+        sql = LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH.read_text(
+            encoding="utf-8"
+        )
+        normalized = " ".join(sql.lower().split())
+
+        self.assertIn(
+            "add column if not exists inquiry_reply_id uuid", normalized
+        )
+        self.assertNotIn("inquiry_reply_id uuid not null", normalized)
+        self.assertRegex(
+            normalized,
+            r"constraint line_message_logs_inquiry_reply_company_check "
+            r"check \(inquiry_reply_id is null or company_id is not null\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint line_message_logs_company_inquiry_reply_fkey "
+            r"foreign key \(company_id, inquiry_reply_id\) "
+            r"references public\.inquiry_replies \(company_id, id\) "
+            r"on delete restrict",
+        )
+        self.assertIn(
+            "create index if not exists "
+            "idx_line_message_logs_company_inquiry_reply "
+            "on public.line_message_logs (company_id, inquiry_reply_id)",
+            normalized,
+        )
+        self.assertIn(
+            "create unique index if not exists "
+            "uq_line_message_logs_company_inquiry_reply "
+            "on public.line_message_logs (company_id, inquiry_reply_id) "
+            "where inquiry_reply_id is not null",
+            normalized,
+        )
+        self.assertNotIn("alter column company_id set not null", normalized)
+        self.assertNotIn("alter column id", normalized)
+        self.assertNotIn("alter column message", normalized)
+        self.assertNotIn("line_message_logs_pkey", normalized)
+        self.assertNotRegex(
+            sql,
+            r"(?im)^\s*(?:insert\s+into|update\s+|delete\s+from)\s+",
+        )
 
 
 if __name__ == "__main__":
