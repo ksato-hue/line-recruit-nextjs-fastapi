@@ -12,6 +12,13 @@ MIGRATION_PATH = (
     / "202608070001_inquiry_workflow_columns.sql"
 )
 
+INQUIRY_REPLIES_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "supabase"
+    / "migrations"
+    / "202608070002_inquiry_replies.sql"
+)
+
 
 class InquiryWorkflowMigrationTests(unittest.TestCase):
     def test_inquiry_metadata_contract(self) -> None:
@@ -70,6 +77,111 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
         self.assertIn(
             "create trigger trg_inquiries_set_updated_at before update on public.inquiries for each row execute function public.set_updated_at()",
             normalized,
+        )
+
+    def test_inquiry_replies_contract(self) -> None:
+        """Protect append-only, tenant-scoped inquiry reply history DDL."""
+        self.assertTrue(
+            INQUIRY_REPLIES_MIGRATION_PATH.is_file(),
+            f"missing inquiry replies migration: {INQUIRY_REPLIES_MIGRATION_PATH}",
+        )
+        sql = INQUIRY_REPLIES_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        for column in (
+            "id uuid primary key default gen_random_uuid()",
+            "company_id text not null",
+            "inquiry_id uuid not null",
+            "assignee_name text not null",
+            "message text not null",
+            "delivery_status text not null default 'pending'",
+            "idempotency_key uuid not null",
+            "line_retry_key uuid not null",
+            "safe_error_code text",
+            "actor_user_id uuid",
+            "created_at timestamptz not null default now()",
+            "updated_at timestamptz not null default now()",
+            "sent_at timestamptz",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, normalized)
+
+        self.assertNotRegex(
+            normalized,
+            r"company_id text not null default\s+[^, )]+",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_company_inquiry_fkey foreign key \(company_id, inquiry_id\) references public\.inquiries \(company_id, id\) on delete restrict",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_company_id_id_key unique \(company_id, id\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_company_inquiry_idempotency_key unique \(company_id, inquiry_id, idempotency_key\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_line_retry_key_key unique \(line_retry_key\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_assignee_name_check check \(char_length\(assignee_name\) between 1 and 80 and btrim\(assignee_name\) <> ''\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_message_check check \(btrim\(message\) <> ''\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_delivery_status_check check \(delivery_status in \('pending', 'sending', 'sent', 'failed', 'delivery_unknown'\)\)",
+        )
+
+        self.assertIn(
+            "create index idx_inquiry_replies_company_inquiry_created_at on public.inquiry_replies (company_id, inquiry_id, created_at desc)",
+            normalized,
+        )
+        self.assertIn(
+            "create index idx_inquiry_replies_company_delivery_status_created_at on public.inquiry_replies (company_id, delivery_status, created_at)",
+            normalized,
+        )
+        self.assertIn(
+            "alter table public.inquiry_replies enable row level security",
+            normalized,
+        )
+        self.assertIn(
+            "revoke all on table public.inquiry_replies from public",
+            normalized,
+        )
+        self.assertIn(
+            "revoke all on table public.inquiry_replies from anon",
+            normalized,
+        )
+        self.assertIn(
+            "revoke all on table public.inquiry_replies from authenticated",
+            normalized,
+        )
+        self.assertIn(
+            "grant select, insert, update on table public.inquiry_replies to service_role",
+            normalized,
+        )
+        self.assertNotRegex(normalized, r"grant\s+[^;]*delete[^;]*inquiry_replies")
+        self.assertNotRegex(normalized, r"create policy\s+[^;]*inquiry_replies")
+        self.assertNotRegex(
+            normalized,
+            r"grant\s+[^;]*on table public\.inquiry_replies to (?:anon|authenticated)",
+        )
+        self.assertNotRegex(normalized, r"foreign key \(actor_user_id\)")
+        self.assertNotIn("references auth.", normalized)
+        self.assertIn(
+            "create trigger trg_inquiry_replies_set_updated_at before update on public.inquiry_replies for each row execute function public.set_updated_at()",
+            normalized,
+        )
+        self.assertNotRegex(
+            sql,
+            r"(?im)^\s*(?:insert\s+into|update\s+|delete\s+from)\s+",
         )
 
 
