@@ -5,8 +5,10 @@ from pydantic import BaseModel
 from typing import Annotated, Any, Optional
 from datetime import datetime, timedelta, timezone
 from inquiry_response import (
+    InquiryReasonCode,
     InquirySort,
     InquiryStatus,
+    InquiryUpdateRequest,
     decode_inquiry_cursor,
     encode_inquiry_cursor,
     extract_default_assignee_name,
@@ -14,6 +16,7 @@ from inquiry_response import (
     inquiry_summary,
     mask_line_destination,
     safe_inquiry_detail,
+    validate_operator_status_transition,
 )
 from line_send_validation import LineSendRequest
 import base64
@@ -2615,20 +2618,61 @@ def api_inquiry_detail(inquiry_id: str):
 
 
 @app.patch("/api/inquiries/{inquiry_id}", dependencies=[Depends(require_admin)])
-def api_update_inquiry(inquiry_id: str, payload: InquiryUpdate):
-    status = payload.status.strip()
-    if not status:
-        raise HTTPException(status_code=400, detail="status が必要です")
-    result = (
-        supabase.table("inquiries")
-        .update({"status": status})
-        .eq("id", inquiry_id)
-        .eq("company_id", COMPANY_ID)
-        .execute()
-    )
-    if not result.data:
-        raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
-    return result.data[0]
+def api_update_inquiry(inquiry_id: str, payload: InquiryUpdateRequest):
+    try:
+        current_result = (
+            supabase.table("inquiries")
+            .select("status,updated_at")
+            .eq("id", inquiry_id)
+            .eq("company_id", COMPANY_ID)
+            .limit(1)
+            .execute()
+        )
+        if not current_result.data:
+            raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
+        current = current_result.data[0]
+
+        if payload.status is not None:
+            transition = validate_operator_status_transition(current.get("status"), payload.status)
+            if not transition.allowed:
+                reason_code = transition.reason_code or InquiryReasonCode.INVALID_STATUS_TRANSITION
+                raise HTTPException(status_code=409, detail=reason_code.value)
+
+        update_data = payload.model_dump(
+            mode="json",
+            exclude={"expected_updated_at"},
+            exclude_none=True,
+        )
+        expected_updated_at = payload.expected_updated_at.isoformat()
+        result = (
+            supabase.table("inquiries")
+            .update(update_data)
+            .eq("id", inquiry_id)
+            .eq("company_id", COMPANY_ID)
+            .eq("updated_at", expected_updated_at)
+            .execute()
+        )
+        if result.data:
+            return result.data[0]
+
+        remaining_result = (
+            supabase.table("inquiries")
+            .select("id")
+            .eq("id", inquiry_id)
+            .eq("company_id", COMPANY_ID)
+            .limit(1)
+            .execute()
+        )
+        if not remaining_result.data:
+            raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
+        raise HTTPException(
+            status_code=409,
+            detail=InquiryReasonCode.INQUIRY_CONFLICT.value,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _inquiry_read_unavailable("inquiries.update", exc, inquiry_id)
 
 
 @app.post("/api/line/send", dependencies=[Depends(require_admin)])

@@ -31,6 +31,7 @@ class InquiryDeliveryStatus(str, Enum):
 
 
 class InquiryReasonCode(str, Enum):
+    INQUIRY_CONFLICT = "INQUIRY_CONFLICT"
     INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"
 
 

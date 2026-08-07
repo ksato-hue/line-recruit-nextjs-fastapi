@@ -44,6 +44,7 @@ class InquiryQuery:
         self.or_filter: str | None = None
         self.orders: list[tuple[str, bool]] = []
         self.row_limit: int | None = None
+        self.update_data: dict | None = None
 
     def select(self, columns: str):
         self.selected_columns = columns
@@ -67,6 +68,10 @@ class InquiryQuery:
 
     def limit(self, value: int):
         self.row_limit = value
+        return self
+
+    def update(self, data: dict):
+        self.update_data = copy.deepcopy(data)
         return self
 
     def _matches_cursor(self, row: dict) -> bool:
@@ -99,6 +104,14 @@ class InquiryQuery:
             rows.sort(key=lambda row: str(row.get(column) or ""), reverse=desc)
         if self.row_limit is not None:
             rows = rows[: self.row_limit]
+        if self.update_data is not None:
+            if self.database.zero_next_inquiry_update:
+                self.database.zero_next_inquiry_update = False
+                return SimpleNamespace(data=[])
+            for row in rows:
+                row.update(copy.deepcopy(self.update_data))
+                if self.table_name == "inquiries":
+                    row["updated_at"] = self.database.trigger_updated_at
         if self.selected_columns:
             selected = [column.strip() for column in self.selected_columns.split(",")]
             if selected != ["*"]:
@@ -127,7 +140,7 @@ class InquirySupabase:
                     "line_user_id": "Uaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
                     "message": "同時刻の問い合わせです",
                     "created_at": "2026-08-01T00:00:00+00:00",
-                    "status": "未対応",
+                    "status": "対応済み",
                     "assignee_name": "鈴木",
                     "last_replied_at": None,
                     "updated_at": "2026-08-01T01:00:00+00:00",
@@ -232,6 +245,8 @@ class InquirySupabase:
         }
         self.queries: list[InquiryQuery] = []
         self.fail_tables: set[str] = set()
+        self.zero_next_inquiry_update = False
+        self.trigger_updated_at = "2026-08-07T00:00:00+00:00"
 
     def table(self, name: str):
         if name not in self.rows:
@@ -558,6 +573,186 @@ class InquiryDetailApiTests(InquiryApiTestCase):
 
         self.assertEqual(503, response.status_code)
         self.assertNotEqual(404, response.status_code)
+
+
+class InquiryUpdateApiTests(InquiryApiTestCase):
+    def inquiry_row(self, inquiry_id: str) -> dict:
+        return next(row for row in self.database.rows["inquiries"] if row["id"] == inquiry_id)
+
+    def patch_inquiry(self, inquiry_id: str, **payload):
+        return self.client.patch(
+            f"/api/inquiries/{inquiry_id}",
+            json=payload,
+            headers=self.headers,
+        )
+
+    def test_operator_status_transition_matrix(self):
+        cases = [
+            (INQUIRY_1, "未対応", "未対応", 200, None),
+            (INQUIRY_1, "未対応", "対応中", 200, None),
+            (INQUIRY_1, "未対応", "対応済み", 409, "INVALID_STATUS_TRANSITION"),
+            (INQUIRY_3, "対応中", "未対応", 409, "INVALID_STATUS_TRANSITION"),
+            (INQUIRY_3, "対応中", "対応中", 200, None),
+            (INQUIRY_3, "対応中", "対応済み", 409, "INVALID_STATUS_TRANSITION"),
+            (INQUIRY_2, "対応済み", "未対応", 409, "INVALID_STATUS_TRANSITION"),
+            (INQUIRY_2, "対応済み", "対応中", 200, None),
+            (INQUIRY_2, "対応済み", "対応済み", 200, None),
+        ]
+
+        for inquiry_id, current, target, status_code, reason_code in cases:
+            with self.subTest(current=current, target=target):
+                row = self.inquiry_row(inquiry_id)
+                row["status"] = current
+                row["updated_at"] = "2026-08-01T00:00:00+00:00"
+                before = copy.deepcopy(row)
+                self.database.queries.clear()
+
+                response = self.patch_inquiry(
+                    inquiry_id,
+                    status=target,
+                    expected_updated_at=before["updated_at"],
+                )
+
+                self.assertEqual(status_code, response.status_code)
+                if reason_code is None:
+                    self.assertEqual(target, self.inquiry_row(inquiry_id)["status"])
+                else:
+                    self.assertEqual({"detail": reason_code}, response.json())
+                    self.assertEqual(before, self.inquiry_row(inquiry_id))
+                    self.assertFalse(any(query.update_data is not None for query in self.database.queries))
+
+    def test_assignee_only_update_preserves_the_normalized_manual_value(self):
+        row = self.inquiry_row(INQUIRY_1)
+
+        response = self.patch_inquiry(
+            INQUIRY_1,
+            assignee_name="  山田 花子　",
+            expected_updated_at=row["updated_at"],
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("山田 花子", response.json()["assignee_name"])
+        update_query = next(
+            query for query in self.database.queries_for("inquiries")
+            if query.update_data is not None
+        )
+        self.assertEqual({"assignee_name": "山田 花子"}, update_query.update_data)
+
+    def test_status_only_update_preserves_the_existing_assignee(self):
+        row = self.inquiry_row(INQUIRY_2)
+
+        response = self.patch_inquiry(
+            INQUIRY_2,
+            status="対応中",
+            expected_updated_at=row["updated_at"],
+        )
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("鈴木", response.json()["assignee_name"])
+        self.assertEqual("鈴木", self.inquiry_row(INQUIRY_2)["assignee_name"])
+
+    def test_update_request_shape_is_strict_and_validation_never_mutates(self):
+        invalid_payloads = [
+            {"assignee_name": "　 ", "expected_updated_at": "2026-08-01T00:00:00+00:00"},
+            {"status": "unknown", "expected_updated_at": "2026-08-01T00:00:00+00:00"},
+            {"status": "対応中"},
+            {
+                "status": "対応中",
+                "expected_updated_at": "2026-08-01T00:00:00+00:00",
+                "company_id": TENANT_B,
+            },
+        ]
+        before = copy.deepcopy(self.database.rows["inquiries"])
+
+        for payload in invalid_payloads:
+            with self.subTest(payload=payload):
+                self.database.queries.clear()
+                response = self.patch_inquiry(INQUIRY_1, **payload)
+                self.assertEqual(422, response.status_code)
+                self.assertEqual([], self.database.queries)
+                self.assertEqual(before, self.database.rows["inquiries"])
+
+    def test_stale_timestamp_returns_conflict_without_mutation(self):
+        before = copy.deepcopy(self.inquiry_row(INQUIRY_1))
+
+        response = self.patch_inquiry(
+            INQUIRY_1,
+            status="対応中",
+            assignee_name="佐藤",
+            expected_updated_at="2026-07-31T23:59:59+00:00",
+        )
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "INQUIRY_CONFLICT"}, response.json())
+        self.assertEqual(before, self.inquiry_row(INQUIRY_1))
+
+    def test_matching_timestamp_updates_with_id_company_and_timestamp_predicates(self):
+        row = self.inquiry_row(INQUIRY_1)
+        expected_updated_at = row["updated_at"]
+
+        response = self.patch_inquiry(
+            INQUIRY_1,
+            status="対応中",
+            expected_updated_at=expected_updated_at,
+        )
+
+        self.assertEqual(200, response.status_code)
+        update_query = next(
+            query for query in self.database.queries_for("inquiries")
+            if query.update_data is not None
+        )
+        self.assertIn(("id", INQUIRY_1), update_query.equal_filters)
+        self.assertIn(("company_id", TENANT_A), update_query.equal_filters)
+        self.assertIn(("updated_at", expected_updated_at), update_query.equal_filters)
+        self.assertNotIn("updated_at", update_query.update_data)
+        self.assertEqual(self.database.trigger_updated_at, response.json()["updated_at"])
+
+    def test_other_tenant_returns_not_found_without_mutation(self):
+        before = copy.deepcopy(self.database.rows["inquiries"])
+
+        response = self.patch_inquiry(
+            OTHER_INQUIRY,
+            status="対応中",
+            expected_updated_at="2026-08-03T00:00:00+00:00",
+        )
+
+        self.assertEqual(404, response.status_code)
+        self.assertEqual(before, self.database.rows["inquiries"])
+        self.assertFalse(any(query.update_data is not None for query in self.database.queries))
+        self.assert_company_scoped("inquiries")
+
+    def test_compare_and_set_race_returns_conflict_without_mutation(self):
+        before = copy.deepcopy(self.inquiry_row(INQUIRY_1))
+        self.database.zero_next_inquiry_update = True
+
+        response = self.patch_inquiry(
+            INQUIRY_1,
+            status="対応中",
+            expected_updated_at=before["updated_at"],
+        )
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "INQUIRY_CONFLICT"}, response.json())
+        self.assertEqual(before, self.inquiry_row(INQUIRY_1))
+        inquiries_queries = self.database.queries_for("inquiries")
+        self.assertEqual(3, len(inquiries_queries))
+        self.assertIsNotNone(inquiries_queries[1].update_data)
+        self.assertIsNone(inquiries_queries[2].update_data)
+        self.assert_company_scoped("inquiries")
+
+    def test_database_failure_is_not_reported_as_missing_or_conflict(self):
+        before = copy.deepcopy(self.database.rows["inquiries"])
+        self.database.fail_tables.add("inquiries")
+
+        response = self.patch_inquiry(
+            INQUIRY_1,
+            status="対応中",
+            expected_updated_at="2026-08-01T00:00:00+00:00",
+        )
+
+        self.assertEqual(503, response.status_code)
+        self.assertNotIn(response.status_code, {404, 409})
+        self.assertEqual(before, self.database.rows["inquiries"])
 
 
 if __name__ == "__main__":
