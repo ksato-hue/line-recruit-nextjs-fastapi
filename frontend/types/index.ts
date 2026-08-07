@@ -232,10 +232,14 @@ export type InquiryReply = {
   sent_at: string | null;
 };
 
-export type InquiryRelatedApplicant = Pick<
-  Applicant,
-  "id" | "name" | "job" | "status" | "interview_status" | "created_at"
->;
+export type InquiryRelatedApplicant = {
+  id: string;
+  name: string | null;
+  job: string | null;
+  status: string | null;
+  interview_status: string | null;
+  created_at: string | null;
+};
 
 export type InquiryDetailResponse = {
   inquiry: InquiryRecord;

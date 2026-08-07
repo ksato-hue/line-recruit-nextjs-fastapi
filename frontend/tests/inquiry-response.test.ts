@@ -37,6 +37,38 @@ const firstKey = "20000000-0000-0000-0000-000000000001";
 const secondKey = "20000000-0000-0000-0000-000000000002";
 const expectedUpdatedAt = "2026-08-07T00:00:00+00:00";
 
+type InquiryRelatedApplicant = import("../types").InquiryRelatedApplicant;
+type ExpectedRelatedApplicant = {
+  id: string;
+  name: string | null;
+  job: string | null;
+  status: string | null;
+  interview_status: string | null;
+  created_at: string | null;
+};
+type Equal<Left, Right> =
+  (<Value>() => Value extends Left ? 1 : 2) extends
+  (<Value>() => Value extends Right ? 1 : 2)
+    ? (<Value>() => Value extends Right ? 1 : 2) extends
+      (<Value>() => Value extends Left ? 1 : 2)
+      ? true
+      : false
+    : false;
+
+const relatedApplicantTypeIsExact: Equal<
+  InquiryRelatedApplicant,
+  ExpectedRelatedApplicant
+> = true;
+
+const relatedApplicantFixture: InquiryRelatedApplicant = {
+  id: "30000000-0000-0000-0000-000000000001",
+  name: null,
+  job: null,
+  status: null,
+  interview_status: null,
+  created_at: null
+};
+
 function editingState() {
   return inquiryReplyReducer(createInitialInquiryReplyState(), {
     type: "edit",
@@ -184,6 +216,30 @@ test("retry submits the same immutable operation and idempotency key", () => {
   assert.equal(retried.snapshot?.idempotencyKey, firstKey);
 });
 
+test("a known failure cannot retry until edit and reconfirm create a new key", () => {
+  const submitting = inquiryReplyReducer(confirmingState(), { type: "submit" });
+  const failed = inquiryReplyReducer(submitting, { type: "send_failed" });
+  const forbiddenRetry = inquiryReplyReducer(failed, { type: "retry" });
+
+  assert.strictEqual(forbiddenRetry, failed);
+
+  const edited = inquiryReplyReducer(failed, {
+    type: "edit",
+    message: "内容を確認して再送します。"
+  });
+  const reconfirmed = inquiryReplyReducer(edited, {
+    type: "open_confirmation",
+    inquiryId,
+    expectedUpdatedAt,
+    maskedDestination: "U1234…7890",
+    createId: () => secondKey
+  });
+
+  assert.equal(reconfirmed.status, "confirming");
+  assert.equal(reconfirmed.snapshot?.idempotencyKey, secondKey);
+  assert.notEqual(reconfirmed.snapshot?.idempotencyKey, failed.snapshot?.idempotencyKey);
+});
+
 test("the browser reply serializer emits only the four allowed fields", () => {
   const snapshot = confirmingState().snapshot;
   assert.ok(snapshot);
@@ -208,13 +264,25 @@ test("the browser reply serializer emits only the four allowed fields", () => {
 
 test("admin API errors retain status and reason without exposing raw response text", () => {
   const known = new AdminApiError(409, "INQUIRY_CONFLICT");
-  const unknown = new AdminApiError(500, "upstream secret response body");
+  const unknown = new AdminApiError(500, "INTERNAL_SECRET_TOKEN");
 
   assert.equal(known.status, 409);
   assert.equal(known.reasonCode, "INQUIRY_CONFLICT");
   assert.equal(known.message, "問い合わせが更新されています。最新の内容を確認してください。");
   assert.equal(unknown.status, 500);
-  assert.equal(unknown.reasonCode, "upstream secret response body");
+  assert.equal(unknown.reasonCode, null);
   assert.equal(unknown.message, "処理に失敗しました。時間をおいてもう一度お試しください。");
-  assert.equal(unknown.message.includes("secret"), false);
+  assert.equal(unknown.message.includes("SECRET"), false);
+});
+
+test("related applicant fixtures match the exact nullable Backend response", () => {
+  assert.equal(relatedApplicantTypeIsExact, true);
+  assert.deepEqual(relatedApplicantFixture, {
+    id: "30000000-0000-0000-0000-000000000001",
+    name: null,
+    job: null,
+    status: null,
+    interview_status: null,
+    created_at: null
+  });
 });

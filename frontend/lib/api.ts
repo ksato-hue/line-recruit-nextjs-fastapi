@@ -58,9 +58,17 @@ const ADMIN_API_STATUS_MESSAGES: Readonly<Record<number, string>> = {
   503: "サービスを利用できません。時間をおいてもう一度お試しください。"
 };
 
+function allowlistedAdminApiReasonCode(reasonCode: string | null) {
+  return reasonCode
+    && Object.prototype.hasOwnProperty.call(ADMIN_API_REASON_MESSAGES, reasonCode)
+    ? reasonCode
+    : null;
+}
+
 function safeAdminApiMessage(status: number, reasonCode: string | null) {
-  if (reasonCode && ADMIN_API_REASON_MESSAGES[reasonCode]) {
-    return ADMIN_API_REASON_MESSAGES[reasonCode];
+  const safeReasonCode = allowlistedAdminApiReasonCode(reasonCode);
+  if (safeReasonCode) {
+    return ADMIN_API_REASON_MESSAGES[safeReasonCode];
   }
   return ADMIN_API_STATUS_MESSAGES[status]
     || "処理に失敗しました。時間をおいてもう一度お試しください。";
@@ -71,10 +79,11 @@ export class AdminApiError extends Error {
   readonly reasonCode: string | null;
 
   constructor(status: number, reasonCode: string | null = null) {
-    super(safeAdminApiMessage(status, reasonCode));
+    const safeReasonCode = allowlistedAdminApiReasonCode(reasonCode);
+    super(safeAdminApiMessage(status, safeReasonCode));
     this.name = "AdminApiError";
     this.status = status;
-    this.reasonCode = reasonCode;
+    this.reasonCode = safeReasonCode;
     Object.setPrototypeOf(this, new.target.prototype);
   }
 }
@@ -82,8 +91,8 @@ export class AdminApiError extends Error {
 function parseSafeReasonCode(body: string) {
   try {
     const detail = (JSON.parse(body) as { detail?: unknown }).detail;
-    return typeof detail === "string" && /^[A-Z][A-Z0-9_]{0,79}$/.test(detail)
-      ? detail
+    return typeof detail === "string"
+      ? allowlistedAdminApiReasonCode(detail)
       : null;
   } catch {
     return null;

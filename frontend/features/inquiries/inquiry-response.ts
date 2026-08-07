@@ -102,10 +102,7 @@ export function inquiryReplyReducer(
         errorMessage: action.errorMessage || null
       };
     case "retry":
-      if (
-        (state.status !== "failed" && state.status !== "delivery_unknown")
-        || state.snapshot === null
-      ) {
+      if (state.status !== "delivery_unknown" || state.snapshot === null) {
         return state;
       }
       return { ...state, status: "submitting", errorMessage: null };
