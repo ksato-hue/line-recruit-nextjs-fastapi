@@ -69,79 +69,63 @@ begin
       message = 'INQUIRY_NOT_FOUND';
   end if;
 
-  if v_reply_delivery_status = 'sent' then
-    select l.id
-    into v_log_id
-    from public.line_message_logs as l
-    where l.company_id = p_company_id
-      and l.inquiry_reply_id = p_reply_id;
+  if v_reply_delivery_status <> 'sent' then
+    if v_reply_delivery_status not in ('sending', 'delivery_unknown') then
+      raise exception using
+        errcode = '55000',
+        message = 'INQUIRY_REPLY_NOT_FINALIZABLE';
+    end if;
 
-    return pg_catalog.jsonb_build_object(
-      'inquiry_id', p_inquiry_id,
-      'reply_id', p_reply_id,
-      'line_message_log_id', v_log_id,
-      'delivery_status', v_reply_delivery_status,
-      'inquiry_status', v_inquiry_status,
-      'sent_at', v_reply_sent_at,
-      'inquiry_updated_at', v_inquiry_updated_at
-    );
+    if v_inquiry_status <> '対応中' then
+      raise exception using
+        errcode = '55000',
+        message = 'INQUIRY_NOT_IN_PROGRESS';
+    end if;
+
+    v_sent_at := pg_catalog.now();
+
+    update public.inquiry_replies as r
+    set
+      delivery_status = 'sent',
+      safe_error_code = null,
+      sent_at = v_sent_at
+    where r.company_id = p_company_id
+      and r.inquiry_id = p_inquiry_id
+      and r.id = p_reply_id
+      and r.delivery_status = v_reply_delivery_status
+    returning r.id into v_updated_reply_id;
+
+    if not found then
+      raise exception using
+        errcode = '55000',
+        message = 'INQUIRY_REPLY_UPDATE_CONFLICT';
+    end if;
+
+    insert into public.line_message_logs (
+      company_id,
+      line_user_id,
+      message,
+      direction,
+      message_type,
+      inquiry_reply_id
+    )
+    select
+      p_company_id,
+      v_line_user_id,
+      v_reply_message,
+      'outbound',
+      'inquiry_reply',
+      p_reply_id
+    where not exists (
+      select 1
+      from public.line_message_logs as existing_log
+      where existing_log.company_id = p_company_id
+        and existing_log.inquiry_reply_id = p_reply_id
+    )
+    returning id into v_log_id;
   end if;
 
-  if v_reply_delivery_status not in ('sending', 'delivery_unknown') then
-    raise exception using
-      errcode = '55000',
-      message = 'INQUIRY_REPLY_NOT_FINALIZABLE';
-  end if;
-
-  if v_inquiry_status <> '対応中' then
-    raise exception using
-      errcode = '55000',
-      message = 'INQUIRY_NOT_IN_PROGRESS';
-  end if;
-
-  v_sent_at := pg_catalog.now();
-
-  update public.inquiry_replies as r
-  set
-    delivery_status = 'sent',
-    safe_error_code = null,
-    sent_at = v_sent_at
-  where r.company_id = p_company_id
-    and r.inquiry_id = p_inquiry_id
-    and r.id = p_reply_id
-    and r.delivery_status = v_reply_delivery_status
-  returning r.id into v_updated_reply_id;
-
-  if not found then
-    raise exception using
-      errcode = '55000',
-      message = 'INQUIRY_REPLY_UPDATE_CONFLICT';
-  end if;
-
-  insert into public.line_message_logs (
-    company_id,
-    line_user_id,
-    message,
-    direction,
-    message_type,
-    inquiry_reply_id
-  )
-  select
-    p_company_id,
-    v_line_user_id,
-    v_reply_message,
-    'outbound',
-    'inquiry_reply',
-    p_reply_id
-  where not exists (
-    select 1
-    from public.line_message_logs as existing_log
-    where existing_log.company_id = p_company_id
-      and existing_log.inquiry_reply_id = p_reply_id
-  )
-  returning id into v_log_id;
-
-  if v_log_id is null then
+  if v_reply_delivery_status = 'sent' or v_log_id is null then
     select
       l.id,
       l.direction,
@@ -174,6 +158,18 @@ begin
         errcode = '23514',
         message = 'INQUIRY_REPLY_LOG_INTEGRITY_ERROR';
     end if;
+  end if;
+
+  if v_reply_delivery_status = 'sent' then
+    return pg_catalog.jsonb_build_object(
+      'inquiry_id', p_inquiry_id,
+      'reply_id', p_reply_id,
+      'line_message_log_id', v_log_id,
+      'delivery_status', v_reply_delivery_status,
+      'inquiry_status', v_inquiry_status,
+      'sent_at', v_reply_sent_at,
+      'inquiry_updated_at', v_inquiry_updated_at
+    );
   end if;
 
   update public.inquiries as i

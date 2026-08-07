@@ -52,11 +52,11 @@ def _finalizer_execute_statements(sql: str) -> list[str]:
     """Return every security-sensitive privilege statement in the migration."""
     without_block_comments = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
     without_comments = re.sub(r"--[^\r\n]*", "", without_block_comments)
-    return [
+    statements = [
         " ".join(statement.lower().split())
         for statement in without_comments.split(";")
         if re.match(
-            r"^\s*(?:grant|revoke|alter\s+function|"
+            r"^\s*(?:grant|revoke|alter\s+(?:function|routine)|"
             r"alter\s+default\s+privileges)\b",
             statement,
             flags=re.IGNORECASE,
@@ -67,6 +67,18 @@ def _finalizer_execute_statements(sql: str) -> list[str]:
             flags=re.IGNORECASE,
         )
     ]
+    delimiter = re.compile(r"\$(?:[a-z_][a-z0-9_]*)?\$", re.IGNORECASE)
+    cursor = 0
+    while opening := delimiter.search(without_comments, cursor):
+        closing_start = without_comments.find(opening.group(0), opening.end())
+        if closing_start < 0:
+            statements.append("unterminated dollar-quoted body")
+            break
+        body = without_comments[opening.end():closing_start]
+        if re.search(r"\bexecute\b", body, flags=re.IGNORECASE):
+            statements.append("dynamic execute in dollar-quoted body")
+        cursor = closing_start + len(opening.group(0))
+    return statements
 
 
 def _finalizer_result_key_sets(sql: str) -> list[list[str]]:
@@ -359,22 +371,13 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
         self.assertEqual(normalized.count("for update"), 3)
 
         sent_branch_match = re.search(
-            r"if v_reply_delivery_status = 'sent' then (.*?) end if;",
+            r"if v_reply_delivery_status = 'sent' then (.*?) end if; "
+            r"update public\.inquiries",
             normalized,
         )
         self.assertIsNotNone(sent_branch_match)
         sent_branch = sent_branch_match.group(1) if sent_branch_match else ""
-        self.assertRegex(
-            sent_branch,
-            r"from public\.line_message_logs (?:as )?l "
-            r"where l\.company_id = p_company_id "
-            r"and l\.inquiry_reply_id = p_reply_id",
-        )
         self.assertIn("return pg_catalog.jsonb_build_object(", sent_branch)
-        self.assertLess(
-            sent_branch_match.end() if sent_branch_match else -1,
-            normalized.index("update public.inquiry_replies"),
-        )
         self.assertRegex(
             normalized,
             r"update public\.inquiry_replies (?:as )?r set "
@@ -421,8 +424,8 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
         normalized = " ".join(sql.lower().split())
 
         fallback_match = re.search(
-            r"if v_log_id is null then (.*?) end if; "
-            r"update public\.inquiries",
+            r"if v_reply_delivery_status = 'sent' or v_log_id is null then "
+            r"(.*?) end if; if v_reply_delivery_status = 'sent' then",
             normalized,
         )
         self.assertIsNotNone(fallback_match)
@@ -453,6 +456,48 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             fallback.count("message = 'inquiry_reply_log_integrity_error'"),
             2,
         )
+
+    def test_sent_replay_validates_the_locked_log_before_returning(self) -> None:
+        """A sent replay must reject a missing or mismatched correlation."""
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        replay_flow = re.search(
+            r"if v_reply_delivery_status = 'sent' or v_log_id is null then "
+            r"(.*?) end if; if v_reply_delivery_status = 'sent' then "
+            r"(.*?) end if; update public\.inquiries",
+            normalized,
+        )
+        self.assertIsNotNone(replay_flow)
+        validation = replay_flow.group(1) if replay_flow else ""
+        replay_return = replay_flow.group(2) if replay_flow else ""
+        self.assertRegex(
+            validation,
+            r"select l\.id, l\.direction, l\.message_type, l\.message, "
+            r"l\.line_user_id into v_log_id, v_log_direction, "
+            r"v_log_message_type, v_log_message, v_log_line_user_id "
+            r"from public\.line_message_logs (?:as )?l "
+            r"where l\.company_id = p_company_id "
+            r"and l\.inquiry_reply_id = p_reply_id for update",
+        )
+        self.assertRegex(
+            validation,
+            r"if not found then raise exception using errcode = '23514', "
+            r"message = 'inquiry_reply_log_integrity_error'; end if;",
+        )
+        for comparison in (
+            "v_log_direction is distinct from 'outbound'",
+            "v_log_message_type is distinct from 'inquiry_reply'",
+            "v_log_message is distinct from v_reply_message",
+            "v_log_line_user_id is distinct from v_line_user_id",
+        ):
+            with self.subTest(comparison=comparison):
+                self.assertIn(comparison, validation)
+        self.assertEqual(
+            validation.count("message = 'inquiry_reply_log_integrity_error'"),
+            2,
+        )
+        self.assertIn("return pg_catalog.jsonb_build_object(", replay_return)
 
     def test_finalizer_requires_the_locked_reply_update_to_match(self) -> None:
         """A vanished or changed locked reply must abort before completion."""
@@ -532,6 +577,14 @@ class InquiryWorkflowMigrationTests(unittest.TestCase):
             "owner to authenticated;",
             "alter default privileges in schema public "
             "grant execute on functions to anon;",
+            "alter routine public.finalize_inquiry_reply(text, uuid, uuid) "
+            "owner to authenticated;",
+            "do $audit$ declare ddl text := 'grant execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) to authenticated'; "
+            "begin execute ddl; end $audit$;",
+            "create function public.hidden_grant() returns void "
+            "language plpgsql as $$ declare ddl text := 'grant execute on "
+            "all functions in schema public to anon'; begin execute ddl; end $$;",
         ):
             with self.subTest(forbidden=forbidden):
                 self.assertNotEqual(
