@@ -1,11 +1,14 @@
 from supabase import create_client
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import Annotated, Any, Optional
 from datetime import datetime, timedelta, timezone
-from uuid import UUID
+from uuid import UUID, uuid4
 from inquiry_response import (
+    InquiryDeliveryStatus,
+    InquiryReplyRequest,
     InquiryReasonCode,
     InquirySort,
     InquiryStatus,
@@ -16,6 +19,8 @@ from inquiry_response import (
     encode_inquiry_cursor,
     extract_default_assignee_name,
     inquiry_cursor_filter,
+    inquiry_reply_attempt_active,
+    inquiry_reply_retry_allowed,
     inquiry_summary,
     inquiry_timestamps_match,
     mask_line_destination,
@@ -61,6 +66,7 @@ INQUIRY_REPLY_WORKFLOW_ENABLED = os.getenv(
     "INQUIRY_REPLY_WORKFLOW_ENABLED",
     "false",
 ).strip().lower() in {"1", "true", "yes", "on"}
+INQUIRY_REPLY_SENDING_LEASE_SECONDS = 60
 logger = logging.getLogger("line_recruit")
 
 
@@ -75,6 +81,8 @@ def _log_event(
     result: str,
     *,
     subject_id: Optional[str] = None,
+    stage: Optional[str] = None,
+    reason_code: Optional[str] = None,
     http_status: Optional[int] = None,
     error: Optional[BaseException] = None,
 ) -> None:
@@ -82,6 +90,10 @@ def _log_event(
     anonymous_id = _anonymous_id(subject_id)
     if anonymous_id:
         record["subject_id"] = anonymous_id
+    if stage is not None:
+        record["stage"] = stage
+    if reason_code is not None:
+        record["reason_code"] = reason_code
     if http_status is not None:
         record["http_status"] = http_status
     if error is not None:
@@ -2529,11 +2541,136 @@ INQUIRY_REPLY_SELECT = (
     "id,assignee_name,message,delivery_status,safe_error_code,"
     "created_at,updated_at,sent_at"
 )
+INQUIRY_REPLY_ORCHESTRATION_SELECT = (
+    "id,company_id,inquiry_id,assignee_name,message,delivery_status,"
+    "idempotency_key,line_retry_key,safe_error_code,created_at,updated_at,sent_at"
+)
 
 
 def _inquiry_read_unavailable(event: str, exc: BaseException, inquiry_id: str | None = None):
     _log_event(event, "error", subject_id=inquiry_id, http_status=503, error=exc)
     raise HTTPException(status_code=503, detail="問い合わせデータを取得できません") from exc
+
+
+def _inquiry_reply_unavailable(stage: str, exc: BaseException, inquiry_id: str):
+    _log_event(
+        "inquiry.reply.orchestrate",
+        "unavailable",
+        subject_id=inquiry_id,
+        stage=stage,
+        http_status=503,
+        error=exc,
+    )
+    raise HTTPException(status_code=503, detail="INQUIRY_REPLY_UNAVAILABLE") from exc
+
+
+def _update_inquiry_reply(
+    *,
+    inquiry_id: str,
+    reply_id: str,
+    current_status: str,
+    delivery_status: InquiryDeliveryStatus,
+    safe_error_code: str | None,
+    expected_updated_at: str | None = None,
+):
+    query = (
+        supabase.table("inquiry_replies")
+        .update(
+            {
+                "delivery_status": delivery_status.value,
+                "safe_error_code": safe_error_code,
+            }
+        )
+        .eq("id", reply_id)
+        .eq("inquiry_id", inquiry_id)
+        .eq("company_id", COMPANY_ID)
+        .eq("delivery_status", current_status)
+    )
+    if expected_updated_at is not None:
+        query = query.eq("updated_at", expected_updated_at)
+    return query.execute()
+
+
+def _sent_inquiry_reply_response(reply: dict, *, idempotent_replay: bool) -> dict:
+    return {
+        "outcome": "sent",
+        "reply_id": reply.get("id") or reply.get("reply_id"),
+        "delivery_status": InquiryDeliveryStatus.SENT.value,
+        "inquiry_status": InquiryStatus.COMPLETED.value,
+        "sent_at": reply.get("sent_at"),
+        "idempotent_replay": idempotent_replay,
+    }
+
+
+def _unknown_inquiry_reply_response(reply_id: str) -> JSONResponse:
+    return JSONResponse(
+        status_code=202,
+        content={
+            "outcome": InquiryDeliveryStatus.DELIVERY_UNKNOWN.value,
+            "reply_id": reply_id,
+            "delivery_status": InquiryDeliveryStatus.DELIVERY_UNKNOWN.value,
+            "reason_code": InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+        },
+    )
+
+
+def _existing_inquiry_reply_action(
+    reply: dict,
+    payload: InquiryReplyRequest,
+    now: datetime,
+) -> str:
+    if (
+        reply.get("assignee_name") != payload.assignee_name
+        or reply.get("message") != payload.message
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=InquiryReasonCode.IDEMPOTENCY_CONFLICT.value,
+        )
+
+    status = reply.get("delivery_status")
+    if status == InquiryDeliveryStatus.SENT.value:
+        return "sent"
+    if status == InquiryDeliveryStatus.FAILED.value:
+        safe_error_code = reply.get("safe_error_code")
+        if safe_error_code == InquiryReasonCode.INQUIRY_CONFLICT.value:
+            raise HTTPException(status_code=409, detail=safe_error_code)
+        raise HTTPException(
+            status_code=502,
+            detail=InquiryReasonCode.LINE_REJECTED.value,
+        )
+    if status == InquiryDeliveryStatus.PENDING.value:
+        raise HTTPException(
+            status_code=409,
+            detail=InquiryReasonCode.REPLY_IN_PROGRESS.value,
+        )
+    if status == InquiryDeliveryStatus.SENDING.value:
+        if inquiry_reply_attempt_active(
+            reply.get("updated_at"),
+            now,
+            INQUIRY_REPLY_SENDING_LEASE_SECONDS,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=InquiryReasonCode.REPLY_IN_PROGRESS.value,
+            )
+        if not inquiry_reply_retry_allowed(reply.get("created_at"), now):
+            raise HTTPException(
+                status_code=409,
+                detail=InquiryReasonCode.RETRY_WINDOW_EXPIRED.value,
+            )
+        return "retry_sending"
+    if status == InquiryDeliveryStatus.DELIVERY_UNKNOWN.value:
+        if not inquiry_reply_retry_allowed(reply.get("created_at"), now):
+            raise HTTPException(
+                status_code=409,
+                detail=InquiryReasonCode.RETRY_WINDOW_EXPIRED.value,
+            )
+        return "retry_unknown"
+    raise HTTPException(
+        status_code=409,
+        detail=InquiryReasonCode.REPLY_IN_PROGRESS.value,
+    )
 
 
 @app.get("/api/inquiries", dependencies=[Depends(require_admin)])
@@ -2741,6 +2878,297 @@ def api_update_inquiry(inquiry_id: str, payload: InquiryUpdateRequest):
         raise
     except Exception as exc:
         _inquiry_read_unavailable("inquiries.update", exc, inquiry_id)
+
+
+@app.post("/api/inquiries/{inquiry_id}/replies", dependencies=[Depends(require_admin)])
+def api_create_inquiry_reply(inquiry_id: str, payload: InquiryReplyRequest):
+    if not INQUIRY_REPLY_WORKFLOW_ENABLED:
+        raise HTTPException(status_code=503, detail="INQUIRY_REPLY_WORKFLOW_DISABLED")
+    if not isinstance(LINE_ACCESS_TOKEN, str) or not LINE_ACCESS_TOKEN.strip():
+        raise HTTPException(status_code=503, detail="LINE_CONFIGURATION_UNAVAILABLE")
+
+    try:
+        inquiry_result = (
+            supabase.table("inquiries")
+            .select(INQUIRY_DETAIL_SELECT)
+            .eq("id", inquiry_id)
+            .eq("company_id", COMPANY_ID)
+            .limit(1)
+            .execute()
+        )
+    except Exception as exc:
+        _inquiry_reply_unavailable("inquiry_lookup", exc, inquiry_id)
+    if not inquiry_result.data:
+        raise HTTPException(status_code=404, detail="問い合わせが見つかりません")
+    inquiry = inquiry_result.data[0]
+
+    idempotency_key = str(payload.idempotency_key)
+
+    def find_existing_reply() -> dict | None:
+        result = (
+            supabase.table("inquiry_replies")
+            .select(INQUIRY_REPLY_ORCHESTRATION_SELECT)
+            .eq("company_id", COMPANY_ID)
+            .eq("inquiry_id", inquiry_id)
+            .eq("idempotency_key", idempotency_key)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+    try:
+        existing = find_existing_reply()
+    except Exception as exc:
+        _inquiry_reply_unavailable("idempotency_lookup", exc, inquiry_id)
+
+    idempotent_replay = existing is not None
+    existing_action = None
+    if existing is not None:
+        try:
+            existing_action = _existing_inquiry_reply_action(
+                existing,
+                payload,
+                datetime.now(timezone.utc),
+            )
+        except ValueError as exc:
+            _inquiry_reply_unavailable("stored_reply_state", exc, inquiry_id)
+        if existing_action == "sent":
+            return _sent_inquiry_reply_response(existing, idempotent_replay=True)
+
+    if inquiry.get("status") == InquiryStatus.COMPLETED.value:
+        raise HTTPException(
+            status_code=409,
+            detail=InquiryReasonCode.INQUIRY_REOPEN_REQUIRED.value,
+        )
+
+    if existing is None:
+        line_retry_key = uuid4()
+        insert_data = {
+            "company_id": COMPANY_ID,
+            "inquiry_id": inquiry_id,
+            "assignee_name": payload.assignee_name,
+            "message": payload.message,
+            "delivery_status": InquiryDeliveryStatus.PENDING.value,
+            "idempotency_key": idempotency_key,
+            "line_retry_key": str(line_retry_key),
+            "safe_error_code": None,
+            "actor_user_id": None,
+        }
+        try:
+            insert_result = (
+                supabase.table("inquiry_replies")
+                .insert(insert_data)
+                .execute()
+            )
+        except Exception as insert_exc:
+            try:
+                raced_reply = find_existing_reply()
+            except Exception as race_lookup_exc:
+                _inquiry_reply_unavailable(
+                    "idempotency_race_lookup",
+                    race_lookup_exc,
+                    inquiry_id,
+                )
+            if raced_reply is None:
+                _inquiry_reply_unavailable("intent_insert", insert_exc, inquiry_id)
+            try:
+                existing_action = _existing_inquiry_reply_action(
+                    raced_reply,
+                    payload,
+                    datetime.now(timezone.utc),
+                )
+            except ValueError as exc:
+                _inquiry_reply_unavailable("stored_reply_state", exc, inquiry_id)
+            if existing_action == "sent":
+                return _sent_inquiry_reply_response(
+                    raced_reply,
+                    idempotent_replay=True,
+                )
+            existing = raced_reply
+            idempotent_replay = True
+
+        if existing is None:
+            if not insert_result.data:
+                _inquiry_reply_unavailable(
+                    "intent_insert",
+                    RuntimeError("reply insert returned no row"),
+                    inquiry_id,
+                )
+            reply = insert_result.data[0]
+
+            try:
+                inquiry_update_result = (
+                    supabase.table("inquiries")
+                    .update(
+                        {
+                            "status": InquiryStatus.IN_PROGRESS.value,
+                            "assignee_name": payload.assignee_name,
+                        }
+                    )
+                    .eq("id", inquiry_id)
+                    .eq("company_id", COMPANY_ID)
+                    .eq("updated_at", payload.expected_updated_at.isoformat())
+                    .execute()
+                )
+            except Exception as exc:
+                _inquiry_reply_unavailable("inquiry_transition", exc, inquiry_id)
+            if not inquiry_update_result.data:
+                try:
+                    _update_inquiry_reply(
+                        inquiry_id=inquiry_id,
+                        reply_id=str(reply["id"]),
+                        current_status=InquiryDeliveryStatus.PENDING.value,
+                        delivery_status=InquiryDeliveryStatus.FAILED,
+                        safe_error_code=InquiryReasonCode.INQUIRY_CONFLICT.value,
+                    )
+                except Exception as exc:
+                    _inquiry_reply_unavailable("conflict_record", exc, inquiry_id)
+                raise HTTPException(
+                    status_code=409,
+                    detail=InquiryReasonCode.INQUIRY_CONFLICT.value,
+                )
+            current_reply_status = InquiryDeliveryStatus.PENDING.value
+            expected_reply_updated_at = None
+
+    if existing is not None:
+        reply = existing
+        try:
+            line_retry_key = UUID(str(reply.get("line_retry_key")))
+        except (TypeError, ValueError, AttributeError) as exc:
+            _inquiry_reply_unavailable("retry_key_load", exc, inquiry_id)
+        if existing_action == "retry_sending":
+            current_reply_status = InquiryDeliveryStatus.SENDING.value
+            expected_reply_updated_at = str(reply.get("updated_at"))
+        else:
+            current_reply_status = InquiryDeliveryStatus.DELIVERY_UNKNOWN.value
+            expected_reply_updated_at = None
+
+    reply_id = str(reply["id"])
+    if existing is None:
+        line_retry_key = UUID(str(reply.get("line_retry_key")))
+    try:
+        sending_result = _update_inquiry_reply(
+            inquiry_id=inquiry_id,
+            reply_id=reply_id,
+            current_status=current_reply_status,
+            delivery_status=InquiryDeliveryStatus.SENDING,
+            safe_error_code=None,
+            expected_updated_at=expected_reply_updated_at,
+        )
+    except Exception as exc:
+        _inquiry_reply_unavailable("sending_record", exc, inquiry_id)
+    if not sending_result.data:
+        raise HTTPException(
+            status_code=409,
+            detail=InquiryReasonCode.REPLY_IN_PROGRESS.value,
+        )
+
+    try:
+        push_result = _push_inquiry_reply(
+            str(inquiry.get("line_user_id") or ""),
+            payload.message,
+            line_retry_key,
+        )
+    except Exception as exc:
+        try:
+            _update_inquiry_reply(
+                inquiry_id=inquiry_id,
+                reply_id=reply_id,
+                current_status=InquiryDeliveryStatus.SENDING.value,
+                delivery_status=InquiryDeliveryStatus.DELIVERY_UNKNOWN,
+                safe_error_code=InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+            )
+        except Exception:
+            pass
+        _log_event(
+            "inquiry.reply.orchestrate",
+            InquiryDeliveryStatus.DELIVERY_UNKNOWN.value,
+            subject_id=inquiry_id,
+            stage="line_push",
+            reason_code=InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+            error=exc,
+        )
+        return _unknown_inquiry_reply_response(reply_id)
+
+    if push_result.disposition in {
+        LinePushDisposition.ACCEPTED,
+        LinePushDisposition.ALREADY_ACCEPTED,
+    }:
+        try:
+            finalized_result = supabase.rpc(
+                "finalize_inquiry_reply",
+                {
+                    "p_company_id": COMPANY_ID,
+                    "p_inquiry_id": inquiry_id,
+                    "p_reply_id": reply_id,
+                },
+            ).execute()
+            finalized = finalized_result.data
+            if isinstance(finalized, list):
+                finalized = finalized[0] if finalized else None
+            if not isinstance(finalized, dict):
+                raise RuntimeError("finalizer returned no result")
+            return _sent_inquiry_reply_response(
+                finalized,
+                idempotent_replay=idempotent_replay,
+            )
+        except Exception as exc:
+            try:
+                _update_inquiry_reply(
+                    inquiry_id=inquiry_id,
+                    reply_id=reply_id,
+                    current_status=InquiryDeliveryStatus.SENDING.value,
+                    delivery_status=InquiryDeliveryStatus.DELIVERY_UNKNOWN,
+                    safe_error_code=InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+                )
+            except Exception:
+                pass
+            _log_event(
+                "inquiry.reply.orchestrate",
+                InquiryDeliveryStatus.DELIVERY_UNKNOWN.value,
+                subject_id=inquiry_id,
+                stage="finalize",
+                reason_code=InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+                error=exc,
+            )
+            return _unknown_inquiry_reply_response(reply_id)
+
+    if push_result.disposition == LinePushDisposition.REJECTED:
+        try:
+            _update_inquiry_reply(
+                inquiry_id=inquiry_id,
+                reply_id=reply_id,
+                current_status=InquiryDeliveryStatus.SENDING.value,
+                delivery_status=InquiryDeliveryStatus.FAILED,
+                safe_error_code=InquiryReasonCode.LINE_REJECTED.value,
+            )
+        except Exception as exc:
+            _log_event(
+                "inquiry.reply.orchestrate",
+                InquiryDeliveryStatus.DELIVERY_UNKNOWN.value,
+                subject_id=inquiry_id,
+                stage="rejection_record",
+                reason_code=InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+                http_status=push_result.http_status,
+                error=exc,
+            )
+            return _unknown_inquiry_reply_response(reply_id)
+        raise HTTPException(
+            status_code=502,
+            detail=InquiryReasonCode.LINE_REJECTED.value,
+        )
+
+    try:
+        _update_inquiry_reply(
+            inquiry_id=inquiry_id,
+            reply_id=reply_id,
+            current_status=InquiryDeliveryStatus.SENDING.value,
+            delivery_status=InquiryDeliveryStatus.DELIVERY_UNKNOWN,
+            safe_error_code=InquiryReasonCode.DELIVERY_RESULT_UNKNOWN.value,
+        )
+    except Exception:
+        pass
+    return _unknown_inquiry_reply_response(reply_id)
 
 
 @app.post("/api/line/send", dependencies=[Depends(require_admin)])

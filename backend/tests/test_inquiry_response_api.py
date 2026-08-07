@@ -1,6 +1,6 @@
 import base64
 import copy
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import json
 import re
 import unittest
@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from inquiry_response import LinePushDisposition, LinePushResult
 from tests.support import load_backend_main
 
 
@@ -21,6 +22,9 @@ INQUIRY_1 = "00000000-0000-0000-0000-000000000001"
 INQUIRY_2 = "00000000-0000-0000-0000-000000000002"
 INQUIRY_3 = "00000000-0000-0000-0000-000000000003"
 OTHER_INQUIRY = "00000000-0000-0000-0000-000000000099"
+REPLY_KEY_1 = "20000000-0000-0000-0000-000000000001"
+REPLY_KEY_2 = "20000000-0000-0000-0000-000000000002"
+REPLY_KEY_3 = "20000000-0000-0000-0000-000000000003"
 
 
 def encode_test_cursor(payload: dict) -> str:
@@ -45,6 +49,7 @@ class InquiryQuery:
         self.orders: list[tuple[str, bool]] = []
         self.row_limit: int | None = None
         self.update_data: dict | None = None
+        self.insert_data: dict | None = None
 
     def select(self, columns: str):
         self.selected_columns = columns
@@ -72,6 +77,10 @@ class InquiryQuery:
 
     def update(self, data: dict):
         self.update_data = copy.deepcopy(data)
+        return self
+
+    def insert(self, data: dict):
+        self.insert_data = copy.deepcopy(data)
         return self
 
     @staticmethod
@@ -106,6 +115,43 @@ class InquiryQuery:
     def execute(self):
         if self.table_name in self.database.fail_tables:
             raise RuntimeError(f"forced {self.table_name} failure")
+        if self.insert_data is not None:
+            if self.database.fail_next_reply_insert and self.table_name == "inquiry_replies":
+                self.database.fail_next_reply_insert = False
+                if self.database.reply_insert_race_row is not None:
+                    self.database.rows["inquiry_replies"].append(
+                        copy.deepcopy(self.database.reply_insert_race_row)
+                    )
+                raise RuntimeError("forced inquiry reply insert failure")
+            row = copy.deepcopy(self.insert_data)
+            if self.table_name == "inquiry_replies":
+                if not any(
+                    inquiry["company_id"] == row.get("company_id")
+                    and inquiry["id"] == row.get("inquiry_id")
+                    for inquiry in self.database.rows["inquiries"]
+                ):
+                    raise RuntimeError("inquiry reply composite FK violation")
+                if any(
+                    existing.get("company_id") == row.get("company_id")
+                    and existing.get("inquiry_id") == row.get("inquiry_id")
+                    and existing.get("idempotency_key") == row.get("idempotency_key")
+                    for existing in self.database.rows["inquiry_replies"]
+                ):
+                    raise RuntimeError("inquiry reply idempotency uniqueness violation")
+                if any(
+                    existing.get("line_retry_key") == row.get("line_retry_key")
+                    for existing in self.database.rows["inquiry_replies"]
+                ):
+                    raise RuntimeError("inquiry reply LINE retry key uniqueness violation")
+                sequence = self.database.next_reply_sequence
+                self.database.next_reply_sequence += 1
+                row.setdefault("id", f"30000000-0000-0000-0000-{sequence:012d}")
+                row.setdefault("created_at", self.database.reply_created_at)
+                row.setdefault("updated_at", self.database.reply_created_at)
+                row.setdefault("sent_at", None)
+                row.setdefault("safe_error_code", None)
+            self.database.rows[self.table_name].append(row)
+            return SimpleNamespace(data=[copy.deepcopy(row)])
         rows = [
             row
             for row in self.database.rows[self.table_name]
@@ -124,15 +170,111 @@ class InquiryQuery:
             if self.database.zero_next_inquiry_update:
                 self.database.zero_next_inquiry_update = False
                 return SimpleNamespace(data=[])
+            if (
+                self.table_name == "inquiry_replies"
+                and self.update_data.get("delivery_status")
+                in self.database.fail_reply_update_statuses
+            ):
+                raise RuntimeError("forced inquiry reply status failure")
+            if self.table_name == "inquiry_replies" and self.database.zero_next_reply_update:
+                self.database.zero_next_reply_update = False
+                return SimpleNamespace(data=[])
             for row in rows:
                 row.update(copy.deepcopy(self.update_data))
                 if self.table_name == "inquiries":
                     row["updated_at"] = self.database.trigger_updated_at
+                elif self.table_name == "inquiry_replies":
+                    row["updated_at"] = self.database.reply_trigger_updated_at
         if self.selected_columns:
             selected = [column.strip() for column in self.selected_columns.split(",")]
             if selected != ["*"]:
                 rows = [{key: row.get(key) for key in selected} for row in rows]
         return SimpleNamespace(data=copy.deepcopy(rows))
+
+
+class InquiryRpc:
+    def __init__(self, database, function_name: str, parameters: dict):
+        self.database = database
+        self.function_name = function_name
+        self.parameters = copy.deepcopy(parameters)
+        self.database.rpc_calls.append(self)
+
+    def execute(self):
+        if self.database.fail_finalize:
+            raise RuntimeError("forced finalizer failure containing private provider details")
+        if self.function_name != "finalize_inquiry_reply":
+            raise AssertionError(f"Unexpected RPC: {self.function_name}")
+        company_id = self.parameters["p_company_id"]
+        inquiry_id = self.parameters["p_inquiry_id"]
+        reply_id = self.parameters["p_reply_id"]
+        reply = next(
+            row
+            for row in self.database.rows["inquiry_replies"]
+            if row["company_id"] == company_id
+            and row["inquiry_id"] == inquiry_id
+            and row["id"] == reply_id
+        )
+        inquiry = next(
+            row
+            for row in self.database.rows["inquiries"]
+            if row["company_id"] == company_id and row["id"] == inquiry_id
+        )
+        reply.update(
+            {
+                "delivery_status": "sent",
+                "safe_error_code": None,
+                "sent_at": self.database.finalized_at,
+                "updated_at": self.database.finalized_at,
+            }
+        )
+        inquiry.update(
+            {
+                "status": "対応済み",
+                "assignee_name": reply["assignee_name"],
+                "last_replied_at": self.database.finalized_at,
+                "updated_at": self.database.finalized_at,
+            }
+        )
+        return SimpleNamespace(
+            data={
+                "reply_id": reply_id,
+                "delivery_status": "sent",
+                "inquiry_status": "対応済み",
+                "sent_at": self.database.finalized_at,
+                "inquiry_updated_at": self.database.finalized_at,
+            }
+        )
+
+
+class FakeLineTransport:
+    def __init__(self, database):
+        self.database = database
+        self.results = [LinePushResult(LinePushDisposition.ACCEPTED, 202)]
+        self.calls: list[tuple[str, str, object]] = []
+        self.durable_snapshots: list[tuple[str, str]] = []
+
+    def __call__(self, line_user_id: str, message: str, line_retry_key: object):
+        reply = next(
+            (
+                row
+                for row in self.database.rows["inquiry_replies"]
+                if str(row.get("line_retry_key")) == str(line_retry_key)
+            ),
+            None,
+        )
+        if reply is None:
+            raise AssertionError("LINE called before durable reply insert")
+        inquiry = next(
+            row
+            for row in self.database.rows["inquiries"]
+            if row["company_id"] == reply["company_id"]
+            and row["id"] == reply["inquiry_id"]
+        )
+        self.durable_snapshots.append((reply["delivery_status"], inquiry["status"]))
+        self.calls.append((line_user_id, message, line_retry_key))
+        if not self.results:
+            raise AssertionError("Unexpected LINE call")
+        return self.results.pop(0)
 
 
 class InquirySupabase:
@@ -244,7 +386,7 @@ class InquirySupabase:
                 {
                     "id": "10000000-0000-0000-0000-000000000099",
                     "company_id": TENANT_B,
-                    "inquiry_id": INQUIRY_1,
+                    "inquiry_id": OTHER_INQUIRY,
                     "assignee_name": "他社担当",
                     "message": "他社返信",
                     "delivery_status": "sent",
@@ -260,14 +402,27 @@ class InquirySupabase:
             ],
         }
         self.queries: list[InquiryQuery] = []
+        self.rpc_calls: list[InquiryRpc] = []
         self.fail_tables: set[str] = set()
         self.zero_next_inquiry_update = False
+        self.fail_next_reply_insert = False
+        self.reply_insert_race_row: dict | None = None
+        self.fail_reply_update_statuses: set[str] = set()
+        self.zero_next_reply_update = False
+        self.fail_finalize = False
+        self.next_reply_sequence = 1
+        self.reply_created_at = "2026-08-07T01:00:00+00:00"
+        self.reply_trigger_updated_at = datetime.now(timezone.utc).isoformat()
         self.trigger_updated_at = "2026-08-07T00:00:00+00:00"
+        self.finalized_at = "2026-08-07T02:00:00+00:00"
 
     def table(self, name: str):
         if name not in self.rows:
             raise AssertionError(f"Unexpected table access: {name}")
         return InquiryQuery(self, name)
+
+    def rpc(self, function_name: str, parameters: dict):
+        return InquiryRpc(self, function_name, parameters)
 
     def queries_for(self, table_name: str) -> list[InquiryQuery]:
         return [query for query in self.queries if query.table_name == table_name]
@@ -848,6 +1003,632 @@ class InquiryUpdateApiTests(InquiryApiTestCase):
         self.assertEqual(503, response.status_code)
         self.assertNotIn(response.status_code, {404, 409})
         self.assertEqual(before, self.database.rows["inquiries"])
+
+
+class InquiryReplyApiTests(InquiryApiTestCase):
+    def setUp(self):
+        super().setUp()
+        self.line_transport = FakeLineTransport(self.database)
+        self.reply_patches = [
+            patch.object(main, "INQUIRY_REPLY_WORKFLOW_ENABLED", True),
+            patch.object(main, "LINE_ACCESS_TOKEN", "test-line-access-token"),
+            patch.object(main, "_push_inquiry_reply", self.line_transport),
+        ]
+        for active_patch in self.reply_patches:
+            active_patch.start()
+
+    def tearDown(self):
+        for active_patch in reversed(self.reply_patches):
+            active_patch.stop()
+        super().tearDown()
+
+    def inquiry_row(self, inquiry_id: str = INQUIRY_1, company_id: str = TENANT_A) -> dict:
+        return next(
+            row
+            for row in self.database.rows["inquiries"]
+            if row["id"] == inquiry_id and row["company_id"] == company_id
+        )
+
+    def post_reply(
+        self,
+        inquiry_id: str = INQUIRY_1,
+        *,
+        assignee_name: str = "佐藤",
+        message: str = "お問い合わせありがとうございます。",
+        idempotency_key: str = REPLY_KEY_1,
+        expected_updated_at: str | None = None,
+        extra: dict | None = None,
+    ):
+        if expected_updated_at is None:
+            expected_updated_at = self.inquiry_row(inquiry_id)["updated_at"]
+        payload = {
+            "assignee_name": assignee_name,
+            "message": message,
+            "idempotency_key": idempotency_key,
+            "expected_updated_at": expected_updated_at,
+        }
+        payload.update(extra or {})
+        return self.client.post(
+            f"/api/inquiries/{inquiry_id}/replies",
+            json=payload,
+            headers=self.headers,
+        )
+
+    def add_reply(
+        self,
+        *,
+        company_id: str = TENANT_A,
+        inquiry_id: str = INQUIRY_1,
+        idempotency_key: str = REPLY_KEY_1,
+        assignee_name: str = "佐藤",
+        message: str = "お問い合わせありがとうございます。",
+        delivery_status: str,
+        line_retry_key: str = "40000000-0000-0000-0000-000000000001",
+        safe_error_code: str | None = None,
+        created_at: str | None = None,
+        sent_at: str | None = None,
+    ) -> dict:
+        row = {
+            "id": f"50000000-0000-0000-0000-{len(self.database.rows['inquiry_replies']) + 1:012d}",
+            "company_id": company_id,
+            "inquiry_id": inquiry_id,
+            "assignee_name": assignee_name,
+            "message": message,
+            "delivery_status": delivery_status,
+            "idempotency_key": idempotency_key,
+            "line_retry_key": line_retry_key,
+            "safe_error_code": safe_error_code,
+            "actor_user_id": None,
+            "created_at": created_at or datetime.now(timezone.utc).isoformat(),
+            "updated_at": created_at or datetime.now(timezone.utc).isoformat(),
+            "sent_at": sent_at,
+        }
+        self.database.rows["inquiry_replies"].append(row)
+        return row
+
+    def prepare_insert_race(self, *, delivery_status: str, safe_error_code: str | None = None) -> dict:
+        row = self.add_reply(
+            delivery_status=delivery_status,
+            safe_error_code=safe_error_code,
+            line_retry_key="40000000-0000-0000-0000-000000000777",
+            sent_at="2026-08-07T03:00:00+00:00" if delivery_status == "sent" else None,
+        )
+        self.database.rows["inquiry_replies"].remove(row)
+        self.database.fail_next_reply_insert = True
+        self.database.reply_insert_race_row = row
+        return row
+
+    def replies_for(self, company_id: str, inquiry_id: str = INQUIRY_1) -> list[dict]:
+        return [
+            row
+            for row in self.database.rows["inquiry_replies"]
+            if row["company_id"] == company_id and row["inquiry_id"] == inquiry_id
+        ]
+
+    def test_browser_destination_and_company_fields_are_rejected_before_side_effects(self):
+        for extra in ({"company_id": TENANT_B}, {"line_user_id": RAW_LINE_ID}):
+            with self.subTest(field=next(iter(extra))):
+                self.database.queries.clear()
+                self.line_transport.calls.clear()
+
+                response = self.post_reply(extra=extra)
+
+                self.assertEqual(422, response.status_code)
+                self.assertEqual([], self.database.queries)
+                self.assertEqual([], self.database.rpc_calls)
+                self.assertEqual([], self.line_transport.calls)
+
+    def test_feature_gate_off_returns_service_unavailable_without_side_effects(self):
+        with patch.object(main, "INQUIRY_REPLY_WORKFLOW_ENABLED", False):
+            response = self.post_reply()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual([], self.database.queries)
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_missing_line_configuration_is_known_unavailable_before_persistence(self):
+        with patch.object(main, "LINE_ACCESS_TOKEN", None):
+            response = self.post_reply()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual([], self.database.queries)
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_blank_line_configuration_is_known_unavailable_before_persistence(self):
+        with patch.object(main, "LINE_ACCESS_TOKEN", "   "):
+            response = self.post_reply()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual([], self.database.queries)
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_reply_resolves_destination_from_scoped_inquiry_without_applicant_read(self):
+        response = self.post_reply(message="サーバー側で宛先を解決します。")
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            [(RAW_LINE_ID, "サーバー側で宛先を解決します。")],
+            [(line_id, message) for line_id, message, _key in self.line_transport.calls],
+        )
+        self.assertEqual([], self.database.queries_for("applicants"))
+
+    def test_other_tenant_inquiry_is_not_found_before_insert_or_send(self):
+        response = self.client.post(
+            f"/api/inquiries/{OTHER_INQUIRY}/replies",
+            json={
+                "assignee_name": "佐藤",
+                "message": "他社へ送ってはいけません。",
+                "idempotency_key": REPLY_KEY_1,
+                "expected_updated_at": "2026-08-03T00:00:00+00:00",
+            },
+            headers=self.headers,
+        )
+
+        self.assertEqual(404, response.status_code)
+        self.assertEqual([], self.database.queries_for("inquiry_replies"))
+        self.assertEqual([], self.line_transport.calls)
+        self.assert_company_scoped("inquiries")
+
+    def test_new_reply_is_durable_and_in_progress_before_line(self):
+        expected_updated_at = self.inquiry_row()["updated_at"]
+
+        response = self.post_reply(expected_updated_at=expected_updated_at)
+
+        self.assertEqual(200, response.status_code)
+        insert_query = next(
+            query
+            for query in self.database.queries_for("inquiry_replies")
+            if query.insert_data is not None
+        )
+        inserted = insert_query.insert_data
+        self.assertEqual(TENANT_A, inserted["company_id"])
+        self.assertEqual(INQUIRY_1, inserted["inquiry_id"])
+        self.assertEqual(REPLY_KEY_1, inserted["idempotency_key"])
+        self.assertEqual("pending", inserted["delivery_status"])
+        self.assertIsNone(inserted["actor_user_id"])
+        self.assertRegex(
+            str(inserted["line_retry_key"]),
+            r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+        )
+        self.assertNotEqual(REPLY_KEY_1, str(inserted["line_retry_key"]))
+        self.assertEqual([("sending", "対応中")], self.line_transport.durable_snapshots)
+        inquiry_update = next(
+            query
+            for query in self.database.queries_for("inquiries")
+            if query.update_data is not None
+        )
+        self.assertEqual(
+            {"status": "対応中", "assignee_name": "佐藤"},
+            inquiry_update.update_data,
+        )
+        self.assertIn(("id", INQUIRY_1), inquiry_update.equal_filters)
+        self.assertIn(("company_id", TENANT_A), inquiry_update.equal_filters)
+        self.assertIn(("updated_at", expected_updated_at), inquiry_update.equal_filters)
+
+    def test_sent_same_key_and_payload_replays_stored_result_without_line(self):
+        sent_at = "2026-08-07T03:00:00+00:00"
+        stored = self.add_reply(delivery_status="sent", sent_at=sent_at)
+        self.inquiry_row()["status"] = "対応済み"
+
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(
+            {
+                "outcome": "sent",
+                "reply_id": stored["id"],
+                "delivery_status": "sent",
+                "inquiry_status": "対応済み",
+                "sent_at": sent_at,
+                "idempotent_replay": True,
+            },
+            response.json(),
+        )
+        self.assertEqual([], self.line_transport.calls)
+        self.assertEqual([], self.database.rpc_calls)
+
+    def test_unique_insert_race_replays_the_winning_sent_result(self):
+        sent_at = "2026-08-07T03:00:00+00:00"
+        winning = self.prepare_insert_race(delivery_status="sent")
+        winning["id"] = "50000000-0000-0000-0000-000000000777"
+        winning["created_at"] = "2026-08-07T02:59:00+00:00"
+        winning["updated_at"] = sent_at
+        winning["sent_at"] = sent_at
+        self.database.reply_insert_race_row = winning
+
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("50000000-0000-0000-0000-000000000777", response.json()["reply_id"])
+        self.assertTrue(response.json()["idempotent_replay"])
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_unique_insert_race_returns_active_pending_or_sending_state(self):
+        for status in ("pending", "sending"):
+            with self.subTest(status=status):
+                self.prepare_insert_race(delivery_status=status)
+
+                response = self.post_reply()
+
+                self.assertEqual(409, response.status_code)
+                self.assertEqual({"detail": "REPLY_IN_PROGRESS"}, response.json())
+                self.assertEqual([], self.line_transport.calls)
+                self.database.rows["inquiry_replies"] = [
+                    row
+                    for row in self.database.rows["inquiry_replies"]
+                    if row.get("idempotency_key") != REPLY_KEY_1
+                ]
+                self.database.queries.clear()
+
+    def test_unique_insert_race_replays_failed_line_or_conflict_outcome(self):
+        cases = [
+            ("LINE_REJECTED", 502),
+            ("INQUIRY_CONFLICT", 409),
+        ]
+        for safe_error_code, status_code in cases:
+            with self.subTest(safe_error_code=safe_error_code):
+                self.prepare_insert_race(
+                    delivery_status="failed",
+                    safe_error_code=safe_error_code,
+                )
+
+                response = self.post_reply()
+
+                self.assertEqual(status_code, response.status_code)
+                self.assertEqual({"detail": safe_error_code}, response.json())
+                self.assertEqual([], self.line_transport.calls)
+                self.database.rows["inquiry_replies"] = [
+                    row
+                    for row in self.database.rows["inquiry_replies"]
+                    if row.get("idempotency_key") != REPLY_KEY_1
+                ]
+                self.database.queries.clear()
+
+    def test_unique_insert_race_recovers_winning_unknown_with_stored_retry_key(self):
+        winning = self.prepare_insert_race(delivery_status="delivery_unknown")
+        self.inquiry_row()["status"] = "対応中"
+
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()["idempotent_replay"])
+        self.assertEqual(winning["line_retry_key"], str(self.line_transport.calls[0][2]))
+
+    def test_same_key_with_changed_message_or_assignee_is_an_idempotency_conflict(self):
+        self.add_reply(delivery_status="failed", safe_error_code="LINE_REJECTED")
+        for changes in (
+            {"message": "変更された返信"},
+            {"assignee_name": "鈴木"},
+        ):
+            with self.subTest(changes=changes):
+                response = self.post_reply(**changes)
+
+                self.assertEqual(409, response.status_code)
+                self.assertEqual({"detail": "IDEMPOTENCY_CONFLICT"}, response.json())
+                self.assertEqual([], self.line_transport.calls)
+
+    def test_pending_or_sending_duplicate_is_in_progress_without_second_line_call(self):
+        for status in ("pending", "sending"):
+            with self.subTest(status=status):
+                stored = self.add_reply(
+                    idempotency_key=REPLY_KEY_2 if status == "sending" else REPLY_KEY_1,
+                    delivery_status=status,
+                )
+                response = self.post_reply(idempotency_key=stored["idempotency_key"])
+
+                self.assertEqual(409, response.status_code)
+                self.assertEqual({"detail": "REPLY_IN_PROGRESS"}, response.json())
+                self.assertEqual([], self.line_transport.calls)
+
+    def test_failed_same_key_returns_stored_rejection_and_new_action_can_send(self):
+        self.add_reply(delivery_status="failed", safe_error_code="LINE_REJECTED")
+
+        replay = self.post_reply()
+        new_action = self.post_reply(
+            message="内容を修正して再確認しました。",
+            idempotency_key=REPLY_KEY_2,
+        )
+
+        self.assertEqual(502, replay.status_code)
+        self.assertEqual({"detail": "LINE_REJECTED"}, replay.json())
+        self.assertEqual(200, new_action.status_code)
+        self.assertEqual(1, len(self.line_transport.calls))
+        self.assertEqual("内容を修正して再確認しました。", self.line_transport.calls[0][1])
+
+    def test_failed_conditional_inquiry_update_marks_unsent_intent_as_conflict(self):
+        self.database.zero_next_inquiry_update = True
+
+        response = self.post_reply()
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "INQUIRY_CONFLICT"}, response.json())
+        self.assertEqual([], self.line_transport.calls)
+        reply = self.replies_for(TENANT_A)[-1]
+        self.assertEqual("failed", reply["delivery_status"])
+        self.assertEqual("INQUIRY_CONFLICT", reply["safe_error_code"])
+
+    def test_same_key_replays_the_stored_pre_send_conflict(self):
+        self.database.zero_next_inquiry_update = True
+
+        first = self.post_reply()
+        replay = self.post_reply()
+
+        self.assertEqual(409, first.status_code)
+        self.assertEqual(409, replay.status_code)
+        self.assertEqual({"detail": "INQUIRY_CONFLICT"}, replay.json())
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_completed_inquiry_requires_explicit_reopen_before_new_reply(self):
+        completed = self.inquiry_row(INQUIRY_2)
+
+        blocked = self.post_reply(INQUIRY_2)
+        reopened = self.client.patch(
+            f"/api/inquiries/{INQUIRY_2}",
+            json={
+                "status": "対応中",
+                "expected_updated_at": completed["updated_at"],
+            },
+            headers=self.headers,
+        )
+        sent = self.post_reply(
+            INQUIRY_2,
+            idempotency_key=REPLY_KEY_2,
+            expected_updated_at=reopened.json()["updated_at"],
+        )
+
+        self.assertEqual(409, blocked.status_code)
+        self.assertEqual({"detail": "INQUIRY_REOPEN_REQUIRED"}, blocked.json())
+        self.assertEqual(200, reopened.status_code)
+        self.assertEqual(200, sent.status_code)
+        self.assertEqual(1, len(self.line_transport.calls))
+
+    def test_line_acceptance_finalizes_once_with_scoped_ids_and_safe_response(self):
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        reply = self.replies_for(TENANT_A)[-1]
+        self.assertEqual(
+            {
+                "outcome": "sent",
+                "reply_id": reply["id"],
+                "delivery_status": "sent",
+                "inquiry_status": "対応済み",
+                "sent_at": self.database.finalized_at,
+                "idempotent_replay": False,
+            },
+            response.json(),
+        )
+        self.assertEqual(1, len(self.database.rpc_calls))
+        rpc = self.database.rpc_calls[0]
+        self.assertEqual("finalize_inquiry_reply", rpc.function_name)
+        self.assertEqual(
+            {
+                "p_company_id": TENANT_A,
+                "p_inquiry_id": INQUIRY_1,
+                "p_reply_id": reply["id"],
+            },
+            rpc.parameters,
+        )
+
+    def test_accepted_retry_key_conflict_also_finalizes(self):
+        self.line_transport.results = [
+            LinePushResult(LinePushDisposition.ALREADY_ACCEPTED, 409)
+        ]
+
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual("sent", response.json()["delivery_status"])
+        self.assertEqual(1, len(self.database.rpc_calls))
+
+    def test_finalizer_failure_returns_unknown_even_if_followup_write_fails(self):
+        self.database.fail_finalize = True
+        self.database.fail_reply_update_statuses.add("delivery_unknown")
+
+        response = self.post_reply()
+
+        self.assertEqual(202, response.status_code)
+        self.assertEqual("delivery_unknown", response.json()["outcome"])
+        self.assertEqual("DELIVERY_RESULT_UNKNOWN", response.json()["reason_code"])
+        reply = self.replies_for(TENANT_A)[-1]
+        self.assertEqual("sending", reply["delivery_status"])
+        self.assertEqual("対応中", self.inquiry_row()["status"])
+        self.assertEqual(1, len(self.line_transport.calls))
+        self.assertEqual(1, len(self.database.rpc_calls))
+
+    def test_stranded_sending_reply_recovers_after_the_active_attempt_lease(self):
+        self.database.fail_finalize = True
+        self.database.fail_reply_update_statuses.add("delivery_unknown")
+
+        first = self.post_reply()
+        reply = self.replies_for(TENANT_A)[-1]
+        immediate = self.post_reply()
+        reply["updated_at"] = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        stale_updated_at = reply["updated_at"]
+        self.database.fail_finalize = False
+        self.database.fail_reply_update_statuses.clear()
+        self.line_transport.results = [
+            LinePushResult(LinePushDisposition.ALREADY_ACCEPTED, 409)
+        ]
+
+        recovered = self.post_reply()
+
+        self.assertEqual(202, first.status_code)
+        self.assertEqual(409, immediate.status_code)
+        self.assertEqual({"detail": "REPLY_IN_PROGRESS"}, immediate.json())
+        self.assertEqual(200, recovered.status_code)
+        self.assertTrue(recovered.json()["idempotent_replay"])
+        self.assertEqual(2, len(self.line_transport.calls))
+        self.assertEqual(
+            str(self.line_transport.calls[0][2]),
+            str(self.line_transport.calls[1][2]),
+        )
+        self.assertEqual(2, len(self.database.rpc_calls))
+        stale_claim = next(
+            query
+            for query in self.database.queries_for("inquiry_replies")
+            if query.update_data == {
+                "delivery_status": "sending",
+                "safe_error_code": None,
+            }
+            and ("updated_at", stale_updated_at) in query.equal_filters
+        )
+        self.assertIn(("company_id", TENANT_A), stale_claim.equal_filters)
+        self.assertIn(("id", reply["id"]), stale_claim.equal_filters)
+
+    def test_only_one_stale_sending_claimant_can_reach_line(self):
+        reply = self.add_reply(delivery_status="sending")
+        reply["updated_at"] = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        self.inquiry_row()["status"] = "対応中"
+        self.database.zero_next_reply_update = True
+
+        response = self.post_reply()
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "REPLY_IN_PROGRESS"}, response.json())
+        claims = [
+            query
+            for query in self.database.queries_for("inquiry_replies")
+            if query.update_data is not None
+        ]
+        self.assertTrue(claims, "stale sending retry did not attempt a CAS claim")
+        claim = claims[0]
+        self.assertIn(("updated_at", reply["updated_at"]), claim.equal_filters)
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_timeout_and_five_xx_are_unknown_without_automatic_retry(self):
+        self.line_transport.results = [
+            LinePushResult(LinePushDisposition.UNKNOWN, None),
+            LinePushResult(LinePushDisposition.UNKNOWN, 503),
+        ]
+
+        timeout = self.post_reply(INQUIRY_1, idempotency_key=REPLY_KEY_1)
+        server_error = self.post_reply(INQUIRY_3, idempotency_key=REPLY_KEY_2)
+
+        self.assertEqual([202, 202], [timeout.status_code, server_error.status_code])
+        self.assertEqual(2, len(self.line_transport.calls))
+        self.assertEqual([], self.database.rpc_calls)
+        self.assertEqual("delivery_unknown", self.replies_for(TENANT_A, INQUIRY_1)[-1]["delivery_status"])
+        self.assertEqual("delivery_unknown", self.replies_for(TENANT_A, INQUIRY_3)[-1]["delivery_status"])
+
+    def test_explicit_line_rejection_is_persisted_and_never_finalized(self):
+        self.line_transport.results = [LinePushResult(LinePushDisposition.REJECTED, 400)]
+
+        response = self.post_reply()
+
+        self.assertEqual(502, response.status_code)
+        self.assertEqual({"detail": "LINE_REJECTED"}, response.json())
+        reply = self.replies_for(TENANT_A)[-1]
+        self.assertEqual("failed", reply["delivery_status"])
+        self.assertEqual("LINE_REJECTED", reply["safe_error_code"])
+        self.assertEqual([], self.database.rpc_calls)
+
+    def test_unknown_retry_within_twenty_four_hours_reuses_stored_line_key(self):
+        line_retry_key = "40000000-0000-0000-0000-000000000024"
+        stored = self.add_reply(
+            delivery_status="delivery_unknown",
+            line_retry_key=line_retry_key,
+            created_at=(datetime.now(timezone.utc) - timedelta(hours=23)).isoformat(),
+        )
+        self.inquiry_row()["status"] = "対応中"
+        self.line_transport.results = [
+            LinePushResult(LinePushDisposition.ALREADY_ACCEPTED, 409)
+        ]
+
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()["idempotent_replay"])
+        self.assertEqual(line_retry_key, str(self.line_transport.calls[0][2]))
+        self.assertEqual(stored["id"], response.json()["reply_id"])
+        self.assertEqual(1, len(self.database.rpc_calls))
+
+    def test_unknown_retry_after_twenty_four_hours_expires_without_line(self):
+        self.add_reply(
+            delivery_status="delivery_unknown",
+            created_at=(datetime.now(timezone.utc) - timedelta(hours=25)).isoformat(),
+        )
+        self.inquiry_row()["status"] = "対応中"
+
+        response = self.post_reply()
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "RETRY_WINDOW_EXPIRED"}, response.json())
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_other_company_reply_key_is_not_reused_and_all_reply_operations_are_scoped(self):
+        other = self.add_reply(
+            company_id=TENANT_B,
+            inquiry_id=OTHER_INQUIRY,
+            delivery_status="sent",
+            line_retry_key="40000000-0000-0000-0000-000000000099",
+            sent_at="2026-08-07T01:00:00+00:00",
+        )
+
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        own = [row for row in self.replies_for(TENANT_A) if row.get("idempotency_key") == REPLY_KEY_1]
+        self.assertEqual(1, len(own))
+        self.assertNotEqual(other["line_retry_key"], str(self.line_transport.calls[0][2]))
+        for query in self.database.queries_for("inquiry_replies"):
+            if query.insert_data is not None:
+                self.assertEqual(TENANT_A, query.insert_data["company_id"])
+            else:
+                self.assertIn(("company_id", TENANT_A), query.equal_filters)
+        for rpc in self.database.rpc_calls:
+            self.assertEqual(TENANT_A, rpc.parameters["p_company_id"])
+            self.assertIn("p_inquiry_id", rpc.parameters)
+            self.assertIn("p_reply_id", rpc.parameters)
+
+    def test_database_failure_before_external_send_returns_service_unavailable(self):
+        self.database.fail_next_reply_insert = True
+
+        response = self.post_reply()
+
+        self.assertEqual(503, response.status_code)
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_orchestration_failure_log_contains_only_allowlisted_safe_fields(self):
+        self.database.fail_finalize = True
+        reply_text = "ログへ出してはいけない返信本文"
+        assignee = "秘密 担当者"
+        source_message = self.inquiry_row()["message"]
+        with (
+            patch.object(main, "LINE_ACCESS_TOKEN", "secret-line-token"),
+            patch.object(main.logger, "info") as info,
+        ):
+            response = self.post_reply(
+                assignee_name=assignee,
+                message=reply_text,
+            )
+
+        self.assertEqual(202, response.status_code)
+        info.assert_called_once()
+        record = json.loads(info.call_args.args[0])
+        self.assertEqual(
+            {
+                "event": "inquiry.reply.orchestrate",
+                "result": "delivery_unknown",
+                "stage": "finalize",
+                "reason_code": "DELIVERY_RESULT_UNKNOWN",
+                "subject_id": "7ac1b8d7010b",
+                "error": "RuntimeError",
+            },
+            record,
+        )
+        serialized = info.call_args.args[0]
+        for forbidden in (
+            source_message,
+            reply_text,
+            assignee,
+            RAW_LINE_ID,
+            "secret-line-token",
+            "test-admin-key",
+            "private provider details",
+            "provider response must not be logged",
+        ):
+            self.assertNotIn(forbidden, serialized)
 
 
 if __name__ == "__main__":

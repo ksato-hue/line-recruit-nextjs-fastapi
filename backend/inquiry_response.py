@@ -1,6 +1,6 @@
 import base64
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from enum import Enum
 import json
 import re
@@ -46,6 +46,12 @@ class LinePushResult:
 class InquiryReasonCode(str, Enum):
     INQUIRY_CONFLICT = "INQUIRY_CONFLICT"
     INVALID_STATUS_TRANSITION = "INVALID_STATUS_TRANSITION"
+    INQUIRY_REOPEN_REQUIRED = "INQUIRY_REOPEN_REQUIRED"
+    IDEMPOTENCY_CONFLICT = "IDEMPOTENCY_CONFLICT"
+    REPLY_IN_PROGRESS = "REPLY_IN_PROGRESS"
+    RETRY_WINDOW_EXPIRED = "RETRY_WINDOW_EXPIRED"
+    DELIVERY_RESULT_UNKNOWN = "DELIVERY_RESULT_UNKNOWN"
+    LINE_REJECTED = "LINE_REJECTED"
 
 
 @dataclass(frozen=True)
@@ -61,6 +67,7 @@ class InquiryCursor:
 
 
 INQUIRY_MESSAGE_PREVIEW_LENGTH = 160
+INQUIRY_REPLY_RETRY_WINDOW = timedelta(hours=24)
 _CANONICAL_BASE64URL = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -212,6 +219,38 @@ def inquiry_timestamps_match(stored_updated_at: object, expected_updated_at: dat
     stored = _parse_aware_datetime(stored_updated_at, "updated_at")
     expected = validate_timezone_aware_datetime(expected_updated_at)
     return stored.astimezone(timezone.utc) == expected.astimezone(timezone.utc)
+
+
+def inquiry_reply_retry_allowed(created_at: object, now: datetime) -> bool:
+    if isinstance(created_at, datetime):
+        created = created_at
+        if created.tzinfo is None or created.utcoffset() is None:
+            raise ValueError("created_at must include a timezone")
+    else:
+        created = _parse_aware_datetime(created_at, "created_at")
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must include a timezone")
+    age = now.astimezone(timezone.utc) - created.astimezone(timezone.utc)
+    return timedelta(0) <= age < INQUIRY_REPLY_RETRY_WINDOW
+
+
+def inquiry_reply_attempt_active(
+    updated_at: object,
+    now: datetime,
+    lease_seconds: int,
+) -> bool:
+    if isinstance(lease_seconds, bool) or lease_seconds <= 0:
+        raise ValueError("lease_seconds must be positive")
+    if isinstance(updated_at, datetime):
+        updated = updated_at
+        if updated.tzinfo is None or updated.utcoffset() is None:
+            raise ValueError("updated_at must include a timezone")
+    else:
+        updated = _parse_aware_datetime(updated_at, "updated_at")
+    if now.tzinfo is None or now.utcoffset() is None:
+        raise ValueError("now must include a timezone")
+    age = now.astimezone(timezone.utc) - updated.astimezone(timezone.utc)
+    return timedelta(0) <= age < timedelta(seconds=lease_seconds)
 
 
 class InquiryUpdateRequest(BaseModel):

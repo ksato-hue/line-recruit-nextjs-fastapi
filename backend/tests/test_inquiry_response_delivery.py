@@ -1,10 +1,12 @@
 import json
+from datetime import datetime, timedelta, timezone
 import unittest
 from unittest.mock import patch
 from uuid import UUID
 
 import requests
 
+import inquiry_response
 from inquiry_response import LinePushDisposition, LinePushResult
 from tests.support import load_backend_main
 
@@ -217,6 +219,31 @@ class InquiryReplyLineTransportTests(unittest.TestCase):
             "secret timeout details",
         ):
             self.assertNotIn(forbidden, serialized)
+
+
+class InquiryReplyRecoveryPolicyTests(unittest.TestCase):
+    def test_unknown_retry_window_expires_at_exactly_twenty_four_hours(self):
+        retry_allowed = getattr(inquiry_response, "inquiry_reply_retry_allowed", None)
+        self.assertIsNotNone(
+            retry_allowed,
+            "production recovery policy helper is missing",
+        )
+        now = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
+
+        self.assertTrue(retry_allowed(now - timedelta(hours=24, microseconds=-1), now))
+        self.assertFalse(retry_allowed(now - timedelta(hours=24), now))
+        self.assertFalse(retry_allowed(now + timedelta(seconds=1), now))
+
+    def test_sending_attempt_is_active_only_during_the_recovery_lease(self):
+        attempt_active = getattr(inquiry_response, "inquiry_reply_attempt_active", None)
+        self.assertIsNotNone(
+            attempt_active,
+            "production active-attempt policy helper is missing",
+        )
+        now = datetime(2026, 8, 7, 12, 0, tzinfo=timezone.utc)
+
+        self.assertTrue(attempt_active(now - timedelta(minutes=1, microseconds=-1), now, 60))
+        self.assertFalse(attempt_active(now - timedelta(minutes=1), now, 60))
 
 
 if __name__ == "__main__":
