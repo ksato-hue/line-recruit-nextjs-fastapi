@@ -887,7 +887,7 @@ Expected: dependency check/syntax/all Backend tests/Frontend tests/typecheck/bui
 
 If `next build` rewrites only generated comments in tracked `frontend/next-env.d.ts`, inspect the diff and restore that generated-only change with `apply_patch`; do not include it in this feature PR.
 
-- [ ] **Step 5: Commit documentation.**
+- [x] **Step 5: Commit documentation.**
 
 ```powershell
 git add -- docs/INQUIRY_RESPONSE_WORKFLOW.md docs/requirements.md docs/CODEBASE_AUDIT.md docs/INQUIRY_RESPONSE_RUNBOOK.md docs/superpowers/plans/2026-08-06-inquiry-response-workflow.md
