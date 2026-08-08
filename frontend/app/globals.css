@@ -318,6 +318,26 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .inquiryDetailSection { margin-top: 22px; }
 .inquiryDetailSection h3 { margin: 0 0 11px; font-size: 15px; }
 .inquiryMessage { margin: 0; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 14px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inquiryReplyForm { display: grid; gap: 9px; border: 1px solid var(--line); border-radius: 16px; background: #f8fafc; padding: 15px; }
+.inquiryReplyForm > label, .inquiryReplyForm .fieldLabelRow label { color: var(--muted); font-size: 12px; font-weight: 800; }
+.inquiryReplyForm input { min-width: 0; width: 100%; }
+.inquiryReplyForm textarea { min-height: 150px; background: #fff; line-height: 1.7; }
+.inquiryReplyForm .primaryButton { justify-self: end; margin-top: 2px; }
+.inquiryReplyForm[aria-busy="true"] { opacity: .72; }
+.inquiryReplyDestinationNote { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.inquiryReplyOutcome { margin-bottom: 12px; border: 1px solid var(--line); border-radius: 14px; padding: 13px 14px; line-height: 1.6; }
+.inquiryReplyOutcome p { margin: 0 0 10px; }
+.inquiryReplyOutcome p:last-child { margin-bottom: 0; }
+.inquiryReplyOutcomeSuccess { border-color: #a7e9bf; background: var(--greenSoft); color: #047b36; }
+.inquiryReplyOutcomeError { border-color: #fecaca; background: var(--redSoft); color: #9f1d18; }
+.inquiryReplyOutcomeUnknown { border-color: #f5cf72; background: #fff9e8; color: #7c5700; }
+.inquiryReplyOutcome .secondaryButton { margin-top: 2px; }
+.inquiryReplyOutcomeActions { display: flex; flex-wrap: wrap; gap: 9px; }
+.inquiryReplyOutcome dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0 0; }
+.inquiryReplyOutcome dl div { min-width: 0; }
+.inquiryReplyOutcome dt { font-size: 11px; font-weight: 800; }
+.inquiryReplyOutcome dd { margin: 2px 0 0; font-weight: 700; overflow-wrap: anywhere; }
+.inquiryConfirmationExcerpt { max-height: 150px; }
 .inquiryRelatedApplicants, .inquiryReplyHistory { display: grid; gap: 10px; list-style: none; margin: 0; padding: 0; }
 .inquiryRelatedApplicants li, .inquiryReplyHistory li { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 13px; }
 .inquiryRelatedApplicants span, .inquiryRelatedApplicants small { display: block; color: var(--muted); margin-top: 5px; }
@@ -352,6 +372,8 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   .confirmationDialogActions button { width: 100%; min-height: 44px; }
   .confirmationMeta { align-items: flex-start; flex-direction: column; gap: 4px; }
   .confirmationPreview { max-height: min(240px, 32dvh); }
+  .inquiryReplyForm .primaryButton, .inquiryReplyOutcomeActions button { width: 100%; min-height: 44px; }
+  .inquiryReplyOutcome dl { grid-template-columns: 1fr; }
   .statusStep { grid-template-columns: 42px 1fr; }
   .statusStep .textButton { grid-column: 2; justify-self: start; }
   .addStatusBox { align-items: stretch; flex-direction: column; }

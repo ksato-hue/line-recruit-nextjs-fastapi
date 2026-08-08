@@ -126,6 +126,47 @@ test("the initial reply draft is idle and empty", () => {
   });
 });
 
+test("reply editing prefers the stored assignee over the Backend default", () => {
+  const state = createInitialInquiryReplyState({
+    storedAssigneeName: "高橋",
+    defaultAssigneeName: "佐藤"
+  });
+
+  assert.equal(state.status, "editing");
+  assert.deepEqual(state.draft, { assigneeName: "高橋", message: "" });
+});
+
+test("reply editing uses Backend-normalized half, full and multiple-space surnames unchanged", () => {
+  const backendCases = [
+    { recruiterSetting: "佐藤 太郎", backendDefault: "佐藤" },
+    { recruiterSetting: "佐藤　太郎", backendDefault: "佐藤" },
+    { recruiterSetting: "佐藤   太郎", backendDefault: "佐藤" }
+  ] as const;
+
+  for (const { recruiterSetting, backendDefault } of backendCases) {
+    const state = createInitialInquiryReplyState({
+      storedAssigneeName: null,
+      defaultAssigneeName: backendDefault
+    });
+
+    assert.equal(state.draft.assigneeName, backendDefault, recruiterSetting);
+  }
+});
+
+test("an empty Backend recruiter default leaves assignee editing manual and invalid", () => {
+  const state = createInitialInquiryReplyState({
+    storedAssigneeName: null,
+    defaultAssigneeName: ""
+  });
+
+  assert.equal(state.status, "editing");
+  assert.equal(state.draft.assigneeName, "");
+  assert.equal(
+    validateInquiryReplyDraft({ ...state.draft, message: "返信本文" }).assigneeName,
+    "担当者名を入力してください。"
+  );
+});
+
 test("workspace query state initializes with a supplied Dashboard filter and inquiry", () => {
   assert.deepEqual(
     createInitialInquiryWorkspaceState({
@@ -260,6 +301,30 @@ test("opening confirmation freezes an exact snapshot and generates one key", () 
   });
 });
 
+test("confirmation trims only the assignee while preserving the exact reply text", () => {
+  const editing = inquiryReplyReducer(createInitialInquiryReplyState(), {
+    type: "edit",
+    assigneeName: "  佐藤　",
+    message: " 1行目\n2行目 \n"
+  });
+  const opened = inquiryReplyReducer(editing, {
+    type: "open_confirmation",
+    inquiryId,
+    expectedUpdatedAt,
+    maskedDestination: "U1234…7890",
+    createId: () => firstKey
+  });
+
+  assert.equal(opened.snapshot?.assigneeName, "佐藤");
+  assert.equal(opened.snapshot?.message, " 1行目\n2行目 \n");
+  assert.deepEqual(serializeInquiryReplyRequest(opened.snapshot!), {
+    assignee_name: "佐藤",
+    message: " 1行目\n2行目 \n",
+    idempotency_key: firstKey,
+    expected_updated_at: expectedUpdatedAt
+  });
+});
+
 test("cancelling confirmation keeps the draft and discards the snapshot", () => {
   const confirming = confirmingState();
   const cancelled = inquiryReplyReducer(confirming, { type: "cancel_confirmation" });
@@ -267,6 +332,17 @@ test("cancelling confirmation keeps the draft and discards the snapshot", () => 
   assert.equal(cancelled.status, "editing");
   assert.deepEqual(cancelled.draft, confirming.draft);
   assert.equal(cancelled.snapshot, null);
+});
+
+test("a second cancel event such as Escape after button cancel is a no-op", () => {
+  const cancelled = inquiryReplyReducer(confirmingState(), {
+    type: "cancel_confirmation"
+  });
+
+  assert.strictEqual(
+    inquiryReplyReducer(cancelled, { type: "cancel_confirmation" }),
+    cancelled
+  );
 });
 
 test("a second submit dispatch while submitting is a no-op", () => {
@@ -305,14 +381,111 @@ test("reply validation rejects a blank message", () => {
 
 test("success is the only outcome that clears the draft and snapshot", () => {
   const submitting = inquiryReplyReducer(confirmingState(), { type: "submit" });
-  const sent = inquiryReplyReducer(submitting, { type: "send_succeeded" });
+  const sent = inquiryReplyReducer(submitting, {
+    type: "send_succeeded",
+    inquiryStatus: "対応済み",
+    sentAt: "2026-08-07T03:00:00+00:00"
+  });
 
   assert.deepEqual(sent, {
     status: "sent",
     draft: { assigneeName: "", message: "" },
     snapshot: null,
-    errorMessage: null
+    errorMessage: null,
+    sentResult: {
+      assigneeName: "佐藤",
+      inquiryStatus: "対応済み",
+      sentAt: "2026-08-07T03:00:00+00:00"
+    }
   });
+});
+
+test("a 409 stale conflict retains the operation until an explicit detail refresh", () => {
+  const submitting = inquiryReplyReducer(confirmingState(), { type: "submit" });
+  const conflicted = inquiryReplyReducer(submitting, {
+    type: "send_failed",
+    failureKind: "conflict",
+    errorMessage: "別の更新がありました。最新の内容を確認してください。"
+  });
+
+  assert.equal(conflicted.status, "failed");
+  assert.equal(conflicted.failureKind, "conflict");
+  assert.deepEqual(conflicted.draft, submitting.draft);
+  assert.strictEqual(conflicted.snapshot, submitting.snapshot);
+
+  const refreshed = inquiryReplyReducer(conflicted, { type: "detail_refreshed" });
+  assert.equal(refreshed.status, "editing");
+  assert.deepEqual(refreshed.draft, submitting.draft);
+  assert.equal(refreshed.snapshot, null);
+
+  const reconfirmed = inquiryReplyReducer(refreshed, {
+    type: "open_confirmation",
+    inquiryId,
+    expectedUpdatedAt: "2026-08-07T04:00:00+00:00",
+    maskedDestination: "U1234…7890",
+    createId: () => secondKey
+  });
+  assert.equal(reconfirmed.snapshot?.idempotencyKey, secondKey);
+});
+
+test("a completed inquiry requires an explicit successful reopen before reconfirmation", () => {
+  const submitting = inquiryReplyReducer(confirmingState(), { type: "submit" });
+  const blocked = inquiryReplyReducer(submitting, {
+    type: "send_failed",
+    failureKind: "reopen_required",
+    errorMessage: "返信するには、先に再対応を開始してください。"
+  });
+
+  assert.equal(blocked.failureKind, "reopen_required");
+  assert.strictEqual(
+    inquiryReplyReducer(blocked, {
+      type: "open_confirmation",
+      inquiryId,
+      expectedUpdatedAt,
+      maskedDestination: "U1234…7890"
+    }),
+    blocked
+  );
+
+  const reopened = inquiryReplyReducer(blocked, { type: "inquiry_reopened" });
+  assert.equal(reopened.status, "editing");
+  assert.deepEqual(reopened.draft, submitting.draft);
+  assert.equal(reopened.snapshot, null);
+});
+
+test("a 502 known LINE rejection retains the snapshot until explicit editing", () => {
+  const submitting = inquiryReplyReducer(confirmingState(), { type: "submit" });
+  const rejected = inquiryReplyReducer(submitting, {
+    type: "send_failed",
+    failureKind: "rejected",
+    errorMessage: "LINEへ返信できませんでした。"
+  });
+
+  assert.equal(rejected.failureKind, "rejected");
+  assert.strictEqual(rejected.snapshot, submitting.snapshot);
+  assert.strictEqual(inquiryReplyReducer(rejected, { type: "submit" }), rejected);
+
+  const editing = inquiryReplyReducer(rejected, { type: "resume_editing" });
+  assert.equal(editing.status, "editing");
+  assert.deepEqual(editing.draft, submitting.draft);
+  assert.equal(editing.snapshot, null);
+});
+
+test("a 202 unknown outcome retains the same operation for timeline refresh and retry", () => {
+  const submitting = inquiryReplyReducer(confirmingState(), { type: "submit" });
+  const unknown = inquiryReplyReducer(submitting, {
+    type: "delivery_unknown",
+    errorMessage: "送信結果を確認しています。"
+  });
+  const timelineRefreshed = inquiryReplyReducer(unknown, {
+    type: "timeline_refreshed"
+  });
+
+  assert.strictEqual(timelineRefreshed, unknown);
+  const retried = inquiryReplyReducer(unknown, { type: "retry" });
+  assert.strictEqual(retried.snapshot, unknown.snapshot);
+  assert.equal(retried.snapshot?.idempotencyKey, firstKey);
+  assert.equal(retried.status, "submitting");
 });
 
 test("known failure and unknown delivery retain the draft and immutable snapshot", () => {

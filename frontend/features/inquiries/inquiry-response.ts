@@ -79,7 +79,21 @@ const EMPTY_DRAFT: InquiryReplyDraft = Object.freeze({
   message: ""
 });
 
-export function createInitialInquiryReplyState(): InquiryReplyState {
+export function createInitialInquiryReplyState(options?: {
+  storedAssigneeName: string | null;
+  defaultAssigneeName: string;
+}): InquiryReplyState {
+  if (options) {
+    return {
+      status: "editing",
+      draft: {
+        assigneeName: options.storedAssigneeName || options.defaultAssigneeName,
+        message: ""
+      },
+      snapshot: null,
+      errorMessage: null
+    };
+  }
   return {
     status: "idle",
     draft: EMPTY_DRAFT,
@@ -101,7 +115,7 @@ function createSnapshot(
 ): InquiryReplySnapshot {
   return Object.freeze({
     inquiryId: action.inquiryId,
-    assigneeName: state.draft.assigneeName,
+    assigneeName: state.draft.assigneeName.trim(),
     message: state.draft.message,
     messageCodeUnits: utf16CodeUnitLength(state.draft.message),
     idempotencyKey: (action.createId || createBrowserUuid)(),
@@ -146,19 +160,25 @@ export function inquiryReplyReducer(
       if (state.status !== "confirming" || state.snapshot === null) return state;
       return { ...state, status: "submitting", errorMessage: null };
     case "send_succeeded":
-      if (state.status !== "submitting") return state;
+      if (state.status !== "submitting" || state.snapshot === null) return state;
       return {
         status: "sent",
         draft: EMPTY_DRAFT,
         snapshot: null,
-        errorMessage: null
+        errorMessage: null,
+        sentResult: {
+          assigneeName: state.snapshot.assigneeName,
+          inquiryStatus: action.inquiryStatus,
+          sentAt: action.sentAt
+        }
       };
     case "send_failed":
       if (state.status !== "submitting") return state;
       return {
         ...state,
         status: "failed",
-        errorMessage: action.errorMessage || null
+        errorMessage: action.errorMessage || null,
+        ...(action.failureKind ? { failureKind: action.failureKind } : {})
       };
     case "delivery_unknown":
       if (state.status !== "submitting") return state;
@@ -172,6 +192,36 @@ export function inquiryReplyReducer(
         return state;
       }
       return { ...state, status: "submitting", errorMessage: null };
+    case "detail_refreshed":
+      if (state.status !== "failed" || state.failureKind !== "conflict") {
+        return state;
+      }
+      return {
+        status: "editing",
+        draft: state.draft,
+        snapshot: null,
+        errorMessage: null
+      };
+    case "inquiry_reopened":
+      if (state.status !== "failed" || state.failureKind !== "reopen_required") {
+        return state;
+      }
+      return {
+        status: "editing",
+        draft: state.draft,
+        snapshot: null,
+        errorMessage: null
+      };
+    case "resume_editing":
+      if (state.status !== "failed") return state;
+      return {
+        status: "editing",
+        draft: state.draft,
+        snapshot: null,
+        errorMessage: null
+      };
+    case "timeline_refreshed":
+      return state;
   }
 }
 

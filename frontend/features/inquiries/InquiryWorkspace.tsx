@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
-import { getInquiries, getInquiry } from "../../lib/api";
+import { getInquiries, getInquiry, updateInquiry } from "../../lib/api";
 import type { InquiryDetailResponse, InquiryStatus, InquirySummary } from "../../types";
 import {
   createInitialInquiryWorkspaceState,
@@ -105,6 +105,47 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
     setMobileDetailOpen(false);
   }, []);
 
+  const handleRefreshDetail = useCallback(async () => {
+    const inquiryId = workspace.selectedInquiryId;
+    if (!inquiryId) return;
+
+    setDetailLoading(true);
+    setDetailError(null);
+    try {
+      const response = await getInquiry(inquiryId);
+      setDetail(response);
+    } catch (error: unknown) {
+      setDetailError(
+        error instanceof Error
+          ? error.message
+          : "お問い合わせ詳細の取得に失敗しました。"
+      );
+      throw error;
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [workspace.selectedInquiryId]);
+
+  const handleReplySent = useCallback(async () => {
+    setRefreshVersion((current) => current + 1);
+    await props.onDashboardRefresh();
+  }, [props.onDashboardRefresh]);
+
+  const handleReopenInquiry = useCallback(async (expectedUpdatedAt: string) => {
+    const inquiryId = workspace.selectedInquiryId;
+    if (!inquiryId) return;
+
+    const reopenedInquiry = await updateInquiry(inquiryId, {
+      status: "対応中",
+      expected_updated_at: expectedUpdatedAt
+    });
+    setDetail((current) => current && current.inquiry.id === inquiryId
+      ? { ...current, inquiry: reopenedInquiry }
+      : current);
+    setRefreshVersion((current) => current + 1);
+    await props.onDashboardRefresh();
+  }, [props.onDashboardRefresh, workspace.selectedInquiryId]);
+
   return (
     <div className={mobileDetailOpen ? "inquiryWorkspace detailSelected" : "inquiryWorkspace"}>
       <InquiriesView
@@ -128,6 +169,9 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
         loading={detailLoading}
         errorMessage={detailError}
         onBack={handleBack}
+        onRefreshDetail={handleRefreshDetail}
+        onReplySent={handleReplySent}
+        onReopenInquiry={handleReopenInquiry}
       />
     </div>
   );

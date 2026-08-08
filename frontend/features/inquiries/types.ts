@@ -25,6 +25,12 @@ export type InquiryReplyStatus =
   | "failed"
   | "delivery_unknown";
 
+export type InquiryReplyFailureKind =
+  | "conflict"
+  | "reopen_required"
+  | "rejected"
+  | "other";
+
 export type InquiryReplyDraft = Readonly<{
   assigneeName: string;
   message: string;
@@ -40,11 +46,19 @@ export type InquiryReplySnapshot = Readonly<{
   maskedDestination: string;
 }>;
 
+export type InquiryReplySentResult = Readonly<{
+  assigneeName: string;
+  inquiryStatus: "対応済み";
+  sentAt: string;
+}>;
+
 export type InquiryReplyState = Readonly<{
   status: InquiryReplyStatus;
   draft: InquiryReplyDraft;
   snapshot: InquiryReplySnapshot | null;
   errorMessage: string | null;
+  failureKind?: InquiryReplyFailureKind;
+  sentResult?: InquiryReplySentResult;
 }>;
 
 export type InquiryReplyDraftErrors = Partial<Record<keyof InquiryReplyDraft, string>>;
@@ -60,9 +74,21 @@ export type InquiryReplyAction =
     }>
   | Readonly<{ type: "cancel_confirmation" }>
   | Readonly<{ type: "submit" }>
-  | Readonly<{ type: "send_succeeded" }>
-  | Readonly<{ type: "send_failed"; errorMessage?: string }>
+  | Readonly<{
+      type: "send_succeeded";
+      inquiryStatus: "対応済み";
+      sentAt: string;
+    }>
+  | Readonly<{
+      type: "send_failed";
+      failureKind?: InquiryReplyFailureKind;
+      errorMessage?: string;
+    }>
   | Readonly<{ type: "delivery_unknown"; errorMessage?: string }>
-  | Readonly<{ type: "retry" }>;
+  | Readonly<{ type: "retry" }>
+  | Readonly<{ type: "detail_refreshed" }>
+  | Readonly<{ type: "inquiry_reopened" }>
+  | Readonly<{ type: "resume_editing" }>
+  | Readonly<{ type: "timeline_refreshed" }>;
 
 export type SerializedInquiryReplyRequest = InquiryReplyRequest;
