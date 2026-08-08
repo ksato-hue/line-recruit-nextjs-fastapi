@@ -16,6 +16,29 @@ import type {
   SerializedInquiryReplyRequest
 } from "./types";
 
+type DashboardInquiryNavigationAction =
+  | Readonly<{ type: "recent"; inquiryId: string }>
+  | Readonly<{ type: "unanswered" }>;
+
+export function createDashboardInquiryNavigation(
+  action: DashboardInquiryNavigationAction
+) {
+  return action.type === "recent"
+    ? { activeMenu: "お問い合わせ" as const, initialInquiryId: action.inquiryId }
+    : { activeMenu: "お問い合わせ" as const, initialStatus: "未対応" as const };
+}
+
+export function getDashboardUnansweredCopy(count: number) {
+  return count === 0 ? "未対応のお問い合わせはありません" : null;
+}
+
+export function createDashboardInquiryPreview(message: string | null | undefined) {
+  return {
+    text: message || "内容未入力",
+    lineClamp: 2 as const
+  };
+}
+
 export function createInitialInquiryWorkspaceState(options: {
   initialInquiryId?: string;
   initialStatus?: InquiryStatus;
@@ -228,6 +251,16 @@ export function inquiryReplyReducer(
     case "timeline_refreshed":
       return state;
   }
+}
+
+export function closeInquiryMobileDetail<T extends InquiryWorkspaceState & {
+  mobileDetailOpen: boolean;
+}>(state: T) {
+  return {
+    ...state,
+    selectedInquiryId: null,
+    mobileDetailOpen: false
+  };
 }
 
 export function validateInquiryReplyDraft(

@@ -93,7 +93,9 @@ export function InquiriesView({
                   <time dateTime={inquiry.created_at}>{formatJstDateTime(inquiry.created_at)}</time>
                   <span className="badge">{inquiry.status}</span>
                 </span>
-                <strong>{inquiry.message_preview || "内容未入力"}</strong>
+                <strong className="inquiryListPreview">
+                  {inquiry.message_preview || "内容未入力"}
+                </strong>
                 <span className="inquiryListItemMeta">
                   {inquiry.assignee_name ? `担当: ${inquiry.assignee_name}` : "担当未設定"}
                   {inquiry.related_applicant_exists ? "・関連応募者あり" : ""}

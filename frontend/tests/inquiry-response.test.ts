@@ -24,9 +24,13 @@ registerHooks({
 
 const { AdminApiError } = require("../lib/api.ts") as typeof import("../lib/api");
 const {
+  closeInquiryMobileDetail,
+  createDashboardInquiryNavigation,
+  createDashboardInquiryPreview,
   createInquiryReplyCoordinator,
   createInitialInquiryWorkspaceState,
   createInitialInquiryReplyState,
+  getDashboardUnansweredCopy,
   getInquiryWorkspaceCopy,
   inquiryReplyReducer,
   resetInquiryWorkspaceFilter,
@@ -299,6 +303,52 @@ test("opening confirmation freezes an exact snapshot and generates one key", () 
     idempotencyKey: firstKey,
     expectedUpdatedAt,
     maskedDestination: "U1234…7890"
+  });
+});
+
+test("Dashboard recent inquiry navigation hands off the exact inquiry ID", () => {
+  assert.deepEqual(
+    createDashboardInquiryNavigation({ type: "recent", inquiryId }),
+    { activeMenu: "お問い合わせ", initialInquiryId: inquiryId }
+  );
+});
+
+test("Dashboard unanswered navigation hands off the unanswered status filter", () => {
+  assert.deepEqual(
+    createDashboardInquiryNavigation({ type: "unanswered" }),
+    { activeMenu: "お問い合わせ", initialStatus: "未対応" }
+  );
+});
+
+test("Dashboard unanswered zero state uses the dedicated copy", () => {
+  assert.equal(
+    getDashboardUnansweredCopy(0),
+    "未対応のお問い合わせはありません"
+  );
+  assert.equal(getDashboardUnansweredCopy(1), null);
+});
+
+test("Dashboard inquiry preview preserves the message and limits it to two lines", () => {
+  assert.deepEqual(
+    createDashboardInquiryPreview("1行目\n2行目\n3行目"),
+    { text: "1行目\n2行目\n3行目", lineClamp: 2 }
+  );
+  assert.deepEqual(createDashboardInquiryPreview(""), {
+    text: "内容未入力",
+    lineClamp: 2
+  });
+});
+
+test("mobile Back closes detail and clears the selection in one transition", () => {
+  const state = {
+    ...createInitialInquiryWorkspaceState({ initialInquiryId: inquiryId }),
+    mobileDetailOpen: true
+  };
+
+  assert.deepEqual(closeInquiryMobileDetail(state), {
+    query: { status: null, sort: "newest" },
+    selectedInquiryId: null,
+    mobileDetailOpen: false
   });
 });
 

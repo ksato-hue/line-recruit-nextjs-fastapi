@@ -89,7 +89,17 @@ h2 { font-size: 19px; }
 .todoItem { display: flex; justify-content: space-between; align-items: center; }
 .todoItem small, .miniRow small, .historyRow small { display: block; color: var(--muted); margin-top: 4px; }
 .todoItem span { color: var(--blue); font-weight: 800; }
+.todoItemButton { width: 100%; color: inherit; text-align: left; min-height: 44px; }
 .miniRow { border: 1px solid var(--line); width: 100%; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 12px; text-align: left; }
+.dashboardInquiryRow { grid-template-columns: minmax(0, 1fr) auto; min-height: 44px; color: inherit; }
+.dashboardInquiryBody { min-width: 0; }
+.dashboardInquiryPreview {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .avatar { width: 38px; height: 38px; border-radius: 14px; display: grid; place-items: center; background: var(--greenSoft); color: #047b36; font-weight: 800; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 16px; }
 input, select, textarea {
@@ -292,7 +302,7 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .barChart { margin-top: 20px; height: 22px; background: #edf2f7; border-radius: 999px; overflow: hidden; }
 .barChart div { height: 100%; background: linear-gradient(90deg, var(--green), var(--blue)); border-radius: inherit; }
 .inquiryWorkspace { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(0, 1.4fr); gap: 20px; align-items: start; }
-.inquiryListPanel, .inquiryDetailPanel { min-width: 0; }
+.inquiryListPanel, .inquiryDetailPanel { min-width: 0; width: 100%; }
 .inquiryPanelHeader { margin-bottom: 14px; }
 .inquiryToolbar { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
 .inquiryToolbar label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 800; }
@@ -307,6 +317,7 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .inquiryListItem:focus-visible { outline: 3px solid rgba(47, 128, 237, .35); outline-offset: 2px; }
 .inquiryListItemTopline { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12px; }
 .inquiryListItem strong { line-height: 1.6; overflow-wrap: anywhere; }
+.inquiryListPreview { max-height: 5.2em; overflow: auto; }
 .inquiryListItemMeta { color: var(--muted); font-size: 12px; line-height: 1.5; }
 .inquiryBackButton { display: none; margin-bottom: 14px; }
 .inquiryDetailContent { min-width: 0; }
@@ -342,7 +353,7 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .inquiryRelatedApplicants li, .inquiryReplyHistory li { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 13px; }
 .inquiryRelatedApplicants span, .inquiryRelatedApplicants small { display: block; color: var(--muted); margin-top: 5px; }
 .inquiryReplyHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-.inquiryReplyHistory p { margin: 10px 0; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inquiryReplyHistory p { margin: 10px 0; max-height: 260px; overflow: auto; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
 .inquiryReplyHistory time { color: var(--muted); font-size: 12px; }
 @media (max-width: 1180px) {
   .kpiGrid { grid-template-columns: repeat(3, 1fr); }
@@ -386,6 +397,9 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   .inquiryWorkspace.detailSelected .inquiryListPanel { display: none; }
   .inquiryWorkspace.detailSelected .inquiryDetailPanel { display: block; }
   .inquiryBackButton { display: inline-flex; min-height: 44px; align-items: center; }
+  .inquiryDetailPanel { max-width: none; }
+  .inquiryDetailPanel button, .inquiryDetailPanel input, .inquiryDetailPanel textarea,
+  .inquiryToolbar select { min-height: 44px; }
   .inquiryToolbar { align-items: stretch; flex-direction: column; }
   .inquiryToolbar select { width: 100%; }
   .inquiryToolbarActions { justify-content: space-between; }

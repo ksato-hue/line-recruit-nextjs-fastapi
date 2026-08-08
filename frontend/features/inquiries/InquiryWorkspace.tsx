@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getInquiries, getInquiry, updateInquiry } from "../../lib/api";
 import type { InquiryDetailResponse, InquiryStatus, InquirySummary } from "../../types";
 import {
+  closeInquiryMobileDetail,
   createInitialInquiryWorkspaceState,
   resetInquiryWorkspaceFilter,
   selectInquiryAfterRefresh
@@ -18,9 +19,12 @@ type InquiryWorkspaceProps = {
 };
 
 export function InquiryWorkspace(props: InquiryWorkspaceProps) {
-  const [workspace, setWorkspace] = useState(() => createInitialInquiryWorkspaceState({
-    initialInquiryId: props.initialInquiryId,
-    initialStatus: props.initialStatus
+  const [workspace, setWorkspace] = useState(() => ({
+    ...createInitialInquiryWorkspaceState({
+      initialInquiryId: props.initialInquiryId,
+      initialStatus: props.initialStatus
+    }),
+    mobileDetailOpen: Boolean(props.initialInquiryId)
   }));
   const [inquiries, setInquiries] = useState<InquirySummary[]>([]);
   const [detail, setDetail] = useState<InquiryDetailResponse | null>(null);
@@ -29,14 +33,14 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
   const [listError, setListError] = useState<string | null>(null);
   const [detailError, setDetailError] = useState<string | null>(null);
   const [refreshVersion, setRefreshVersion] = useState(0);
-  const [mobileDetailOpen, setMobileDetailOpen] = useState(Boolean(props.initialInquiryId));
-
   useEffect(() => {
-    setWorkspace(createInitialInquiryWorkspaceState({
-      initialInquiryId: props.initialInquiryId,
-      initialStatus: props.initialStatus
-    }));
-    setMobileDetailOpen(Boolean(props.initialInquiryId));
+    setWorkspace({
+      ...createInitialInquiryWorkspaceState({
+        initialInquiryId: props.initialInquiryId,
+        initialStatus: props.initialStatus
+      }),
+      mobileDetailOpen: Boolean(props.initialInquiryId)
+    });
   }, [props.initialInquiryId, props.initialStatus]);
 
   useEffect(() => {
@@ -96,13 +100,15 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
   }, [refreshVersion, workspace.selectedInquiryId]);
 
   const handleSelect = useCallback((id: string) => {
-    setWorkspace((current) => ({ ...current, selectedInquiryId: id }));
-    setMobileDetailOpen(true);
+    setWorkspace((current) => ({
+      ...current,
+      selectedInquiryId: id,
+      mobileDetailOpen: true
+    }));
   }, []);
 
   const handleBack = useCallback(() => {
-    setWorkspace((current) => ({ ...current, selectedInquiryId: null }));
-    setMobileDetailOpen(false);
+    setWorkspace(closeInquiryMobileDetail);
   }, []);
 
   const handleRefreshDetail = useCallback(async () => {
@@ -145,7 +151,7 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
   }, [workspace.selectedInquiryId]);
 
   return (
-    <div className={mobileDetailOpen ? "inquiryWorkspace detailSelected" : "inquiryWorkspace"}>
+    <div className={workspace.mobileDetailOpen ? "inquiryWorkspace detailSelected" : "inquiryWorkspace"}>
       <InquiriesView
         inquiries={inquiries}
         selectedInquiryId={workspace.selectedInquiryId}
@@ -159,7 +165,10 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
             query: { ...current.query, status }
           }));
         }}
-        onResetFilter={() => setWorkspace(resetInquiryWorkspaceFilter)}
+        onResetFilter={() => setWorkspace((current) => ({
+          ...resetInquiryWorkspaceFilter(current),
+          mobileDetailOpen: current.mobileDetailOpen
+        }))}
         onRefresh={() => setRefreshVersion((current) => current + 1)}
       />
       <InquiryDetail

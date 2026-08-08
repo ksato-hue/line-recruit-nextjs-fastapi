@@ -304,6 +304,12 @@ export function InquiryDetail({
             <section className="inquiryDetailSection" aria-labelledby="inquiry-reply-editor-heading">
               <h3 id="inquiry-reply-editor-heading">LINE返信</h3>
 
+              {isSubmitting && (
+                <div className="inquiryReplyOutcome" role="status" aria-live="polite">
+                  LINEへ返信を送信中...
+                </div>
+              )}
+
               {replyState.status === "sent" && replyState.sentResult && (
                 <div className="inquiryReplyOutcome inquiryReplyOutcomeSuccess" role="status">
                   <strong>LINEへ返信し、お問い合わせを対応済みにしました。</strong>

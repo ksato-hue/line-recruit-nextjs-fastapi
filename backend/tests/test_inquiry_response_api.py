@@ -412,6 +412,7 @@ class InquirySupabase:
                 {"company_id": TENANT_A, "key": "recruiter_name", "value": "  佐藤　太郎  "},
                 {"company_id": TENANT_B, "key": "recruiter_name", "value": "他社 担当"},
             ],
+            "application_sessions": [],
         }
         self.queries: list[InquiryQuery] = []
         self.rpc_calls: list[InquiryRpc] = []
@@ -469,6 +470,23 @@ class InquiryApiTestCase(unittest.TestCase):
 
 
 class InquiryListApiTests(InquiryApiTestCase):
+    def test_dashboard_recent_inquiries_expose_navigation_fields_without_line_destination(self):
+        with (
+            patch.object(main, "get_applicant_status_settings", return_value=[]),
+            patch.object(main, "get_status_name", side_effect=lambda _key, fallback: fallback),
+        ):
+            response = self.client.get("/api/dashboard", headers=self.headers)
+
+        self.assertEqual(200, response.status_code)
+        recent = response.json()["recent_inquiries"]
+        self.assertTrue(recent)
+        self.assertEqual(INQUIRY_3, recent[0]["id"])
+        self.assertEqual("対応中", recent[0]["status"])
+        self.assertEqual("2026-08-02T00:00:00+00:00", recent[0]["created_at"])
+        self.assertEqual("2026-08-02T01:00:00+00:00", recent[0]["updated_at"])
+        self.assertIn("last_replied_at", recent[0])
+        self.assertNotIn("line_user_id", recent[0])
+
     def test_list_filters_status_in_the_company_scoped_query(self):
         response = self.client.get(
             "/api/inquiries",
@@ -1488,6 +1506,7 @@ class InquiryReplyApiTests(InquiryApiTestCase):
         self.assertEqual(1, len(self.database.rpc_calls))
 
     def test_stranded_sending_reply_recovers_after_the_active_attempt_lease(self):
+        self.database.reply_created_at = datetime.now(timezone.utc).isoformat()
         self.database.fail_finalize = True
         self.database.fail_reply_update_statuses.add("delivery_unknown")
 

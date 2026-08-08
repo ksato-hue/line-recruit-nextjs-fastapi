@@ -7,6 +7,11 @@ import faqTemplatesJson from "../../shared/faq_templates.json";
 import { formatJstDateTime, formatJstDateTimeWithWeekday } from "../lib/datetime";
 import { ConfirmationDialog } from "../components/ui/ConfirmationDialog";
 import { InquiryWorkspace } from "../features/inquiries/InquiryWorkspace";
+import {
+  createDashboardInquiryNavigation,
+  createDashboardInquiryPreview,
+  getDashboardUnansweredCopy
+} from "../features/inquiries/inquiry-response";
 import { createInterviewSendSnapshot, createLineSendSnapshot, isValidInterviewSlot, maskLineUserId, utf16CodeUnitLength, type InterviewSendSnapshot, type LineSendSnapshot } from "../lib/send-confirmation";
 
 const faqTemplates = faqTemplatesJson as FAQTemplateCategory[];
@@ -66,6 +71,10 @@ export default function AdminPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [pendingMenu, setPendingMenu] = useState<string | null>(null);
+  const [inquiryNavigation, setInquiryNavigation] = useState<{
+    initialInquiryId?: string;
+    initialStatus?: "未対応";
+  }>({});
   const activeMenuRef = useRef(activeMenu);
   const settingsDirtyRef = useRef(settingsDirty);
   const historyIndexRef = useRef(0);
@@ -242,6 +251,17 @@ export default function AdminPage() {
     if (statuses.length === 0 && !statusesLoading) void loadStatuses();
   }
 
+  function openDashboardInquiry(
+    action: { type: "recent"; inquiryId: string } | { type: "unanswered" }
+  ) {
+    const target = createDashboardInquiryNavigation(action);
+    setInquiryNavigation({
+      ...(target.initialInquiryId ? { initialInquiryId: target.initialInquiryId } : {}),
+      ...(target.initialStatus ? { initialStatus: target.initialStatus } : {})
+    });
+    setActiveMenu(target.activeMenu);
+  }
+
   function reloadActiveMenu() {
     if (["ダッシュボード", "簡易分析"].includes(activeMenu)) void loadDashboard();
     if (["応募者一覧", "簡易分析"].includes(activeMenu)) void loadApplicants();
@@ -276,7 +296,10 @@ export default function AdminPage() {
             <button
               key={item}
               className={activeMenu === item ? "navItem active" : "navItem"}
-              onClick={() => setActiveMenu(item)}
+              onClick={() => {
+                if (item === "お問い合わせ") setInquiryNavigation({});
+                setActiveMenu(item);
+              }}
             >
               {item}
             </button>
@@ -299,7 +322,12 @@ export default function AdminPage() {
             {activeMenu === "ダッシュボード" && <>
               {dashboardError && <div className="errorBox">{dashboardError}</div>}
               {dashboardLoading && !dashboard ? <div className="loadingCard">ダッシュボードを取得中...</div> : dashboard && (
-                <DashboardView dashboard={dashboard} onSelectApplicant={openApplicant} />
+                <DashboardView
+                  dashboard={dashboard}
+                  onSelectApplicant={openApplicant}
+                  onSelectInquiry={(inquiryId) => openDashboardInquiry({ type: "recent", inquiryId })}
+                  onSelectUnanswered={() => openDashboardInquiry({ type: "unanswered" })}
+                />
               )}
             </>}
 
@@ -321,7 +349,11 @@ export default function AdminPage() {
             )}
 
             {activeMenu === "お問い合わせ" && (
-              <InquiryWorkspace onDashboardRefresh={loadDashboard} />
+              <InquiryWorkspace
+                initialInquiryId={inquiryNavigation.initialInquiryId}
+                initialStatus={inquiryNavigation.initialStatus}
+                onDashboardRefresh={loadDashboard}
+              />
             )}
             {activeMenu === "質問ツリー設定" && <QuestionTreeSettings onDirtyChange={handleSettingsDirtyChange} />}
             {activeMenu === "FAQ設定" && <FAQSettings onDirtyChange={handleSettingsDirtyChange} />}
@@ -371,9 +403,16 @@ export default function AdminPage() {
   );
 }
 
-function DashboardView({ dashboard, onSelectApplicant }: {
+function DashboardView({
+  dashboard,
+  onSelectApplicant,
+  onSelectInquiry,
+  onSelectUnanswered
+}: {
   dashboard: Dashboard;
   onSelectApplicant: (applicant: Applicant) => void;
+  onSelectInquiry: (inquiryId: string) => void;
+  onSelectUnanswered: () => void;
 }) {
   const completionRate = dashboard.application_completion_rate === null ? "—" : `${dashboard.application_completion_rate}%`;
   const cards: [string, number | string, string][] = [
@@ -388,10 +427,8 @@ function DashboardView({ dashboard, onSelectApplicant }: {
   const todoItems = [
     { title: "応募途中", count: dashboard.todo.in_progress, helper: "応募セッションがactive" },
     { title: "離脱状態", count: dashboard.todo.dropout, helper: `activeかつ最終操作から${dashboard.dropout_threshold_hours}時間以上` },
-    { title: "面接調整中", count: dashboard.todo.interview_adjusting, helper: "面接調整状況が「面接調整中」" },
-    { title: "未対応問い合わせ", count: dashboard.todo.unanswered_inquiries, helper: "問い合わせステータスが「未対応」または未設定" }
+    { title: "面接調整中", count: dashboard.todo.interview_adjusting, helper: "面接調整状況が「面接調整中」" }
   ];
-  const todoCount = todoItems.reduce((sum, item) => sum + item.count, 0);
 
   return (
     <div className="gridStack">
@@ -416,9 +453,17 @@ function DashboardView({ dashboard, onSelectApplicant }: {
             <span className="pill">現在の状態</span>
           </div>
           <div className="todoList">
-            {todoCount === 0
-              ? <div className="emptyState">現在、確認が必要な状態のデータはありません。</div>
-              : todoItems.map((item) => <TodoItem key={item.title} {...item} />)}
+            {todoItems.map((item) => <TodoItem key={item.title} {...item} />)}
+            {dashboard.todo.unanswered_inquiries === 0 ? (
+              <div className="emptyState">{getDashboardUnansweredCopy(0)}</div>
+            ) : (
+              <TodoItem
+                title="未対応問い合わせ"
+                count={dashboard.todo.unanswered_inquiries}
+                helper="問い合わせステータスが「未対応」または未設定"
+                onClick={onSelectUnanswered}
+              />
+            )}
           </div>
         </article>
 
@@ -452,15 +497,30 @@ function DashboardView({ dashboard, onSelectApplicant }: {
             </div>
           </div>
           <div className="miniRows">
-            {dashboard.recent_inquiries.map((inquiry) => (
-              <div className="miniRow" key={inquiry.id}>
-                <span>
-                  <strong>{inquiry.message || "内容未入力"}</strong>
-                  <small>{inquiry.created_at ? formatJstDateTime(inquiry.created_at) : "日時未設定"}</small>
-                </span>
-                <em>{inquiry.status || "未対応"}</em>
-              </div>
-            ))}
+            {dashboard.recent_inquiries.map((inquiry) => {
+              const preview = createDashboardInquiryPreview(
+                (inquiry as { message_preview?: string }).message_preview ?? inquiry.message
+              );
+              return (
+                <button
+                  type="button"
+                  className="miniRow dashboardInquiryRow"
+                  key={inquiry.id}
+                  onClick={() => onSelectInquiry(String(inquiry.id))}
+                >
+                  <span className="dashboardInquiryBody">
+                    <strong
+                      className="dashboardInquiryPreview"
+                      style={{ WebkitLineClamp: preview.lineClamp }}
+                    >
+                      {preview.text}
+                    </strong>
+                    <small>{inquiry.created_at ? formatJstDateTime(inquiry.created_at) : "日時未設定"}</small>
+                  </span>
+                  <em className="badge">{inquiry.status || "未対応"}</em>
+                </button>
+              );
+            })}
             {dashboard.recent_inquiries.length === 0 && <div className="emptyState">お問い合わせはありません。</div>}
           </div>
         </article>
@@ -469,7 +529,23 @@ function DashboardView({ dashboard, onSelectApplicant }: {
   );
 }
 
-function TodoItem({ title, count, helper }: { title: string; count: number; helper: string }) {
+function TodoItem({ title, count, helper, onClick }: {
+  title: string;
+  count: number;
+  helper: string;
+  onClick?: () => void;
+}) {
+  if (onClick) {
+    return (
+      <button type="button" className="todoItem todoItemButton" onClick={onClick}>
+        <div>
+          <strong>{title}</strong>
+          <small>{helper}</small>
+        </div>
+        <span>{count}件</span>
+      </button>
+    );
+  }
   return (
     <div className="todoItem">
       <div>
