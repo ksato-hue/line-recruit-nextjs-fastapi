@@ -24,6 +24,7 @@ registerHooks({
 
 const { AdminApiError } = require("../lib/api.ts") as typeof import("../lib/api");
 const {
+  createInquiryReplyCoordinator,
   createInitialInquiryWorkspaceState,
   createInitialInquiryReplyState,
   getInquiryWorkspaceCopy,
@@ -351,6 +352,172 @@ test("a second submit dispatch while submitting is a no-op", () => {
 
   assert.equal(submitting.status, "submitting");
   assert.strictEqual(duplicate, submitting);
+});
+
+test("reply validation focuses the assignee first without calling the send API", () => {
+  let sendCalls = 0;
+  const focused: string[] = [];
+  const coordinator = createInquiryReplyCoordinator({
+    sendReply: async () => {
+      sendCalls += 1;
+      throw new Error("send must not run during validation");
+    },
+    scheduleFocus: (focus) => focus()
+  });
+
+  const errors = coordinator.validateForConfirmation(
+    { assigneeName: " 　", message: "" },
+    {
+      assignee: () => focused.push("assignee"),
+      message: () => focused.push("message")
+    }
+  );
+
+  assert.deepEqual(errors, {
+    assigneeName: "担当者名を入力してください。",
+    message: "返信を入力してください。"
+  });
+  assert.deepEqual(focused, ["assignee"]);
+  assert.equal(sendCalls, 0);
+});
+
+test("reply validation focuses the message when the assignee is valid", () => {
+  const focused: string[] = [];
+  const coordinator = createInquiryReplyCoordinator({
+    sendReply: async () => {
+      throw new Error("send must not run during validation");
+    },
+    scheduleFocus: (focus) => focus()
+  });
+
+  const errors = coordinator.validateForConfirmation(
+    { assigneeName: "佐藤", message: "\n　" },
+    {
+      assignee: () => focused.push("assignee"),
+      message: () => focused.push("message")
+    }
+  );
+
+  assert.deepEqual(errors, { message: "返信を入力してください。" });
+  assert.deepEqual(focused, ["message"]);
+});
+
+test("the dialog onCancel boundary, including Escape, retains the draft with zero sends", () => {
+  let sendCalls = 0;
+  let state = confirmingState();
+  const coordinator = createInquiryReplyCoordinator({
+    sendReply: async () => {
+      sendCalls += 1;
+      throw new Error("send must not run during cancellation");
+    },
+    scheduleFocus: (focus) => focus()
+  });
+
+  coordinator.cancelConfirmation((action) => {
+    state = inquiryReplyReducer(state, action);
+  });
+
+  assert.equal(state.status, "editing");
+  assert.deepEqual(state.draft, {
+    assigneeName: "佐藤",
+    message: "お問い合わせありがとうございます。"
+  });
+  assert.equal(state.snapshot, null);
+  assert.equal(sendCalls, 0);
+});
+
+test("confirm submits the exact immutable snapshot through the dedicated reply API", async () => {
+  const calls: Array<{
+    id: string;
+    request: import("../types").InquiryReplyRequest;
+  }> = [];
+  const response: import("../types").InquiryReplyResponse = {
+    outcome: "sent",
+    reply_id: "reply-1",
+    delivery_status: "sent",
+    inquiry_status: "対応済み",
+    sent_at: "2026-08-07T03:00:00+00:00",
+    idempotent_replay: false
+  };
+  const coordinator = createInquiryReplyCoordinator({
+    sendReply: async (id, request) => {
+      calls.push({ id, request });
+      return response;
+    },
+    scheduleFocus: (focus) => focus()
+  });
+  const snapshot = confirmingState().snapshot;
+  assert.ok(snapshot);
+
+  const result = await coordinator.submitReply(snapshot);
+
+  assert.strictEqual(result, response);
+  assert.deepEqual(calls, [{
+    id: inquiryId,
+    request: {
+      assignee_name: "佐藤",
+      message: "お問い合わせありがとうございます。",
+      idempotency_key: firstKey,
+      expected_updated_at: expectedUpdatedAt
+    }
+  }]);
+});
+
+test("concurrent confirm clicks make exactly one reply API call", async () => {
+  let sendCalls = 0;
+  let finishSend!: (response: import("../types").InquiryReplyResponse) => void;
+  const pendingSend = new Promise<import("../types").InquiryReplyResponse>((resolve) => {
+    finishSend = resolve;
+  });
+  const coordinator = createInquiryReplyCoordinator({
+    sendReply: async () => {
+      sendCalls += 1;
+      return pendingSend;
+    },
+    scheduleFocus: (focus) => focus()
+  });
+  const snapshot = confirmingState().snapshot;
+  assert.ok(snapshot);
+
+  const first = coordinator.submitReply(snapshot);
+  const duplicate = coordinator.submitReply(snapshot);
+
+  assert.equal(await duplicate, null);
+  assert.equal(sendCalls, 1);
+  finishSend({
+    outcome: "delivery_unknown",
+    reply_id: "reply-1",
+    delivery_status: "delivery_unknown",
+    reason_code: "DELIVERY_RESULT_UNKNOWN"
+  });
+  assert.equal((await first)?.outcome, "delivery_unknown");
+  assert.equal(sendCalls, 1);
+});
+
+test("successful reopen enables editing before a related-view refresh failure", async () => {
+  const events: string[] = [];
+  const coordinator = createInquiryReplyCoordinator({
+    sendReply: async () => {
+      throw new Error("send is unrelated to reopen");
+    },
+    scheduleFocus: (focus) => focus()
+  });
+
+  const result = await coordinator.reopenForReply({
+    expectedUpdatedAt,
+    reopen: async (timestamp) => {
+      assert.equal(timestamp, expectedUpdatedAt);
+      events.push("patch");
+    },
+    onReopened: () => events.push("editing"),
+    refreshRelatedViews: async () => {
+      events.push("refresh");
+      throw new Error("dashboard unavailable");
+    }
+  });
+
+  assert.equal(result, "refresh_failed");
+  assert.deepEqual(events, ["patch", "editing", "refresh"]);
 });
 
 test("reply validation counts UTF-16 code units at the 5,000-unit boundary", () => {

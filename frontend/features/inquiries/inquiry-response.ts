@@ -1,5 +1,10 @@
 import { utf16CodeUnitLength } from "../../lib/send-confirmation";
-import type { InquiryReply, InquiryStatus, InquirySummary } from "../../types";
+import type {
+  InquiryReply,
+  InquiryReplyResponse,
+  InquiryStatus,
+  InquirySummary
+} from "../../types";
 import type {
   InquiryReplyAction,
   InquiryReplyDraft,
@@ -244,6 +249,67 @@ export function validateInquiryReplyDraft(
   }
 
   return errors;
+}
+
+export function createInquiryReplyCoordinator(dependencies: {
+  sendReply: (
+    inquiryId: string,
+    request: SerializedInquiryReplyRequest
+  ) => Promise<InquiryReplyResponse>;
+  scheduleFocus: (focus: () => void) => void;
+}) {
+  let submitting = false;
+
+  return {
+    validateForConfirmation(
+      draft: InquiryReplyDraft,
+      focusTargets: Readonly<{
+        assignee: () => void;
+        message: () => void;
+      }>
+    ) {
+      const errors = validateInquiryReplyDraft(draft);
+      if (errors.assigneeName) {
+        dependencies.scheduleFocus(focusTargets.assignee);
+      } else if (errors.message) {
+        dependencies.scheduleFocus(focusTargets.message);
+      }
+      return errors;
+    },
+
+    cancelConfirmation(dispatch: (action: InquiryReplyAction) => void) {
+      dispatch({ type: "cancel_confirmation" });
+    },
+
+    async submitReply(snapshot: InquiryReplySnapshot) {
+      if (submitting) return null;
+      submitting = true;
+      try {
+        return await dependencies.sendReply(
+          snapshot.inquiryId,
+          serializeInquiryReplyRequest(snapshot)
+        );
+      } finally {
+        submitting = false;
+      }
+    },
+
+    async reopenForReply(options: Readonly<{
+      expectedUpdatedAt: string;
+      reopen: (expectedUpdatedAt: string) => Promise<void>;
+      onReopened: () => void;
+      refreshRelatedViews: () => Promise<void>;
+    }>) {
+      await options.reopen(options.expectedUpdatedAt);
+      options.onReopened();
+      try {
+        await options.refreshRelatedViews();
+        return "refreshed" as const;
+      } catch {
+        return "refresh_failed" as const;
+      }
+    }
+  };
 }
 
 export function serializeInquiryReplyRequest(

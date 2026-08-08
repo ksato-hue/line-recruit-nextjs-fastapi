@@ -142,9 +142,7 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
     setDetail((current) => current && current.inquiry.id === inquiryId
       ? { ...current, inquiry: reopenedInquiry }
       : current);
-    setRefreshVersion((current) => current + 1);
-    await props.onDashboardRefresh();
-  }, [props.onDashboardRefresh, workspace.selectedInquiryId]);
+  }, [workspace.selectedInquiryId]);
 
   return (
     <div className={mobileDetailOpen ? "inquiryWorkspace detailSelected" : "inquiryWorkspace"}>
@@ -172,6 +170,7 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
         onRefreshDetail={handleRefreshDetail}
         onReplySent={handleReplySent}
         onReopenInquiry={handleReopenInquiry}
+        onRefreshAfterReopen={handleReplySent}
       />
     </div>
   );

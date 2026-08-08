@@ -6,12 +6,11 @@ import { AdminApiError, sendInquiryReply } from "../../lib/api";
 import { formatJstDateTime } from "../../lib/datetime";
 import type { InquiryDetailResponse, InquiryReplyDeliveryStatus } from "../../types";
 import {
+  createInquiryReplyCoordinator,
   createInitialInquiryReplyState,
   getInquiryWorkspaceCopy,
   inquiryReplyReducer,
-  serializeInquiryReplyRequest,
-  sortInquiryRepliesChronologically,
-  validateInquiryReplyDraft
+  sortInquiryRepliesChronologically
 } from "./inquiry-response";
 import type { InquiryReplyDraftErrors, InquiryReplySnapshot } from "./types";
 
@@ -23,6 +22,7 @@ type InquiryDetailProps = {
   onRefreshDetail: () => Promise<void>;
   onReplySent: () => Promise<void>;
   onReopenInquiry: (expectedUpdatedAt: string) => Promise<void>;
+  onRefreshAfterReopen: () => Promise<void>;
 };
 
 const deliveryStatusLabels: Record<InquiryReplyDeliveryStatus, string> = {
@@ -40,7 +40,8 @@ export function InquiryDetail({
   onBack,
   onRefreshDetail,
   onReplySent,
-  onReopenInquiry
+  onReopenInquiry,
+  onRefreshAfterReopen
 }: InquiryDetailProps) {
   const [replyState, dispatchReply] = useReducer(
     inquiryReplyReducer,
@@ -53,7 +54,16 @@ export function InquiryDetail({
   const initializedInquiryId = useRef<string | null>(null);
   const assigneeInputRef = useRef<HTMLInputElement>(null);
   const messageInputRef = useRef<HTMLTextAreaElement>(null);
-  const submittingRef = useRef(false);
+  const replyCoordinatorRef = useRef<ReturnType<typeof createInquiryReplyCoordinator> | null>(null);
+  if (replyCoordinatorRef.current === null) {
+    replyCoordinatorRef.current = createInquiryReplyCoordinator({
+      sendReply: sendInquiryReply,
+      scheduleFocus: (focus) => {
+        window.requestAnimationFrame(focus);
+      }
+    });
+  }
+  const replyCoordinator = replyCoordinatorRef.current;
   const replies = detail ? sortInquiryRepliesChronologically(detail.replies) : [];
   const isSubmitting = replyState.status === "submitting";
 
@@ -83,14 +93,16 @@ export function InquiryDetail({
     event.preventDefault();
     if (!detail || !detail.reply_enabled || isSubmitting) return;
 
-    const errors = validateInquiryReplyDraft(replyState.draft);
+    const errors = replyCoordinator.validateForConfirmation(
+      replyState.draft,
+      {
+        assignee: () => assigneeInputRef.current?.focus(),
+        message: () => messageInputRef.current?.focus()
+      }
+    );
     setDraftErrors(errors);
     if (errors.assigneeName || errors.message) {
       setRecoveryError("送信内容を確認してください。");
-      window.requestAnimationFrame(() => {
-        if (errors.assigneeName) assigneeInputRef.current?.focus();
-        else messageInputRef.current?.focus();
-      });
       return;
     }
 
@@ -104,17 +116,13 @@ export function InquiryDetail({
   }
 
   async function submitSnapshot(snapshot: InquiryReplySnapshot, retry: boolean) {
-    if (submittingRef.current) return;
-    submittingRef.current = true;
     setRecoveryError(null);
     dispatchReply({ type: retry ? "retry" : "submit" });
 
     let response;
     try {
-      response = await sendInquiryReply(
-        snapshot.inquiryId,
-        serializeInquiryReplyRequest(snapshot)
-      );
+      response = await replyCoordinator.submitReply(snapshot);
+      if (response === null) return;
     } catch (error: unknown) {
       const adminError = error instanceof AdminApiError ? error : null;
       const failureKind = adminError?.reasonCode === "INQUIRY_CONFLICT"
@@ -136,7 +144,6 @@ export function InquiryDetail({
         failureKind,
         errorMessage: safeMessage
       });
-      submittingRef.current = false;
       return;
     }
 
@@ -145,7 +152,6 @@ export function InquiryDetail({
         type: "delivery_unknown",
         errorMessage: "送信結果を確認しています。新しく送信せず、この返信から再確認してください。"
       });
-      submittingRef.current = false;
       return;
     }
 
@@ -154,7 +160,6 @@ export function InquiryDetail({
       inquiryStatus: response.inquiry_status,
       sentAt: response.sent_at
     });
-    submittingRef.current = false;
     try {
       await onReplySent();
     } catch {
@@ -180,8 +185,20 @@ export function InquiryDetail({
     setRecoveryBusy(true);
     setRecoveryError(null);
     try {
-      await onReopenInquiry(replyState.snapshot.expectedUpdatedAt);
-      dispatchReply({ type: "inquiry_reopened" });
+      const refreshResult = await replyCoordinator.reopenForReply({
+        expectedUpdatedAt: replyState.snapshot.expectedUpdatedAt,
+        reopen: onReopenInquiry,
+        onReopened: () => {
+          dispatchReply({ type: "inquiry_reopened" });
+          setRecoveryBusy(false);
+        },
+        refreshRelatedViews: onRefreshAfterReopen
+      });
+      if (refreshResult === "refresh_failed") {
+        setRecoveryError(
+          "再対応は開始しましたが、一覧・ダッシュボードの更新に失敗しました。"
+        );
+      }
     } catch (error: unknown) {
       setRecoveryError(
         error instanceof AdminApiError
@@ -454,7 +471,7 @@ export function InquiryDetail({
         onConfirm={() => {
           if (replyState.snapshot) return submitSnapshot(replyState.snapshot, false);
         }}
-        onCancel={() => dispatchReply({ type: "cancel_confirmation" })}
+        onCancel={() => replyCoordinator.cancelConfirmation(dispatchReply)}
       >
         {detail && replyState.snapshot && (
           <div className="confirmationDetails">
