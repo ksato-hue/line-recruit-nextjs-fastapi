@@ -1,5 +1,21 @@
 # Codebase Audit
 
+## 2026-08-08 inquiry-response rollout evidence
+
+**FACT — repository:** Checkout `f185c9c` contains a default-off `INQUIRY_REPLY_WORKFLOW_ENABLED` gate and a dedicated authenticated reply endpoint (`backend/main.py:65-68`, `2908-2912`). Inquiry list, detail, PATCH, reply orchestration, reply inserts, and finalizer calls use the process-wide fixed `COMPANY_ID` (`backend/main.py:2701-3242`). The Frontend calls the dedicated `/inquiries/{id}/replies` contract (`frontend/lib/api.ts:158-173`; `frontend/features/inquiries/InquiryDetail.tsx`).
+
+**FACT — excluded generic path:** The generic `POST /api/line/send` and `sendLineMessage` remain for other manual-send UI, but the inquiry feature has no caller. Inquiry replies resolve the raw destination from the company-scoped inquiry in Backend instead of accepting it in the browser reply request (`backend/main.py:2908-2929`, `3108-3112`, `3245-3257`; `frontend/features/inquiries`; `frontend/types/index.ts`).
+
+**FACT — repository schema artifacts:** Four additive migration files exist: `202608070001_inquiry_workflow_columns.sql`, `202608070002_inquiry_replies.sql`, `202608070003_line_message_log_inquiry_reply.sql`, and `202608070004_finalize_inquiry_reply.sql`. Offline contract tests inspect their status/company constraints, compound ownership, grants/RLS declarations, correlation, and finalizer predicates (`backend/tests/test_inquiry_migrations.py`).
+
+**FACT — current authorization boundary:** Management APIs continue to use fail-closed `ADMIN_API_KEY`; tenant selection remains the process-wide fixed `COMPANY_ID` (`backend/main.py:62-68`, `104-110`). The Next.js proxy keeps the admin key server-side (`frontend/app/api/admin/[...path]/route.ts:4-48`). Supabase Auth user identity, membership/role authorization, and user-JWT RLS policies are not implemented. The new table migration enables RLS and removes browser-role table grants, but that repository DDL is not proof of an applied remote policy state (`supabase/migrations/202608070002_inquiry_replies.sql:49-54`).
+
+**FACT — local/offline proof:** Task 14 recorded 418/418 Backend tests, 39/39 focused Node tests, TypeScript typecheck, production build, and diff check passing at commit `f185c9c`. These results exercise fakes/offline contracts and do not prove a remote database, deployed app, or live LINE behavior (`.superpowers/sdd/2026-08-06-inquiry-response-workflow/task-14-report.md`).
+
+**UNVERIFIED — external state:** Task 14 did not execute staging preflight, staging migration application, or staging application behavior verification. This Task 15 session did not connect to production, staging, Supabase MCP, or LINE production and did not apply any of the four migrations. Their current remote application state, catalog equivalence, row counts, credentials, deployed versions, and runtime behavior remain unverified.
+
+**NO-GO:** Staging and production deployment remain prohibited until a separate approved run proves migration-history reconciliation, schema equivalence to tested staging, zero invalid status/company NULL rows, Backend credential suitability, four ordered migration applications, tenant/idempotency/finalizer behavior, and LINE-disabled/non-delivering application contracts. Repository implementation or local/offline proof must not be promoted into staging or production claims. Exact gates and rollback actions are in `docs/INQUIRY_RESPONSE_RUNBOOK.md`.
+
 ## 2026-07-24 staging-baseline security gate
 
 **FACT:** No current browser Supabase client or dependency was found. The
