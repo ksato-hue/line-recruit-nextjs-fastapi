@@ -830,12 +830,13 @@ Production preflight must require: approved backup; remote migration history rec
 
 Production order:
 
-1. deploy app code with reply flag false;
-2. apply migrations 1→4 one at a time with catalog/row-count checks;
-3. smoke-test list/detail/PATCH using an approved non-PII test record;
-4. enable the flag for the fixed current company only;
-5. monitor counts of safe outcome codes, `pending`, `delivery_unknown`, 409/5xx and finalizer failures without message/assignee/destination;
-6. expand only after the observation window has zero unexplained unknown/finalizer mismatch.
+1. keep the 旧appを稼働したまま and do not deploy code that selects the new schema;
+2. apply additive migration 1→4 one at a time with catalog/row-count checks;
+3. deploy matching Backend/Frontend with `INQUIRY_REPLY_WORKFLOW_ENABLED=false`;
+4. smoke-test 一覧、詳細、PATCH using an approved non-PII test record;
+5. explicitly enable the flag for the 固定`COMPANY_ID` current company only;
+6. monitor counts of safe outcome codes, `pending`, `delivery_unknown`, 409/5xx and finalizer failures without message/assignee/destination;
+7. expand only after the observation window has zero unexplained unknown/finalizer mismatch.
 
 Rollback:
 

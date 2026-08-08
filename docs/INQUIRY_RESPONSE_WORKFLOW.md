@@ -256,12 +256,12 @@ LINE公式ドキュメントは、Push APIの初回から`X-Line-Retry-Key`を�
 
 Rollout:
 
-1. schema preflightとバックアップ。
-2. additive migrationをstagingへ順次適用し、schema equivalenceと失敗系を検証。
-3. Backendをfeature flag `INQUIRY_REPLY_WORKFLOW_ENABLED=false`で配備。
-4. Frontendを配備し、stagingのテストLINEアカウントで1件だけ送信・再試行を確認。
-5. flagを限定企業でON、`pending/delivery_unknown`件数をPIIなしで監視。
-6. 安定後に全対象へ展開。
+1. schema preflightとバックアップを完了し、旧appを稼働したままにする。
+2. additiveなmigration 1→4を順次適用・検証する。各単位のcatalog、row-count保持、schema equivalence、失敗系が確認できなければ停止する。
+3. matching BackendとFrontendをfeature flag `INQUIRY_REPLY_WORKFLOW_ENABLED=false`で配備する。
+4. 承認済みnon-PII recordで一覧、詳細、PATCHをsmoke testする。
+5. smoke test通過後に固定`COMPANY_ID`の1社だけflagを明示的にONにし、stagingのテストLINEアカウントで1件だけ送信・再試行を確認する。
+6. `pending/delivery_unknown`件数をPIIなしで監視し、安定後に別承認で対象を拡大する。
 
 Rollback:
 

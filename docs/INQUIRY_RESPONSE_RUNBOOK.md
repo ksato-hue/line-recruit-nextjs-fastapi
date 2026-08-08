@@ -31,12 +31,15 @@ production作業は、次のすべてについて承認済みの証拠を変更�
 
 production作業は次の順番を変えない。
 
-1. FrontendとBackendのapp codeを、`INQUIRY_REPLY_WORKFLOW_ENABLED=false`のまま配備する。
-2. `202608070001_inquiry_workflow_columns.sql`を適用し、対象列、status CHECK、company NOT NULL、複合UNIQUE、index、triggerをcatalogで確認する。適用前後の既存row countが一致しなければ停止する。
-3. `202608070002_inquiry_replies.sql`を適用し、列、FK、UNIQUE、index、RLS enabled、`anon`/`authenticated`へのpolicy・table grantなし、Backend accessを確認する。適用前後の既存table row countを記録する。
-4. `202608070003_line_message_log_inquiry_reply.sql`を適用し、nullableなlegacy column、複合FK、index、およびlegacy row count不変を確認する。
-5. `202608070004_finalize_inquiry_reply.sql`を適用し、function signature、security、grant、company predicateを確認する。
-6. 承認済みnon-PII test recordだけを使い、一覧、詳細、PATCHをsmoke testする。実在応募者への返信送信は行わない。
+1. 旧appを稼働したままにし、新しいschemaを参照するapp codeはまだ配備しない。
+2. additiveなmigration 1→4を次の順で1つずつ適用・検証する。
+   1. `202608070001_inquiry_workflow_columns.sql`を適用し、対象列、status CHECK、company NOT NULL、複合UNIQUE、index、triggerをcatalogで確認する。適用前後の既存row countが一致しなければ停止する。
+   2. `202608070002_inquiry_replies.sql`を適用し、列、FK、UNIQUE、index、RLS enabled、`anon`/`authenticated`へのpolicy・table grantなし、Backend accessを確認する。適用前後の既存table row countを記録する。
+   3. `202608070003_line_message_log_inquiry_reply.sql`を適用し、nullableなlegacy column、複合FK、index、およびlegacy row count不変を確認する。
+   4. `202608070004_finalize_inquiry_reply.sql`を適用し、function signature、security、grant、company predicateを確認する。
+3. 同じ問い合わせAPI contractを含むBackendとFrontendを、`INQUIRY_REPLY_WORKFLOW_ENABLED=false`のまま配備する。
+4. 承認済みnon-PII test recordだけを使い、一覧、詳細、PATCHをsmoke testする。実在応募者への返信送信は行わない。
+5. smoke test通過後に限り、固定`COMPANY_ID`で表す現在の1社だけを対象にflagを明示的に有効化する。
 
 各migrationは1つずつ適用し、その場でcatalogとrow countを確認する。失敗または差分不明時は次へ進まない。履歴を書き換えず、既存値を推測してbackfillせず、RLSを弱めない。
 
@@ -44,8 +47,8 @@ production作業は次の順番を変えない。
 
 ## Feature activation
 
-1. app codeと4 migrationの検証が完了するまでflagをfalseに保つ。
-2. 一覧、詳細、PATCHのnon-PII smoke testが通った後、固定`COMPANY_ID`で表す現在の1社だけを対象にflagを有効化する。
+1. matching app codeと4 migrationの検証が完了するまでflagをfalseに保つ。
+2. 一覧、詳細、PATCHのnon-PII smoke testが通った後、Migration orderの最終手順として固定`COMPANY_ID`で表す現在の1社だけを対象にflagを有効化する。
 3. この機能の返信は専用`POST /api/inquiries/{inquiry_id}/replies`だけを使用する。汎用`POST /api/line/send`は問い合わせ返信から除外し、問い合わせ状態や返信履歴の最終化に使用しない。
 4. 承認されたobservation window中は対象を拡大しない。
 5. unexplainedな`delivery_unknown`またはfinalizer mismatchが0である場合だけ、別の承認を得て拡大する。
