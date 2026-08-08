@@ -74,6 +74,7 @@ export default function AdminPage() {
   const [inquiryNavigation, setInquiryNavigation] = useState<{
     initialInquiryId?: string;
     initialStatus?: "未対応";
+    initialSort?: "oldest";
   }>({});
   const activeMenuRef = useRef(activeMenu);
   const settingsDirtyRef = useRef(settingsDirty);
@@ -257,7 +258,8 @@ export default function AdminPage() {
     const target = createDashboardInquiryNavigation(action);
     setInquiryNavigation({
       ...(target.initialInquiryId ? { initialInquiryId: target.initialInquiryId } : {}),
-      ...(target.initialStatus ? { initialStatus: target.initialStatus } : {})
+      ...(target.initialStatus ? { initialStatus: target.initialStatus } : {}),
+      ...(target.initialSort ? { initialSort: target.initialSort } : {})
     });
     setActiveMenu(target.activeMenu);
   }
@@ -352,6 +354,7 @@ export default function AdminPage() {
               <InquiryWorkspace
                 initialInquiryId={inquiryNavigation.initialInquiryId}
                 initialStatus={inquiryNavigation.initialStatus}
+                initialSort={inquiryNavigation.initialSort}
                 onDashboardRefresh={loadDashboard}
               />
             )}

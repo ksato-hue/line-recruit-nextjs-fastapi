@@ -1,4 +1,4 @@
-import type { InquiryReplyRequest, InquiryStatus } from "../../types";
+import type { InquiryReplyRequest, InquiryStatus, InquirySummary } from "../../types";
 
 export type InquiryWorkspaceQuery = Readonly<{
   status: InquiryStatus | null;
@@ -8,6 +8,9 @@ export type InquiryWorkspaceQuery = Readonly<{
 export type InquiryWorkspaceState = Readonly<{
   query: InquiryWorkspaceQuery;
   selectedInquiryId: string | null;
+  items: readonly InquirySummary[];
+  nextCursor: string | null;
+  loadingMore: boolean;
 }>;
 
 export type InquiryWorkspaceCopyState =

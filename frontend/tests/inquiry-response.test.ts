@@ -24,16 +24,21 @@ registerHooks({
 
 const { AdminApiError } = require("../lib/api.ts") as typeof import("../lib/api");
 const {
+  appendInquiryWorkspacePage,
   closeInquiryMobileDetail,
   createDashboardInquiryNavigation,
   createDashboardInquiryPreview,
+  createInquiryListCoordinator,
   createInquiryReplyCoordinator,
   createInitialInquiryWorkspaceState,
   createInitialInquiryReplyState,
+  formatInquiryUnansweredAge,
   getDashboardUnansweredCopy,
   getInquiryWorkspaceCopy,
   inquiryReplyReducer,
+  replaceInquiryWorkspacePage,
   resetInquiryWorkspaceFilter,
+  resetInquiryWorkspaceQuery,
   selectInquiryAfterRefresh,
   serializeInquiryReplyRequest,
   sortInquiryRepliesChronologically,
@@ -69,7 +74,6 @@ const relatedApplicantTypeIsExact: Equal<
   InquiryRelatedApplicant,
   ExpectedRelatedApplicant
 > = true;
-
 const relatedApplicantFixture: InquiryRelatedApplicant = {
   id: "30000000-0000-0000-0000-000000000001",
   name: null,
@@ -176,17 +180,118 @@ test("workspace query state initializes with a supplied Dashboard filter and inq
   assert.deepEqual(
     createInitialInquiryWorkspaceState({
       initialInquiryId: inquiryId,
-      initialStatus: "未対応"
+      initialStatus: "未対応",
+      initialSort: "oldest"
     }),
     {
-      query: { status: "未対応", sort: "newest" },
-      selectedInquiryId: inquiryId
+      query: { status: "未対応", sort: "oldest" },
+      selectedInquiryId: inquiryId,
+      items: [],
+      nextCursor: null,
+      loadingMore: false
     }
   );
   assert.deepEqual(createInitialInquiryWorkspaceState(), {
     query: { status: null, sort: "newest" },
-    selectedInquiryId: null
+    selectedInquiryId: null,
+    items: [],
+    nextCursor: null,
+    loadingMore: false
   });
+});
+
+test("workspace retains the cursor and appends server pages without duplicate inquiry IDs", () => {
+  const initial = createInitialInquiryWorkspaceState();
+  const firstPage = replaceInquiryWorkspacePage(initial, {
+    items: inquirySummaries,
+    next_cursor: "cursor-page-2"
+  });
+  const thirdInquiry: import("../types").InquirySummary = {
+    ...inquirySummaries[0],
+    id: "10000000-0000-0000-0000-000000000003",
+    message_preview: "最古のお問い合わせ"
+  };
+  const complete = appendInquiryWorkspacePage(firstPage, {
+    items: [inquirySummaries[1], thirdInquiry],
+    next_cursor: null
+  });
+
+  assert.equal(firstPage.nextCursor, "cursor-page-2");
+  assert.deepEqual(
+    complete.items.map((inquiry) => inquiry.id),
+    [inquirySummaries[0].id, inquirySummaries[1].id, thirdInquiry.id]
+  );
+  assert.equal(complete.nextCursor, null);
+  assert.equal(complete.loadingMore, false);
+});
+
+test("filter and sort changes reset items and cursor in the same state transition", () => {
+  const loaded = replaceInquiryWorkspacePage(
+    createInitialInquiryWorkspaceState({ initialInquiryId: inquiryId }),
+    { items: inquirySummaries, next_cursor: "cursor-page-2" }
+  );
+
+  const reset = resetInquiryWorkspaceQuery(loaded, {
+    status: "対応中",
+    sort: "oldest"
+  });
+
+  assert.deepEqual(reset, {
+    query: { status: "対応中", sort: "oldest" },
+    selectedInquiryId: inquiryId,
+    items: [],
+    nextCursor: null,
+    loadingMore: false
+  });
+});
+
+test("the load-more coordinator ignores a concurrent request and releases its guard", async () => {
+  type InquiryListResponse = import("../types").InquiryListResponse;
+  const calls: import("../lib/api").InquiryListParams[] = [];
+  let finishFirst!: (page: InquiryListResponse) => void;
+  const firstPage = new Promise<InquiryListResponse>((resolve) => {
+    finishFirst = resolve;
+  });
+  const coordinator = createInquiryListCoordinator({
+    loadPage: async (params) => {
+      calls.push(params);
+      if (calls.length === 1) return firstPage;
+      return { items: [], next_cursor: null };
+    }
+  });
+
+  const first = coordinator.loadMore(
+    { status: "未対応", sort: "oldest" },
+    "cursor-page-2"
+  );
+  const duplicate = coordinator.loadMore(
+    { status: "未対応", sort: "oldest" },
+    "cursor-page-2"
+  );
+
+  assert.equal(duplicate, null);
+  assert.deepEqual(calls, [{
+    status: "未対応",
+    sort: "oldest",
+    limit: 100,
+    cursor: "cursor-page-2"
+  }]);
+  finishFirst({ items: [], next_cursor: "cursor-page-3" });
+  await first;
+  await coordinator.loadMore(
+    { status: "未対応", sort: "oldest" },
+    "cursor-page-3"
+  );
+  assert.equal(calls.length, 2);
+});
+
+test("unanswered age copy is bounded and safe for invalid values", () => {
+  assert.equal(formatInquiryUnansweredAge(30), "未対応: 1分未満");
+  assert.equal(formatInquiryUnansweredAge(120), "未対応: 2分");
+  assert.equal(formatInquiryUnansweredAge(3_660), "未対応: 1時間");
+  assert.equal(formatInquiryUnansweredAge(172_800), "未対応: 2日");
+  assert.equal(formatInquiryUnansweredAge(Number.NaN), "未対応時間不明");
+  assert.equal(formatInquiryUnansweredAge(-1), "未対応時間不明");
 });
 
 test("list refresh preserves a selected inquiry and otherwise selects the first result", () => {
@@ -220,7 +325,10 @@ test("resetting the workspace filter keeps the current selection", () => {
 
   assert.deepEqual(resetInquiryWorkspaceFilter(state), {
     query: { status: null, sort: "newest" },
-    selectedInquiryId: inquiryId
+    selectedInquiryId: inquiryId,
+    items: [],
+    nextCursor: null,
+    loadingMore: false
   });
   assert.deepEqual(state.query, { status: "未対応", sort: "newest" });
 });
@@ -316,7 +424,7 @@ test("Dashboard recent inquiry navigation hands off the exact inquiry ID", () =>
 test("Dashboard unanswered navigation hands off the unanswered status filter", () => {
   assert.deepEqual(
     createDashboardInquiryNavigation({ type: "unanswered" }),
-    { activeMenu: "お問い合わせ", initialStatus: "未対応" }
+    { activeMenu: "お問い合わせ", initialStatus: "未対応", initialSort: "oldest" }
   );
 });
 
@@ -348,6 +456,9 @@ test("mobile Back closes detail and clears the selection in one transition", () 
   assert.deepEqual(closeInquiryMobileDetail(state), {
     query: { status: null, sort: "newest" },
     selectedInquiryId: null,
+    items: [],
+    nextCursor: null,
+    loadingMore: false,
     mobileDetailOpen: false
   });
 });

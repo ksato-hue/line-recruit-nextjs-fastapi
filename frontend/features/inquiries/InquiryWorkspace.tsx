@@ -1,13 +1,16 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getInquiries, getInquiry, updateInquiry } from "../../lib/api";
-import type { InquiryDetailResponse, InquiryStatus, InquirySummary } from "../../types";
+import type { InquiryDetailResponse, InquiryStatus } from "../../types";
 import {
+  appendInquiryWorkspacePage,
   closeInquiryMobileDetail,
+  createInquiryListCoordinator,
   createInitialInquiryWorkspaceState,
+  replaceInquiryWorkspacePage,
   resetInquiryWorkspaceFilter,
-  selectInquiryAfterRefresh
+  resetInquiryWorkspaceQuery,
 } from "./inquiry-response";
 import { InquiryDetail } from "./InquiryDetail";
 import { InquiriesView } from "./InquiriesView";
@@ -15,6 +18,7 @@ import { InquiriesView } from "./InquiriesView";
 type InquiryWorkspaceProps = {
   initialInquiryId?: string;
   initialStatus?: InquiryStatus;
+  initialSort?: "oldest" | "newest";
   onDashboardRefresh: () => void | Promise<void>;
 };
 
@@ -22,11 +26,17 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
   const [workspace, setWorkspace] = useState(() => ({
     ...createInitialInquiryWorkspaceState({
       initialInquiryId: props.initialInquiryId,
-      initialStatus: props.initialStatus
+      initialStatus: props.initialStatus,
+      initialSort: props.initialSort
     }),
     mobileDetailOpen: Boolean(props.initialInquiryId)
   }));
-  const [inquiries, setInquiries] = useState<InquirySummary[]>([]);
+  const listCoordinator = useRef<ReturnType<typeof createInquiryListCoordinator> | null>(null);
+  if (listCoordinator.current === null) {
+    listCoordinator.current = createInquiryListCoordinator({
+      loadPage: (params) => getInquiries(params)
+    });
+  }
   const [detail, setDetail] = useState<InquiryDetailResponse | null>(null);
   const [listLoading, setListLoading] = useState(true);
   const [detailLoading, setDetailLoading] = useState(false);
@@ -37,11 +47,12 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
     setWorkspace({
       ...createInitialInquiryWorkspaceState({
         initialInquiryId: props.initialInquiryId,
-        initialStatus: props.initialStatus
+        initialStatus: props.initialStatus,
+        initialSort: props.initialSort
       }),
       mobileDetailOpen: Boolean(props.initialInquiryId)
     });
-  }, [props.initialInquiryId, props.initialStatus]);
+  }, [props.initialInquiryId, props.initialSort, props.initialStatus]);
 
   useEffect(() => {
     let active = true;
@@ -54,15 +65,11 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
       limit: 100
     }).then((response) => {
       if (!active) return;
-      setInquiries(response.items);
-      setWorkspace((current) => ({
-        ...current,
-        selectedInquiryId: selectInquiryAfterRefresh(
-          current.selectedInquiryId,
-          response.items,
-          props.initialInquiryId
-        )
-      }));
+      setWorkspace((current) => replaceInquiryWorkspacePage(
+        current,
+        response,
+        props.initialInquiryId
+      ));
     }).catch((error: unknown) => {
       if (!active) return;
       setListError(error instanceof Error ? error.message : "お問い合わせの取得に失敗しました。");
@@ -72,6 +79,36 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
 
     return () => { active = false; };
   }, [props.initialInquiryId, refreshVersion, workspace.query.sort, workspace.query.status]);
+
+  const handleLoadMore = useCallback(async () => {
+    const cursor = workspace.nextCursor;
+    const query = workspace.query;
+    if (cursor === null || workspace.loadingMore) return;
+    const request = listCoordinator.current?.loadMore(query, cursor);
+    if (request === null || request === undefined) return;
+    setWorkspace((current) => current.nextCursor === cursor
+      ? { ...current, loadingMore: true }
+      : current);
+    setListError(null);
+    try {
+      const response = await request;
+      setWorkspace((current) => (
+        current.query.status === query.status
+        && current.query.sort === query.sort
+        && current.nextCursor === cursor
+          ? appendInquiryWorkspacePage(current, response)
+          : current
+      ));
+    } catch (error: unknown) {
+      setListError(
+        error instanceof Error ? error.message : "お問い合わせの追加取得に失敗しました。"
+      );
+    } finally {
+      setWorkspace((current) => current.loadingMore
+        ? { ...current, loadingMore: false }
+        : current);
+    }
+  }, [workspace.loadingMore, workspace.nextCursor, workspace.query]);
 
   useEffect(() => {
     if (!workspace.selectedInquiryId) {
@@ -153,23 +190,34 @@ export function InquiryWorkspace(props: InquiryWorkspaceProps) {
   return (
     <div className={workspace.mobileDetailOpen ? "inquiryWorkspace detailSelected" : "inquiryWorkspace"}>
       <InquiriesView
-        inquiries={inquiries}
+        inquiries={workspace.items}
         selectedInquiryId={workspace.selectedInquiryId}
         status={workspace.query.status}
+        sort={workspace.query.sort}
+        nextCursor={workspace.nextCursor}
+        loadingMore={workspace.loadingMore}
         loading={listLoading}
         errorMessage={listError}
         onSelect={handleSelect}
         onStatusChange={(status) => {
-          setWorkspace((current) => ({
-            ...current,
-            query: { ...current.query, status }
-          }));
+          setWorkspace((current) => resetInquiryWorkspaceQuery(
+            current,
+            { ...current.query, status }
+          ));
         }}
+        onSortChange={(sort) => setWorkspace((current) => resetInquiryWorkspaceQuery(
+          current,
+          { ...current.query, sort }
+        ))}
         onResetFilter={() => setWorkspace((current) => ({
           ...resetInquiryWorkspaceFilter(current),
           mobileDetailOpen: current.mobileDetailOpen
         }))}
-        onRefresh={() => setRefreshVersion((current) => current + 1)}
+        onRefresh={() => {
+          setWorkspace((current) => resetInquiryWorkspaceQuery(current, current.query));
+          setRefreshVersion((current) => current + 1);
+        }}
+        onLoadMore={handleLoadMore}
       />
       <InquiryDetail
         detail={detail}

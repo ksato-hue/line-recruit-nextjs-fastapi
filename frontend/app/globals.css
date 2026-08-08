@@ -319,6 +319,7 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .inquiryListItem strong { line-height: 1.6; overflow-wrap: anywhere; }
 .inquiryListPreview { max-height: 5.2em; overflow: auto; }
 .inquiryListItemMeta { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.inquiryLoadMore { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 12px; }
 .inquiryBackButton { display: none; margin-bottom: 14px; }
 .inquiryDetailContent { min-width: 0; }
 .inquiryReadOnlyNotice { margin-bottom: 16px; border: 1px solid #f5cf72; border-radius: 14px; background: #fff9e8; color: #7c5700; padding: 12px 14px; line-height: 1.6; }
@@ -404,5 +405,7 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   .inquiryToolbar select { width: 100%; }
   .inquiryToolbarActions { justify-content: space-between; }
   .inquiryToolbarActions button, .inquiryListItem { min-height: 44px; }
+  .inquiryLoadMore { align-items: stretch; flex-direction: column; }
+  .inquiryLoadMore button { min-height: 44px; }
   .inquiryMetadata { grid-template-columns: 1fr; }
 }

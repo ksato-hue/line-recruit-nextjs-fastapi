@@ -1,5 +1,7 @@
 import { utf16CodeUnitLength } from "../../lib/send-confirmation";
+import type { InquiryListParams } from "../../lib/api";
 import type {
+  InquiryListResponse,
   InquiryReply,
   InquiryReplyResponse,
   InquiryStatus,
@@ -12,6 +14,7 @@ import type {
   InquiryReplySnapshot,
   InquiryReplyState,
   InquiryWorkspaceCopyState,
+  InquiryWorkspaceQuery,
   InquiryWorkspaceState,
   SerializedInquiryReplyRequest
 } from "./types";
@@ -25,7 +28,11 @@ export function createDashboardInquiryNavigation(
 ) {
   return action.type === "recent"
     ? { activeMenu: "お問い合わせ" as const, initialInquiryId: action.inquiryId }
-    : { activeMenu: "お問い合わせ" as const, initialStatus: "未対応" as const };
+    : {
+        activeMenu: "お問い合わせ" as const,
+        initialStatus: "未対応" as const,
+        initialSort: "oldest" as const
+      };
 }
 
 export function getDashboardUnansweredCopy(count: number) {
@@ -42,13 +49,70 @@ export function createDashboardInquiryPreview(message: string | null | undefined
 export function createInitialInquiryWorkspaceState(options: {
   initialInquiryId?: string;
   initialStatus?: InquiryStatus;
+  initialSort?: "oldest" | "newest";
 } = {}): InquiryWorkspaceState {
   return {
     query: {
       status: options.initialStatus || null,
-      sort: "newest"
+      sort: options.initialSort || "newest"
     },
-    selectedInquiryId: options.initialInquiryId || null
+    selectedInquiryId: options.initialInquiryId || null,
+    items: [],
+    nextCursor: null,
+    loadingMore: false
+  };
+}
+
+function uniqueInquirySummaries(inquiries: readonly InquirySummary[]) {
+  const seen = new Set<string>();
+  return inquiries.filter((inquiry) => {
+    if (seen.has(inquiry.id)) return false;
+    seen.add(inquiry.id);
+    return true;
+  });
+}
+
+export function replaceInquiryWorkspacePage<T extends InquiryWorkspaceState>(
+  state: T,
+  response: InquiryListResponse,
+  suppliedInquiryId?: string
+): T {
+  const items = uniqueInquirySummaries(response.items);
+  return {
+    ...state,
+    items,
+    nextCursor: response.next_cursor,
+    loadingMore: false,
+    selectedInquiryId: selectInquiryAfterRefresh(
+      state.selectedInquiryId,
+      items,
+      suppliedInquiryId
+    )
+  };
+}
+
+export function appendInquiryWorkspacePage<T extends InquiryWorkspaceState>(
+  state: T,
+  response: InquiryListResponse
+): T {
+  return {
+    ...state,
+    items: uniqueInquirySummaries([...state.items, ...response.items]),
+    nextCursor: response.next_cursor,
+    loadingMore: false
+  };
+}
+
+export function resetInquiryWorkspaceQuery<T extends InquiryWorkspaceState>(
+  state: T,
+  query: InquiryWorkspaceQuery
+): T {
+  return {
+    ...state,
+    query,
+    items: [],
+    nextCursor: null,
+    loadingMore: false
   };
 }
 
@@ -64,13 +128,42 @@ export function selectInquiryAfterRefresh(
   return inquiries[0]?.id || null;
 }
 
-export function resetInquiryWorkspaceFilter(
-  state: InquiryWorkspaceState
-): InquiryWorkspaceState {
+export function resetInquiryWorkspaceFilter<T extends InquiryWorkspaceState>(state: T): T {
+  return resetInquiryWorkspaceQuery(state, { ...state.query, status: null });
+}
+
+export function createInquiryListCoordinator(dependencies: {
+  loadPage: (params: InquiryListParams) => Promise<InquiryListResponse>;
+}) {
+  let loadingMore = false;
+
   return {
-    ...state,
-    query: { ...state.query, status: null }
+    loadMore(query: InquiryWorkspaceQuery, cursor: string | null) {
+      if (loadingMore || cursor === null) return null;
+      loadingMore = true;
+      try {
+        return dependencies.loadPage({
+          status: query.status || undefined,
+          sort: query.sort,
+          limit: 100,
+          cursor
+        }).finally(() => {
+          loadingMore = false;
+        });
+      } catch (error) {
+        loadingMore = false;
+        throw error;
+      }
+    }
   };
+}
+
+export function formatInquiryUnansweredAge(seconds: number) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "未対応時間不明";
+  if (seconds < 60) return "未対応: 1分未満";
+  if (seconds < 3_600) return `未対応: ${Math.floor(seconds / 60)}分`;
+  if (seconds < 86_400) return `未対応: ${Math.floor(seconds / 3_600)}時間`;
+  return `未対応: ${Math.floor(seconds / 86_400)}日`;
 }
 
 export function sortInquiryRepliesChronologically(

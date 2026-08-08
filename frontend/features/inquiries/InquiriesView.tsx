@@ -1,17 +1,22 @@
 import { formatJstDateTime } from "../../lib/datetime";
 import type { InquiryStatus, InquirySummary } from "../../types";
-import { getInquiryWorkspaceCopy } from "./inquiry-response";
+import { formatInquiryUnansweredAge, getInquiryWorkspaceCopy } from "./inquiry-response";
 
 type InquiriesViewProps = {
-  inquiries: InquirySummary[];
+  inquiries: readonly InquirySummary[];
   selectedInquiryId: string | null;
   status: InquiryStatus | null;
+  sort: "oldest" | "newest";
+  nextCursor: string | null;
   loading: boolean;
+  loadingMore: boolean;
   errorMessage: string | null;
   onSelect: (id: string) => void;
   onStatusChange: (status: InquiryStatus | null) => void;
+  onSortChange: (sort: "oldest" | "newest") => void;
   onResetFilter: () => void;
   onRefresh: () => void;
+  onLoadMore: () => void;
 };
 
 const statusOptions: InquiryStatus[] = ["未対応", "対応中", "対応済み"];
@@ -20,12 +25,17 @@ export function InquiriesView({
   inquiries,
   selectedInquiryId,
   status,
+  sort,
+  nextCursor,
   loading,
+  loadingMore,
   errorMessage,
   onSelect,
   onStatusChange,
+  onSortChange,
   onResetFilter,
-  onRefresh
+  onRefresh,
+  onLoadMore
 }: InquiriesViewProps) {
   return (
     <section className="panel inquiryListPanel" aria-labelledby="inquiry-list-heading">
@@ -48,6 +58,16 @@ export function InquiriesView({
             {statusOptions.map((option) => (
               <option key={option} value={option}>{option}</option>
             ))}
+          </select>
+        </label>
+        <label>
+          <span>並び順</span>
+          <select
+            value={sort}
+            onChange={(event) => onSortChange(event.target.value as "oldest" | "newest")}
+          >
+            <option value="newest">新しい順</option>
+            <option value="oldest">古い順</option>
           </select>
         </label>
         <div className="inquiryToolbarActions">
@@ -78,7 +98,7 @@ export function InquiriesView({
           {getInquiryWorkspaceCopy("empty", { isFiltered: status !== null })}
         </div>
       ) : (
-        <div className="inquiryList" aria-busy={loading}>
+        <div className="inquiryList" aria-busy={loading || loadingMore}>
           {inquiries.map((inquiry) => {
             const selected = inquiry.id === selectedInquiryId;
             return (
@@ -100,9 +120,36 @@ export function InquiriesView({
                   {inquiry.assignee_name ? `担当: ${inquiry.assignee_name}` : "担当未設定"}
                   {inquiry.related_applicant_exists ? "・関連応募者あり" : ""}
                 </span>
+                <span className="inquiryListItemMeta">
+                  {inquiry.last_replied_at
+                    ? `最終返信: ${formatJstDateTime(inquiry.last_replied_at)}`
+                    : "最終返信: なし"}
+                  {inquiry.unanswered_age_seconds !== null
+                    ? `・${formatInquiryUnansweredAge(inquiry.unanswered_age_seconds)}`
+                    : ""}
+                </span>
               </button>
             );
           })}
+        </div>
+      )}
+      {inquiries.length > 0 && (
+        <div className="inquiryLoadMore">
+          <button
+            type="button"
+            className="secondaryButton compactButton"
+            disabled={loading || loadingMore || nextCursor === null}
+            onClick={onLoadMore}
+          >
+            {loadingMore
+              ? "さらに読み込み中..."
+              : nextCursor === null
+                ? "すべて読み込み済み"
+                : "さらに読み込む"}
+          </button>
+          <span role="status" aria-live="polite">
+            {loadingMore ? "古いお問い合わせを読み込んでいます。" : `${inquiries.length}件表示中`}
+          </span>
         </div>
       )}
     </section>
