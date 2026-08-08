@@ -1353,6 +1353,132 @@ class InquiryReplyApiTests(InquiryApiTestCase):
                 self.assertEqual({"detail": "REPLY_IN_PROGRESS"}, response.json())
                 self.assertEqual([], self.line_transport.calls)
 
+    def test_stale_pending_after_transition_gap_completes_transition_and_reuses_retry_key(self):
+        stale_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        reply = self.add_reply(
+            delivery_status="pending",
+            created_at=stale_at,
+            line_retry_key="40000000-0000-0000-0000-000000000321",
+        )
+
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        self.assertTrue(response.json()["idempotent_replay"])
+        self.assertEqual(reply["line_retry_key"], str(self.line_transport.calls[0][2]))
+        self.assertEqual([("sending", "対応中")], self.line_transport.durable_snapshots)
+        claim = next(
+            query
+            for query in self.database.queries_for("inquiry_replies")
+            if query.update_data == {
+                "delivery_status": "sending",
+                "safe_error_code": None,
+            }
+        )
+        for expected_filter in (
+            ("company_id", TENANT_A),
+            ("inquiry_id", INQUIRY_1),
+            ("id", reply["id"]),
+            ("delivery_status", "pending"),
+            ("updated_at", stale_at),
+        ):
+            self.assertIn(expected_filter, claim.equal_filters)
+        self.assert_company_scoped("inquiries")
+
+    def test_stale_pending_after_completed_transition_confirmation_reuses_retry_key(self):
+        stale_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        inquiry = self.inquiry_row()
+        inquiry["status"] = "対応中"
+        inquiry["assignee_name"] = "佐藤"
+        reply = self.add_reply(
+            delivery_status="pending",
+            created_at=stale_at,
+            line_retry_key="40000000-0000-0000-0000-000000000654",
+        )
+
+        response = self.post_reply()
+
+        self.assertEqual(200, response.status_code)
+        self.assertEqual(reply["line_retry_key"], str(self.line_transport.calls[0][2]))
+        self.assertEqual([("sending", "対応中")], self.line_transport.durable_snapshots)
+        self.assertFalse(
+            any(query.update_data is not None for query in self.database.queries_for("inquiries"))
+        )
+
+    def test_only_one_stale_pending_claimant_can_reach_line(self):
+        stale_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        inquiry = self.inquiry_row()
+        inquiry["status"] = "対応中"
+        inquiry["assignee_name"] = "佐藤"
+        reply = self.add_reply(delivery_status="pending", created_at=stale_at)
+        self.database.zero_next_reply_update = True
+
+        response = self.post_reply()
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "REPLY_IN_PROGRESS"}, response.json())
+        claims = [
+            query
+            for query in self.database.queries_for("inquiry_replies")
+            if query.update_data == {
+                "delivery_status": "sending",
+                "safe_error_code": None,
+            }
+        ]
+        self.assertEqual(1, len(claims))
+        claim = claims[0]
+        for expected_filter in (
+            ("company_id", TENANT_A),
+            ("inquiry_id", INQUIRY_1),
+            ("id", reply["id"]),
+            ("delivery_status", "pending"),
+            ("updated_at", stale_at),
+        ):
+            self.assertIn(expected_filter, claim.equal_filters)
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_stale_pending_outside_retry_window_is_not_retried(self):
+        created_at = (datetime.now(timezone.utc) - timedelta(hours=25)).isoformat()
+        reply = self.add_reply(delivery_status="pending", created_at=created_at)
+        reply["updated_at"] = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+
+        response = self.post_reply()
+
+        self.assertEqual(409, response.status_code)
+        self.assertEqual({"detail": "RETRY_WINDOW_EXPIRED"}, response.json())
+        self.assertEqual([], self.line_transport.calls)
+
+    def test_stale_pending_does_not_send_after_completed_or_conflicting_transition(self):
+        stale_at = (datetime.now(timezone.utc) - timedelta(minutes=2)).isoformat()
+        inquiry = self.inquiry_row()
+        reply = self.add_reply(delivery_status="pending", created_at=stale_at)
+
+        inquiry["status"] = "対応済み"
+        completed = self.post_reply()
+
+        self.assertEqual(409, completed.status_code)
+        self.assertEqual({"detail": "INQUIRY_REOPEN_REQUIRED"}, completed.json())
+        self.assertEqual([], self.line_transport.calls)
+
+        inquiry["status"] = "対応中"
+        inquiry["assignee_name"] = "別担当"
+        conflicting = self.post_reply()
+
+        self.assertEqual(409, conflicting.status_code)
+        self.assertEqual({"detail": "INQUIRY_CONFLICT"}, conflicting.json())
+        self.assertEqual([], self.line_transport.calls)
+
+        self.database.rows["inquiries"] = [
+            row
+            for row in self.database.rows["inquiries"]
+            if not (row["company_id"] == TENANT_A and row["id"] == INQUIRY_1)
+        ]
+        missing = self.post_reply(expected_updated_at="2026-08-01T00:00:00+00:00")
+
+        self.assertEqual(404, missing.status_code)
+        self.assertEqual([], self.line_transport.calls)
+        self.assertEqual("pending", reply["delivery_status"])
+
     def test_failed_same_key_returns_stored_rejection_and_new_action_can_send(self):
         self.add_reply(delivery_status="failed", safe_error_code="LINE_REJECTED")
 

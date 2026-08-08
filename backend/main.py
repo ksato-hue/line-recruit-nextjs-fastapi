@@ -2665,10 +2665,21 @@ def _existing_inquiry_reply_action(
             detail=InquiryReasonCode.LINE_REJECTED.value,
         )
     if status == InquiryDeliveryStatus.PENDING.value:
-        raise HTTPException(
-            status_code=409,
-            detail=InquiryReasonCode.REPLY_IN_PROGRESS.value,
-        )
+        if inquiry_reply_attempt_active(
+            reply.get("updated_at"),
+            now,
+            INQUIRY_REPLY_SENDING_LEASE_SECONDS,
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail=InquiryReasonCode.REPLY_IN_PROGRESS.value,
+            )
+        if not inquiry_reply_retry_allowed(reply.get("created_at"), now):
+            raise HTTPException(
+                status_code=409,
+                detail=InquiryReasonCode.RETRY_WINDOW_EXPIRED.value,
+            )
+        return "retry_pending"
     if status == InquiryDeliveryStatus.SENDING.value:
         if inquiry_reply_attempt_active(
             reply.get("updated_at"),
@@ -3077,7 +3088,40 @@ def api_create_inquiry_reply(inquiry_id: str, payload: InquiryReplyRequest):
             line_retry_key = UUID(str(reply.get("line_retry_key")))
         except (TypeError, ValueError, AttributeError) as exc:
             _inquiry_reply_unavailable("retry_key_load", exc, inquiry_id)
-        if existing_action == "retry_sending":
+        if existing_action == "retry_pending":
+            if inquiry.get("status") == InquiryStatus.UNANSWERED.value:
+                try:
+                    inquiry_update_result = (
+                        supabase.table("inquiries")
+                        .update(
+                            {
+                                "status": InquiryStatus.IN_PROGRESS.value,
+                                "assignee_name": payload.assignee_name,
+                            }
+                        )
+                        .eq("id", inquiry_id)
+                        .eq("company_id", COMPANY_ID)
+                        .eq("updated_at", payload.expected_updated_at.isoformat())
+                        .execute()
+                    )
+                except Exception as exc:
+                    _inquiry_reply_unavailable("inquiry_transition", exc, inquiry_id)
+                if not inquiry_update_result.data:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=InquiryReasonCode.INQUIRY_CONFLICT.value,
+                    )
+            elif (
+                inquiry.get("status") != InquiryStatus.IN_PROGRESS.value
+                or inquiry.get("assignee_name") != payload.assignee_name
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail=InquiryReasonCode.INQUIRY_CONFLICT.value,
+                )
+            current_reply_status = InquiryDeliveryStatus.PENDING.value
+            expected_reply_updated_at = str(reply.get("updated_at"))
+        elif existing_action == "retry_sending":
             current_reply_status = InquiryDeliveryStatus.SENDING.value
             expected_reply_updated_at = str(reply.get("updated_at"))
         else:
