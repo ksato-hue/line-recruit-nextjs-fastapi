@@ -53,6 +53,8 @@ const secondKey = "20000000-0000-0000-0000-000000000002";
 const expectedUpdatedAt = "2026-08-07T00:00:00+00:00";
 
 type InquiryRelatedApplicant = import("../types").InquiryRelatedApplicant;
+type DashboardRecentInquiries = import("../types").Dashboard["recent_inquiries"];
+type ExpectedDashboardRecentInquiries = import("../types").InquirySummary[];
 type ExpectedRelatedApplicant = {
   id: string;
   name: string | null;
@@ -73,6 +75,10 @@ type Equal<Left, Right> =
 const relatedApplicantTypeIsExact: Equal<
   InquiryRelatedApplicant,
   ExpectedRelatedApplicant
+> = true;
+const dashboardRecentInquiriesTypeIsExact: Equal<
+  DashboardRecentInquiries,
+  ExpectedDashboardRecentInquiries
 > = true;
 const relatedApplicantFixture: InquiryRelatedApplicant = {
   id: "30000000-0000-0000-0000-000000000001",

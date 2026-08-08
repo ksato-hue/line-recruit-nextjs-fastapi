@@ -501,15 +501,13 @@ function DashboardView({
           </div>
           <div className="miniRows">
             {dashboard.recent_inquiries.map((inquiry) => {
-              const preview = createDashboardInquiryPreview(
-                (inquiry as { message_preview?: string }).message_preview ?? inquiry.message
-              );
+              const preview = createDashboardInquiryPreview(inquiry.message_preview);
               return (
                 <button
                   type="button"
                   className="miniRow dashboardInquiryRow"
                   key={inquiry.id}
-                  onClick={() => onSelectInquiry(String(inquiry.id))}
+                  onClick={() => onSelectInquiry(inquiry.id)}
                 >
                   <span className="dashboardInquiryBody">
                     <strong
