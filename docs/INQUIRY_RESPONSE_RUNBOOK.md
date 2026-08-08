@@ -14,7 +14,8 @@ production作業は、次のすべてについて承認済みの証拠を変更�
 
 - 承認済みbackupがあり、復旧担当者と復旧手順が確認されている。
 - remote migration historyをchecked-in baselineと照合し、不一致が解消されている。
-- approved stagingへ同じ4 migrationを順番に適用し、production事前schemaがtested stagingと同等である。
+- **production/staging適用前baseline equivalence:** productionとapproved stagingの双方について、4 migration適用前のschema/catalog baselineと既存row-count基準が同等である。
+- **staging 4 migration適用後expected catalog/contract:** approved stagingへ同じ4 migrationを順番に適用した後、各migrationのexpected catalog、row-count保持、tenant/idempotency/finalizer contractを満たした証拠がある。この適用後状態はproductionの適用前baseline equivalenceとは別のgateである。
 - `inquiries.status`に許可外値がなく、`inquiries.company_id`のNULL件数が0である。
 - Backend credentialがserver-onlyの非公開credentialであり、RLS有効tableとRPCをBackend経路から利用できることがstagingで確認されている。
 - FrontendとBackendの配備versionが同じ問い合わせAPI contractを含む。
