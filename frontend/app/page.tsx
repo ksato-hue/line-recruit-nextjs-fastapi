@@ -1,11 +1,17 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getInquiries, getLineMessages, getQuestionTree, getSettings, getStatusSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings, updateStatusSettings } from "../lib/api";
-import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, Inquiry, LineMessageLog, QuestionTree, QuestionTreeQuestion, ReminderSetting, ReminderUnit } from "../types";
+import { createInterviewSlots, getApplicants, getDashboard, getFAQSettings, getLineMessages, getQuestionTree, getSettings, getStatusSettings, sendLineMessage, updateApplicant, updateFAQSetting, updateQuestionTree, updateSettings, updateStatusSettings } from "../lib/api";
+import type { AppSettings, Applicant, ApplicantStatusSetting, Dashboard, FAQSetting, FAQTemplateCategory, LineMessageLog, QuestionTree, QuestionTreeQuestion, ReminderSetting, ReminderUnit } from "../types";
 import faqTemplatesJson from "../../shared/faq_templates.json";
 import { formatJstDateTime, formatJstDateTimeWithWeekday } from "../lib/datetime";
 import { ConfirmationDialog } from "../components/ui/ConfirmationDialog";
+import { InquiryWorkspace } from "../features/inquiries/InquiryWorkspace";
+import {
+  createDashboardInquiryNavigation,
+  createDashboardInquiryPreview,
+  getDashboardUnansweredCopy
+} from "../features/inquiries/inquiry-response";
 import { createInterviewSendSnapshot, createLineSendSnapshot, isValidInterviewSlot, maskLineUserId, utf16CodeUnitLength, type InterviewSendSnapshot, type LineSendSnapshot } from "../lib/send-confirmation";
 
 const faqTemplates = faqTemplatesJson as FAQTemplateCategory[];
@@ -48,18 +54,15 @@ export default function AdminPage() {
   const [activeMenu, setActiveMenuState] = useState("ダッシュボード");
   const [dashboard, setDashboard] = useState<Dashboard | null>(null);
   const [applicants, setApplicants] = useState<Applicant[]>([]);
-  const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [selectedApplicant, setSelectedApplicant] = useState<Applicant | null>(null);
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("すべて");
   const [isReady, setIsReady] = useState(false);
   const [dashboardLoading, setDashboardLoading] = useState(false);
   const [applicantsLoading, setApplicantsLoading] = useState(false);
-  const [inquiriesLoading, setInquiriesLoading] = useState(false);
   const [statusesLoading, setStatusesLoading] = useState(false);
   const [dashboardError, setDashboardError] = useState<string | null>(null);
   const [applicantsError, setApplicantsError] = useState<string | null>(null);
-  const [inquiriesError, setInquiriesError] = useState<string | null>(null);
   const [statusesError, setStatusesError] = useState<string | null>(null);
   const [operationError, setOperationError] = useState<string | null>(null);
   const [draftMemo, setDraftMemo] = useState("");
@@ -68,6 +71,11 @@ export default function AdminPage() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsDirty, setSettingsDirty] = useState(false);
   const [pendingMenu, setPendingMenu] = useState<string | null>(null);
+  const [inquiryNavigation, setInquiryNavigation] = useState<{
+    initialInquiryId?: string;
+    initialStatus?: "未対応";
+    initialSort?: "oldest";
+  }>({});
   const activeMenuRef = useRef(activeMenu);
   const settingsDirtyRef = useRef(settingsDirty);
   const historyIndexRef = useRef(0);
@@ -120,14 +128,6 @@ export default function AdminPage() {
     try { setApplicants(await getApplicants()); }
     catch (err) { setApplicantsError(err instanceof Error ? err.message : "応募者の取得に失敗しました"); }
     finally { setApplicantsLoading(false); }
-  }
-
-  async function loadInquiries() {
-    setInquiriesLoading(true);
-    setInquiriesError(null);
-    try { setInquiries(await getInquiries()); }
-    catch (err) { setInquiriesError(err instanceof Error ? err.message : "お問い合わせの取得に失敗しました"); }
-    finally { setInquiriesLoading(false); }
   }
 
   async function loadStatuses() {
@@ -192,7 +192,6 @@ export default function AdminPage() {
     if (!isReady) return;
     if (["ダッシュボード", "簡易分析"].includes(activeMenu)) void loadDashboard();
     if (["応募者一覧", "簡易分析"].includes(activeMenu)) void loadApplicants();
-    if (activeMenu === "お問い合わせ") void loadInquiries();
     if (["応募者一覧", "簡易分析", "ステータス設定"].includes(activeMenu)) void loadStatuses();
   }, [activeMenu, isReady]);
 
@@ -253,10 +252,21 @@ export default function AdminPage() {
     if (statuses.length === 0 && !statusesLoading) void loadStatuses();
   }
 
+  function openDashboardInquiry(
+    action: { type: "recent"; inquiryId: string } | { type: "unanswered" }
+  ) {
+    const target = createDashboardInquiryNavigation(action);
+    setInquiryNavigation({
+      ...(target.initialInquiryId ? { initialInquiryId: target.initialInquiryId } : {}),
+      ...(target.initialStatus ? { initialStatus: target.initialStatus } : {}),
+      ...(target.initialSort ? { initialSort: target.initialSort } : {})
+    });
+    setActiveMenu(target.activeMenu);
+  }
+
   function reloadActiveMenu() {
     if (["ダッシュボード", "簡易分析"].includes(activeMenu)) void loadDashboard();
     if (["応募者一覧", "簡易分析"].includes(activeMenu)) void loadApplicants();
-    if (activeMenu === "お問い合わせ") void loadInquiries();
     if (["応募者一覧", "簡易分析", "ステータス設定"].includes(activeMenu)) void loadStatuses();
   }
 
@@ -288,7 +298,10 @@ export default function AdminPage() {
             <button
               key={item}
               className={activeMenu === item ? "navItem active" : "navItem"}
-              onClick={() => setActiveMenu(item)}
+              onClick={() => {
+                if (item === "お問い合わせ") setInquiryNavigation({});
+                setActiveMenu(item);
+              }}
             >
               {item}
             </button>
@@ -311,7 +324,12 @@ export default function AdminPage() {
             {activeMenu === "ダッシュボード" && <>
               {dashboardError && <div className="errorBox">{dashboardError}</div>}
               {dashboardLoading && !dashboard ? <div className="loadingCard">ダッシュボードを取得中...</div> : dashboard && (
-                <DashboardView dashboard={dashboard} onSelectApplicant={openApplicant} />
+                <DashboardView
+                  dashboard={dashboard}
+                  onSelectApplicant={openApplicant}
+                  onSelectInquiry={(inquiryId) => openDashboardInquiry({ type: "recent", inquiryId })}
+                  onSelectUnanswered={() => openDashboardInquiry({ type: "unanswered" })}
+                />
               )}
             </>}
 
@@ -332,10 +350,14 @@ export default function AdminPage() {
               </>
             )}
 
-            {activeMenu === "お問い合わせ" && <>
-              {inquiriesError && <div className="errorBox">{inquiriesError}</div>}
-              {inquiriesLoading && inquiries.length === 0 ? <div className="loadingCard">お問い合わせを取得中...</div> : <InquiriesView inquiries={inquiries} />}
-            </>}
+            {activeMenu === "お問い合わせ" && (
+              <InquiryWorkspace
+                initialInquiryId={inquiryNavigation.initialInquiryId}
+                initialStatus={inquiryNavigation.initialStatus}
+                initialSort={inquiryNavigation.initialSort}
+                onDashboardRefresh={loadDashboard}
+              />
+            )}
             {activeMenu === "質問ツリー設定" && <QuestionTreeSettings onDirtyChange={handleSettingsDirtyChange} />}
             {activeMenu === "FAQ設定" && <FAQSettings onDirtyChange={handleSettingsDirtyChange} />}
             {activeMenu === "リマインド・メッセージテンプレート" && <MessageAndReminderSettings onDirtyChange={handleSettingsDirtyChange} />}
@@ -384,9 +406,16 @@ export default function AdminPage() {
   );
 }
 
-function DashboardView({ dashboard, onSelectApplicant }: {
+function DashboardView({
+  dashboard,
+  onSelectApplicant,
+  onSelectInquiry,
+  onSelectUnanswered
+}: {
   dashboard: Dashboard;
   onSelectApplicant: (applicant: Applicant) => void;
+  onSelectInquiry: (inquiryId: string) => void;
+  onSelectUnanswered: () => void;
 }) {
   const completionRate = dashboard.application_completion_rate === null ? "—" : `${dashboard.application_completion_rate}%`;
   const cards: [string, number | string, string][] = [
@@ -401,10 +430,8 @@ function DashboardView({ dashboard, onSelectApplicant }: {
   const todoItems = [
     { title: "応募途中", count: dashboard.todo.in_progress, helper: "応募セッションがactive" },
     { title: "離脱状態", count: dashboard.todo.dropout, helper: `activeかつ最終操作から${dashboard.dropout_threshold_hours}時間以上` },
-    { title: "面接調整中", count: dashboard.todo.interview_adjusting, helper: "面接調整状況が「面接調整中」" },
-    { title: "未対応問い合わせ", count: dashboard.todo.unanswered_inquiries, helper: "問い合わせステータスが「未対応」または未設定" }
+    { title: "面接調整中", count: dashboard.todo.interview_adjusting, helper: "面接調整状況が「面接調整中」" }
   ];
-  const todoCount = todoItems.reduce((sum, item) => sum + item.count, 0);
 
   return (
     <div className="gridStack">
@@ -429,9 +456,17 @@ function DashboardView({ dashboard, onSelectApplicant }: {
             <span className="pill">現在の状態</span>
           </div>
           <div className="todoList">
-            {todoCount === 0
-              ? <div className="emptyState">現在、確認が必要な状態のデータはありません。</div>
-              : todoItems.map((item) => <TodoItem key={item.title} {...item} />)}
+            {todoItems.map((item) => <TodoItem key={item.title} {...item} />)}
+            {dashboard.todo.unanswered_inquiries === 0 ? (
+              <div className="emptyState">{getDashboardUnansweredCopy(0)}</div>
+            ) : (
+              <TodoItem
+                title="未対応問い合わせ"
+                count={dashboard.todo.unanswered_inquiries}
+                helper="問い合わせステータスが「未対応」または未設定"
+                onClick={onSelectUnanswered}
+              />
+            )}
           </div>
         </article>
 
@@ -465,15 +500,28 @@ function DashboardView({ dashboard, onSelectApplicant }: {
             </div>
           </div>
           <div className="miniRows">
-            {dashboard.recent_inquiries.map((inquiry) => (
-              <div className="miniRow" key={inquiry.id}>
-                <span>
-                  <strong>{inquiry.message || "内容未入力"}</strong>
-                  <small>{inquiry.created_at ? formatJstDateTime(inquiry.created_at) : "日時未設定"}</small>
-                </span>
-                <em>{inquiry.status || "未対応"}</em>
-              </div>
-            ))}
+            {dashboard.recent_inquiries.map((inquiry) => {
+              const preview = createDashboardInquiryPreview(inquiry.message_preview);
+              return (
+                <button
+                  type="button"
+                  className="miniRow dashboardInquiryRow"
+                  key={inquiry.id}
+                  onClick={() => onSelectInquiry(inquiry.id)}
+                >
+                  <span className="dashboardInquiryBody">
+                    <strong
+                      className="dashboardInquiryPreview"
+                      style={{ WebkitLineClamp: preview.lineClamp }}
+                    >
+                      {preview.text}
+                    </strong>
+                    <small>{inquiry.created_at ? formatJstDateTime(inquiry.created_at) : "日時未設定"}</small>
+                  </span>
+                  <em className="badge">{inquiry.status || "未対応"}</em>
+                </button>
+              );
+            })}
             {dashboard.recent_inquiries.length === 0 && <div className="emptyState">お問い合わせはありません。</div>}
           </div>
         </article>
@@ -482,7 +530,23 @@ function DashboardView({ dashboard, onSelectApplicant }: {
   );
 }
 
-function TodoItem({ title, count, helper }: { title: string; count: number; helper: string }) {
+function TodoItem({ title, count, helper, onClick }: {
+  title: string;
+  count: number;
+  helper: string;
+  onClick?: () => void;
+}) {
+  if (onClick) {
+    return (
+      <button type="button" className="todoItem todoItemButton" onClick={onClick}>
+        <div>
+          <strong>{title}</strong>
+          <small>{helper}</small>
+        </div>
+        <span>{count}件</span>
+      </button>
+    );
+  }
   return (
     <div className="todoItem">
       <div>
@@ -1135,44 +1199,6 @@ function HistoryView({ applicants }: { applicants: Applicant[] }) {
           </table>
         </div>
       )}
-    </section>
-  );
-}
-
-function InquiriesView({ inquiries }: { inquiries: Inquiry[] }) {
-  return (
-    <section className="panel">
-      <div className="panelHeader">
-        <div>
-          <p className="eyebrow">Inquiries</p>
-          <h2>お問い合わせ</h2>
-        </div>
-        <span className="pill">{inquiries.length}件</span>
-      </div>
-      <p className="sectionDescription">応募者からのお問い合わせ対応はここで確認します。</p>
-      <div className="tableWrap">
-        <table>
-          <thead>
-            <tr>
-              <th>日時</th>
-              <th>LINEユーザーID</th>
-              <th>内容</th>
-              <th>ステータス</th>
-            </tr>
-          </thead>
-          <tbody>
-            {inquiries.map((inquiry) => (
-              <tr key={inquiry.id}>
-                <td>{formatJstDateTime(inquiry.created_at)}</td>
-                <td>{maskLineUserId(inquiry.line_user_id)}</td>
-                <td>{inquiry.message || "-"}</td>
-                <td><span className="badge">{inquiry.status || "未対応"}</span></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      {inquiries.length === 0 && <div className="emptyState">まだお問い合わせはありません。</div>}
     </section>
   );
 }

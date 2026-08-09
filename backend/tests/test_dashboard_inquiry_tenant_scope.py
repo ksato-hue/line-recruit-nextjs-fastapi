@@ -15,14 +15,17 @@ class TenantQuery:
     def __init__(self, database, table_name: str):
         self.database = database
         self.table_name = table_name
+        self.database.queries.append(self)
+        self.selected_columns: str | None = None
         self.filters: list[tuple[str, object]] = []
+        self.in_filters: list[tuple[str, tuple[object, ...]]] = []
         self.update_data: dict | None = None
         self.insert_data: dict | None = None
-        self.order_column: str | None = None
-        self.order_desc = False
+        self.orders: list[tuple[str, bool]] = []
         self.row_limit: int | None = None
 
-    def select(self, _columns: str):
+    def select(self, columns: str):
+        self.selected_columns = columns
         return self
 
     def update(self, data: dict):
@@ -38,8 +41,11 @@ class TenantQuery:
         return self
 
     def order(self, column: str, desc: bool = False):
-        self.order_column = column
-        self.order_desc = desc
+        self.orders.append((column, desc))
+        return self
+
+    def in_(self, column: str, values: list[object]):
+        self.in_filters.append((column, tuple(values)))
         return self
 
     def limit(self, value: int):
@@ -57,11 +63,12 @@ class TenantQuery:
         matched = [
             row for row in rows
             if all(row.get(column) == value for column, value in self.filters)
+            and all(row.get(column) in values for column, values in self.in_filters)
         ]
-        if self.order_column:
+        for column, desc in reversed(self.orders):
             matched.sort(
-                key=lambda row: str(row.get(self.order_column) or ""),
-                reverse=self.order_desc,
+                key=lambda row: str(row.get(column) or ""),
+                reverse=desc,
             )
         if self.row_limit is not None:
             matched = matched[:self.row_limit]
@@ -77,16 +84,19 @@ class TenantSupabase:
             "applicants": [
                 {
                     "id": "own-newer", "company_id": "tenant-a", "name": "Own Newer",
+                    "line_user_id": "shared-line-user",
                     "status": "新規応募", "interview_status": "面接調整中",
                     "created_at": "2026-07-22T10:00:00+00:00",
                 },
                 {
                     "id": "own-older", "company_id": "tenant-a", "name": "Own Older",
+                    "line_user_id": "older-line-user",
                     "status": "採用", "interview_status": "面接確定",
                     "created_at": "2026-07-21T10:00:00+00:00",
                 },
                 {
                     "id": "other-new", "company_id": "tenant-b", "name": "Other",
+                    "line_user_id": "shared-line-user",
                     "status": "新規応募", "interview_status": "面接調整中",
                     "created_at": "2026-07-23T10:00:00+00:00",
                 },
@@ -94,16 +104,27 @@ class TenantSupabase:
             "inquiries": [
                 {
                     "id": "own-inquiry-new", "company_id": "tenant-a", "status": "未対応",
-                    "message": "own new", "created_at": "2026-07-22T10:00:00+00:00",
+                    "line_user_id": "shared-line-user", "message": "own new",
+                    "created_at": "2026-07-22T10:00:00+00:00", "assignee_name": None,
+                    "last_replied_at": None, "updated_at": "2026-07-22T10:00:00+00:00",
                 },
                 {
                     "id": "own-inquiry-old", "company_id": "tenant-a", "status": "対応済み",
-                    "message": "own old", "created_at": "2026-07-21T10:00:00+00:00",
+                    "line_user_id": "older-line-user", "message": "own old",
+                    "created_at": "2026-07-21T10:00:00+00:00", "assignee_name": "佐藤",
+                    "last_replied_at": "2026-07-21T11:00:00+00:00",
+                    "updated_at": "2026-07-21T11:00:00+00:00",
                 },
                 {
                     "id": "other-inquiry", "company_id": "tenant-b", "status": "未対応",
-                    "message": "other", "created_at": "2026-07-23T10:00:00+00:00",
+                    "line_user_id": "shared-line-user", "message": "other",
+                    "created_at": "2026-07-23T10:00:00+00:00", "assignee_name": None,
+                    "last_replied_at": None, "updated_at": "2026-07-23T10:00:00+00:00",
                 },
+            ],
+            "inquiry_replies": [],
+            "app_settings": [
+                {"company_id": "tenant-a", "key": "recruiter_name", "value": "佐藤 太郎"},
             ],
             "application_sessions": [
                 {
@@ -125,6 +146,7 @@ class TenantSupabase:
             ],
         }
         self.inserted: list[dict] = []
+        self.queries: list[TenantQuery] = []
 
     def table(self, name: str):
         if name not in self.rows:
@@ -183,6 +205,18 @@ class DashboardTenantScopeTests(TenantScopeTestCase):
             ["own-inquiry-new", "own-inquiry-old"],
             [row["id"] for row in result["recent_inquiries"]],
         )
+        recent_query = next(
+            query
+            for query in reversed(self.database.queries)
+            if query.table_name == "inquiries" and query.row_limit == 6
+        )
+        self.assertEqual(
+            "id,message,status,created_at,assignee_name,last_replied_at,updated_at",
+            recent_query.selected_columns,
+        )
+        for row in result["recent_inquiries"]:
+            self.assertNotIn("line_user_id", row)
+            self.assertNotIn("company_id", row)
 
 
 class InquiryTenantScopeTests(TenantScopeTestCase):
@@ -190,24 +224,43 @@ class InquiryTenantScopeTests(TenantScopeTestCase):
         result = main.api_inquiries()
         self.assertEqual(
             ["own-inquiry-new", "own-inquiry-old"],
-            [row["id"] for row in result],
+            [row["id"] for row in result["items"]],
         )
+        inquiry_query = next(
+            query for query in self.database.queries if query.table_name == "inquiries"
+        )
+        self.assertIn(("company_id", "tenant-a"), inquiry_query.filters)
+        self.assertTrue(all("line_user_id" not in row for row in result["items"]))
 
     def test_inquiry_detail_returns_own_company_record(self):
         self.assertTrue(hasattr(main, "api_inquiry_detail"), "問い合わせ詳細APIが未実装です")
         result = main.api_inquiry_detail("own-inquiry-new")
-        self.assertEqual("own-inquiry-new", result["id"])
+        self.assertEqual("own-inquiry-new", result["inquiry"]["id"])
+        self.assertEqual(
+            {"inquiry", "default_assignee_name", "masked_destination", "related_applicants", "replies", "reply_enabled"},
+            set(result),
+        )
+        self.assertNotIn("line_user_id", result["inquiry"])
+        inquiry_query = next(
+            query for query in self.database.queries if query.table_name == "inquiries"
+        )
+        self.assertIn(("company_id", "tenant-a"), inquiry_query.filters)
 
     def test_inquiry_detail_returns_not_found_for_other_company(self):
         self.assertTrue(hasattr(main, "api_inquiry_detail"), "問い合わせ詳細APIが未実装です")
         with self.assertRaises(HTTPException) as raised:
             main.api_inquiry_detail("other-inquiry")
         self.assertEqual(404, raised.exception.status_code)
+        inquiry_query = next(
+            query for query in self.database.queries if query.table_name == "inquiries"
+        )
+        self.assertIn(("company_id", "tenant-a"), inquiry_query.filters)
 
     def test_inquiry_update_does_not_change_other_company(self):
         with self.assertRaises(HTTPException) as raised:
             main.api_update_inquiry("other-inquiry", main.InquiryUpdate(status="対応済み"))
         self.assertEqual(404, raised.exception.status_code)
+        self.assertIn(("company_id", "tenant-a"), self.database.queries[-1].filters)
         other = next(
             row for row in self.database.rows["inquiries"]
             if row["id"] == "other-inquiry"

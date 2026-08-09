@@ -1,10 +1,10 @@
 # お問い合わせ詳細・担当者・LINE返信フロー
 
-調査日: 2026-08-06
+調査日: 2026-08-06 / 実装状態更新: 2026-08-08
 
-基準コミット: `cbc249c`
+設計基準コミット: `cbc249c` / 実装確認コミット: `f185c9c`
 
-状態: 実装前の承認用設計。DB、API、LINE送信、画面には未反映。
+状態: repository実装とTask 14までのlocal/offline proofは存在する。Task 14のstaging checksは実行されておらず、このsessionで4 migrationは適用していない。staging/production deploymentは **NO-GO** である。
 
 ## 1. 目的と範囲
 
@@ -12,32 +12,29 @@
 
 対象は問い合わせ一覧、詳細、担当者、返信履歴、専用返信API、ダッシュボード導線である。Supabase Auth、全テーブルのRLS、メンバー管理、非同期ジョブはこの機能の完了条件に含めない。
 
-## 2. 確認済みの現状
+## 2. 実装状態と外部未確認事項
 
-### コードとスキーマの事実
+### repositoryで確認済み
 
-- Backendには企業スコープ済みの一覧、詳細、status更新がある。更新モデルは`status`だけで、許可値の列挙はない（`backend/main.py:1654-1655`, `backend/main.py:2436-2476`）。
-- 管理画面は一覧のみで、日時、マスク済みLINE ID、本文、statusを表示する。行選択、詳細、担当者、返信UIはない（`frontend/app/page.tsx:1142-1177`）。
-- API clientには`getInquiry`があるが画面では未使用で、問い合わせ更新・返信関数はない（`frontend/lib/api.ts:40-46`）。
-- 現在の`Inquiry`型は`id/created_at/line_user_id/message/status`だけである（`frontend/types/index.ts:180-186`）。
-- ダッシュボードの直近問い合わせはクリック不能で、本文をそのまま表示している（`frontend/app/page.tsx:460-477`）。
-- `inquiries`の確認済み列は`id/line_user_id/message/status/created_at/company_id`で、担当者・返信・更新日時はない（`docs/schema/REMOTE_PUBLIC_SCHEMA_SANITIZED.sql:122-131`）。
-- `line_message_logs`は送受信本文を保持するが、問い合わせIDや返信IDを持たない（`docs/schema/REMOTE_PUBLIC_SCHEMA_SANITIZED.sql:151-161`）。
-- 手動LINE送信はLINE成功後にログ保存を試みる。ログ失敗は例外を外へ返さないため、返信ワークフローの整合性要件には流用できない（`backend/main.py:1608-1618`, `backend/main.py:2479-2492`）。
-- 採用担当者名は`app_settings`の`recruiter_name`として存在する（`backend/main.py:153-157`, `frontend/app/page.tsx:1705`）。
-- `ConfirmationDialog`は既に共通部品として存在する（`frontend/components/ui/ConfirmationDialog.tsx:5-36`）。
-- 純粋認可ポリシーには`message_send`が定義されているが、現在の問い合わせAPIへ利用者JWT/roleとして接続されてはいない（`backend/authz_policy.py:16-27`, `backend/authz_policy.py:116-145`）。
+- default-offの`INQUIRY_REPLY_WORKFLOW_ENABLED`があり、専用返信APIだけがflagを強制する（`backend/main.py:65-68`, `backend/main.py:2908-2912`）。
+- Backendは企業スコープ済みの一覧、詳細、status/担当者PATCH、専用返信APIを持つ。各queryとreply insert/finalizer引数は固定`COMPANY_ID`を使用する（`backend/main.py:2701-3242`）。
+- Frontendには一覧/詳細、担当者、確認dialog、返信結果、dashboard導線、mobile状態があり、専用`sendInquiryReply`を使用する（`frontend/features/inquiries/InquiryWorkspace.tsx`, `frontend/features/inquiries/InquiryDetail.tsx`, `frontend/lib/api.ts:158-173`）。
+- 問い合わせ返信は汎用`POST /api/line/send`を使用しない。汎用endpointと`sendLineMessage`は他の手動送信用途として残るが、問い合わせfeature配下からは呼ばれない（`backend/main.py:3245-3257`, `frontend/lib/api.ts:193-198`）。
+- 4つのadditive migrationファイルと、それらのoffline contract testがrepositoryにある（`supabase/migrations/202608070001_inquiry_workflow_columns.sql`から`202608070004_finalize_inquiry_reply.sql`, `backend/tests/test_inquiry_migrations.py`）。
+- Auth利用者、membership/role、利用者JWTに基づくRLS policyは実装されていない。現在の境界は固定`COMPANY_ID`とserver-to-server `ADMIN_API_KEY`であり、browser側Basic authとの役割も別である（`backend/main.py:62-68`, `backend/main.py:104-110`, `frontend/app/api/admin/[...path]/route.ts:4-48`）。
 
-### 未確認の実環境事項
+### staging/productionで未確認
 
-この設計ではDBへ接続していない。2026-07-24の調査用スナップショット以後の本番・staging差分、`inquiries.status`の実データ中のdistinct値、実際のgrant/RLS状態は未確認である。migration作成前に、stagingのread-only catalogと集計で次を確認する。
+Task 14ではstaging preflight、migration適用、staging application behavior確認を実行していない。このsessionも外部DB/LINEへ接続せず、4 migrationを適用していない。2026-07-24の調査用snapshot以後の本番・staging差分、remote migration history、`inquiries.status`の実データ、実際のgrant/RLS、Backend credential、配備versionは未確認である。
+
+repository実装またはlocal/offline test成功をstaging proofやproduction deploymentとみなしてはならない。次を別途承認されたstagingで確認するまでstaging/production deploymentは **NO-GO** とする。
 
 1. `inquiries.status`の値別件数（本文やLINE IDは取得しない）。
 2. 列、制約、index、RLS、grantがスナップショットと一致するか。
 3. `line_message_logs.message_type`の使用値とNULL件数。
 4. orphanとなる問い合わせや重複返信履歴が存在しないこと。
 
-### 確認された問題
+### 設計時に確認された問題
 
 - 一覧から詳細・返信へ進めず、未対応を業務上完了させる導線がない。
 - 任意文字列status、担当者なし、履歴なしのため、誰がどこまで対応したかを一貫して判断できない。
@@ -235,16 +232,16 @@ LINE公式ドキュメントは、Push APIの初回から`X-Line-Retry-Key`を�
 - 現在は固定`COMPANY_ID`と管理APIキーによる境界であり、Supabase Auth/RLS済みではない。
 - Auth後に`actor_user_id`、membership、owner/admin/member権限、aal2、company切替を接続する。memberに返信を許すかは認可ポリシーの`message_send`を正とする。
 
-## 9. migration方針
+## 9. migration方針と適用状態
 
-実装PR内でも、次を独立したstaging適用・検証単位にする。今回migrationファイルは作らない。
+次の4ファイルはrepositoryに作成済みだが、Task 14およびこのsessionではstaging/productionへ適用していない。各fileを独立したstaging適用・検証単位にする。
 
 1. `inquiries`へadditiveなworkflow列、index、updated_at triggerを追加。既存statusとNULL companyのread-only事前検査後に、status CHECK、company NOT NULL、複合UNIQUEを追加。
 2. `inquiry_replies`、制約、index、RLS有効化、直接grantなしを追加。
 3. `line_message_logs.inquiry_reply_id`をadditiveに追加。
 4. `finalize_inquiry_reply`の新規functionを追加。既存functionを置換しない。
 
-各単位はtransaction、schema検査、空/正常/競合/他社データのstagingテストを通してから次へ進む。productionのremote migration history不整合が解消するまでは適用しない。
+各単位はtransaction、schema検査、空/正常/競合/他社データのstagingテストを通してから次へ進む。remote migration historyのreconciliationとtested stagingとのschema equivalenceが証明されるまではproductionへ適用しない。
 
 ## 10. テスト方針
 
@@ -259,18 +256,20 @@ LINE公式ドキュメントは、Push APIの初回から`X-Line-Retry-Key`を�
 
 Rollout:
 
-1. schema preflightとバックアップ。
-2. additive migrationをstagingへ順次適用し、schema equivalenceと失敗系を検証。
-3. Backendをfeature flag `inquiry_reply_workflow` OFFで配備。
-4. Frontendを配備し、stagingのテストLINEアカウントで1件だけ送信・再試行を確認。
-5. flagを限定企業でON、`pending/delivery_unknown`件数をPIIなしで監視。
-6. 安定後に全対象へ展開。
+1. schema preflightとバックアップを完了し、旧appを稼働したままにする。
+2. additiveなmigration 1→4を順次適用・検証する。各単位のcatalog、row-count保持、schema equivalence、失敗系が確認できなければ停止する。
+3. matching BackendとFrontendをfeature flag `INQUIRY_REPLY_WORKFLOW_ENABLED=false`で配備する。
+4. 承認済みnon-PII recordで一覧、詳細、PATCHをsmoke testする。
+5. smoke test通過後に固定`COMPANY_ID`の1社だけflagを明示的にONにし、stagingのテストLINEアカウントで1件だけ送信・再試行を確認する。
+6. `pending/delivery_unknown`件数をPIIなしで監視し、安定後に別承認で対象を拡大する。
 
 Rollback:
 
 - flagをOFFにし、旧一覧表示へ戻す。返信APIを停止しても既存履歴は削除しない。
 - Backend/Frontendを直前versionへ戻す。additive列・テーブル・functionは残し、送信履歴を失うdown migrationは実行しない。
 - `delivery_unknown`は自動再送せず、同じidempotency/retry keyの監査後に復旧する。
+
+正確なpreflight、migration順序、安全な監視、24時間以内のunknown reconciliation、production activation、rollback条件は`docs/INQUIRY_RESPONSE_RUNBOOK.md`を正とする。
 
 ## 12. 実装PRの境界と受入条件
 

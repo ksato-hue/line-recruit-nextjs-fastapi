@@ -89,7 +89,17 @@ h2 { font-size: 19px; }
 .todoItem { display: flex; justify-content: space-between; align-items: center; }
 .todoItem small, .miniRow small, .historyRow small { display: block; color: var(--muted); margin-top: 4px; }
 .todoItem span { color: var(--blue); font-weight: 800; }
+.todoItemButton { width: 100%; color: inherit; text-align: left; min-height: 44px; }
 .miniRow { border: 1px solid var(--line); width: 100%; display: grid; grid-template-columns: 38px 1fr auto; align-items: center; gap: 12px; text-align: left; }
+.dashboardInquiryRow { grid-template-columns: minmax(0, 1fr) auto; min-height: 44px; color: inherit; }
+.dashboardInquiryBody { min-width: 0; }
+.dashboardInquiryPreview {
+  display: -webkit-box;
+  overflow: hidden;
+  -webkit-box-orient: vertical;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
 .avatar { width: 38px; height: 38px; border-radius: 14px; display: grid; place-items: center; background: var(--greenSoft); color: #047b36; font-weight: 800; }
 .toolbar { display: flex; gap: 12px; margin-bottom: 16px; }
 input, select, textarea {
@@ -291,6 +301,61 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
 .confirmationSlotOrder { width: 28px; height: 28px; display: inline-grid; place-items: center; border-radius: 999px; background: #e7f1fe; color: var(--blueDark); font-size: 12px; font-weight: 800; }
 .barChart { margin-top: 20px; height: 22px; background: #edf2f7; border-radius: 999px; overflow: hidden; }
 .barChart div { height: 100%; background: linear-gradient(90deg, var(--green), var(--blue)); border-radius: inherit; }
+.inquiryWorkspace { display: grid; grid-template-columns: minmax(300px, .85fr) minmax(0, 1.4fr); gap: 20px; align-items: start; }
+.inquiryListPanel, .inquiryDetailPanel { min-width: 0; width: 100%; }
+.inquiryPanelHeader { margin-bottom: 14px; }
+.inquiryToolbar { display: flex; align-items: end; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+.inquiryToolbar label { display: grid; gap: 6px; color: var(--muted); font-size: 12px; font-weight: 800; }
+.inquiryToolbar select { min-width: 150px; padding: 9px 11px; }
+.inquiryToolbarActions { display: flex; align-items: center; gap: 10px; }
+.inquiryResetButton { min-height: 38px; }
+.inquiryStateMessage { margin: 0 0 12px; }
+.inquiryList { display: grid; gap: 10px; }
+.inquiryListItem { width: 100%; display: grid; gap: 9px; border: 1px solid var(--line); border-radius: 15px; background: #fff; padding: 14px; color: inherit; text-align: left; }
+.inquiryListItem:hover { border-color: #b9d2f2; background: #f8fbff; }
+.inquiryListItem.selected { border-color: var(--blue); background: #eef5ff; box-shadow: 0 0 0 2px rgba(47, 128, 237, .12); }
+.inquiryListItem:focus-visible { outline: 3px solid rgba(47, 128, 237, .35); outline-offset: 2px; }
+.inquiryListItemTopline { display: flex; align-items: center; justify-content: space-between; gap: 10px; color: var(--muted); font-size: 12px; }
+.inquiryListItem strong { line-height: 1.6; overflow-wrap: anywhere; }
+.inquiryListPreview { max-height: 5.2em; overflow: auto; }
+.inquiryListItemMeta { color: var(--muted); font-size: 12px; line-height: 1.5; }
+.inquiryLoadMore { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 14px; color: var(--muted); font-size: 12px; }
+.inquiryBackButton { display: none; margin-bottom: 14px; }
+.inquiryDetailContent { min-width: 0; }
+.inquiryReadOnlyNotice { margin-bottom: 16px; border: 1px solid #f5cf72; border-radius: 14px; background: #fff9e8; color: #7c5700; padding: 12px 14px; line-height: 1.6; }
+.inquiryMetadata { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin: 0; }
+.inquiryMetadata > div { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 12px; }
+.inquiryMetadata dt { color: var(--muted); font-size: 12px; font-weight: 800; margin-bottom: 6px; }
+.inquiryMetadata dd { margin: 0; font-size: 14px; font-weight: 700; overflow-wrap: anywhere; }
+.inquiryDetailSection { margin-top: 22px; }
+.inquiryDetailSection h3 { margin: 0 0 11px; font-size: 15px; }
+.inquiryMessage { margin: 0; max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 14px; line-height: 1.75; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inquiryReplyForm { display: grid; gap: 9px; border: 1px solid var(--line); border-radius: 16px; background: #f8fafc; padding: 15px; }
+.inquiryReplyForm > label, .inquiryReplyForm .fieldLabelRow label { color: var(--muted); font-size: 12px; font-weight: 800; }
+.inquiryReplyForm input { min-width: 0; width: 100%; }
+.inquiryReplyForm textarea { min-height: 150px; background: #fff; line-height: 1.7; }
+.inquiryReplyForm .primaryButton { justify-self: end; margin-top: 2px; }
+.inquiryReplyForm[aria-busy="true"] { opacity: .72; }
+.inquiryReplyDestinationNote { margin: 2px 0 0; color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
+.inquiryReplyOutcome { margin-bottom: 12px; border: 1px solid var(--line); border-radius: 14px; padding: 13px 14px; line-height: 1.6; }
+.inquiryReplyOutcome p { margin: 0 0 10px; }
+.inquiryReplyOutcome p:last-child { margin-bottom: 0; }
+.inquiryReplyOutcomeSuccess { border-color: #a7e9bf; background: var(--greenSoft); color: #047b36; }
+.inquiryReplyOutcomeError { border-color: #fecaca; background: var(--redSoft); color: #9f1d18; }
+.inquiryReplyOutcomeUnknown { border-color: #f5cf72; background: #fff9e8; color: #7c5700; }
+.inquiryReplyOutcome .secondaryButton { margin-top: 2px; }
+.inquiryReplyOutcomeActions { display: flex; flex-wrap: wrap; gap: 9px; }
+.inquiryReplyOutcome dl { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin: 10px 0 0; }
+.inquiryReplyOutcome dl div { min-width: 0; }
+.inquiryReplyOutcome dt { font-size: 11px; font-weight: 800; }
+.inquiryReplyOutcome dd { margin: 2px 0 0; font-weight: 700; overflow-wrap: anywhere; }
+.inquiryConfirmationExcerpt { max-height: 150px; }
+.inquiryRelatedApplicants, .inquiryReplyHistory { display: grid; gap: 10px; list-style: none; margin: 0; padding: 0; }
+.inquiryRelatedApplicants li, .inquiryReplyHistory li { min-width: 0; border: 1px solid var(--line); border-radius: 14px; background: #f8fafc; padding: 13px; }
+.inquiryRelatedApplicants span, .inquiryRelatedApplicants small { display: block; color: var(--muted); margin-top: 5px; }
+.inquiryReplyHeader { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.inquiryReplyHistory p { margin: 10px 0; max-height: 260px; overflow: auto; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.inquiryReplyHistory time { color: var(--muted); font-size: 12px; }
 @media (max-width: 1180px) {
   .kpiGrid { grid-template-columns: repeat(3, 1fr); }
   .twoColumn { grid-template-columns: 1fr; }
@@ -319,6 +384,8 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   .confirmationDialogActions button { width: 100%; min-height: 44px; }
   .confirmationMeta { align-items: flex-start; flex-direction: column; gap: 4px; }
   .confirmationPreview { max-height: min(240px, 32dvh); }
+  .inquiryReplyForm .primaryButton, .inquiryReplyOutcomeActions button { width: 100%; min-height: 44px; }
+  .inquiryReplyOutcome dl { grid-template-columns: 1fr; }
   .statusStep { grid-template-columns: 42px 1fr; }
   .statusStep .textButton { grid-column: 2; justify-self: start; }
   .addStatusBox { align-items: stretch; flex-direction: column; }
@@ -326,4 +393,19 @@ th { color: var(--muted); background: #f8fafc; font-size: 12px; }
   .faqTreeChildren::before, .faqQuestionCard::before { display: none; }
   .headerActions { flex-wrap: wrap; justify-content: flex-end; }
   .settingsForm { max-width: none; }
+  .inquiryWorkspace { display: block; }
+  .inquiryDetailPanel { display: none; }
+  .inquiryWorkspace.detailSelected .inquiryListPanel { display: none; }
+  .inquiryWorkspace.detailSelected .inquiryDetailPanel { display: block; }
+  .inquiryBackButton { display: inline-flex; min-height: 44px; align-items: center; }
+  .inquiryDetailPanel { max-width: none; }
+  .inquiryDetailPanel button, .inquiryDetailPanel input, .inquiryDetailPanel textarea,
+  .inquiryToolbar select { min-height: 44px; }
+  .inquiryToolbar { align-items: stretch; flex-direction: column; }
+  .inquiryToolbar select { width: 100%; }
+  .inquiryToolbarActions { justify-content: space-between; }
+  .inquiryToolbarActions button, .inquiryListItem { min-height: 44px; }
+  .inquiryLoadMore { align-items: stretch; flex-direction: column; }
+  .inquiryLoadMore button { min-height: 44px; }
+  .inquiryMetadata { grid-template-columns: 1fr; }
 }

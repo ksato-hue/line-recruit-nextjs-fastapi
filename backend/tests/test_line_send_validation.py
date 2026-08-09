@@ -4,7 +4,11 @@ from unittest.mock import call, patch
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from line_send_validation import LineSendRequest, utf16_code_unit_length
+from line_send_validation import (
+    LineSendRequest,
+    utf16_code_unit_length,
+    validate_line_message_text,
+)
 from tests.support import load_backend_main
 
 
@@ -188,6 +192,42 @@ class MessageValidationTests(unittest.TestCase):
 
     def test_rejects_isolated_surrogate_as_validation_error(self):
         self.assert_invalid("\ud800")
+
+
+class SharedMessageValidationTests(unittest.TestCase):
+    def test_shared_validator_preserves_valid_whitespace_and_newlines(self):
+        message = "  First line\nSecond line\n"
+
+        self.assertEqual(message, validate_line_message_text(message))
+
+    def test_shared_validator_rejects_non_string_values(self):
+        for value in (None, 123, ["message"]):
+            with self.subTest(value=value):
+                with self.assertRaises(ValueError):
+                    validate_line_message_text(value)
+
+    def test_shared_validator_rejects_empty_or_whitespace_only_messages(self):
+        for value in ("", "  ", "\n\r\n"):
+            with self.subTest(value=repr(value)):
+                with self.assertRaises(ValueError):
+                    validate_line_message_text(value)
+
+    def test_shared_validator_enforces_utf16_limit_for_ascii(self):
+        self.assertEqual("a" * 5000, validate_line_message_text("a" * 5000))
+
+        with self.assertRaises(ValueError):
+            validate_line_message_text("a" * 5001)
+
+    def test_shared_validator_enforces_utf16_limit_for_emoji(self):
+        emoji = "\U0001f600"
+        self.assertEqual(emoji * 2500, validate_line_message_text(emoji * 2500))
+
+        with self.assertRaises(ValueError):
+            validate_line_message_text(emoji * 2501)
+
+    def test_shared_validator_rejects_an_isolated_surrogate(self):
+        with self.assertRaises(ValueError):
+            validate_line_message_text("\ud800")
 
 
 class RequestShapeValidationTests(unittest.TestCase):

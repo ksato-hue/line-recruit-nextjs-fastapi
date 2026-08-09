@@ -719,6 +719,8 @@ Expected: inquiry feature has zero generic `sendLineMessage` callers; `dangerous
 
 ### Task 14: Complete Dashboard navigation, responsive states and staging proof
 
+Implementation progress (2026-08-08): repository implementation and local/offline proof were completed in `f185c9c`. Steps 5–7 were not executed: staging was not inspected, the four migrations were not applied by Tasks 14–15, and staging/production deployment remains **NO-GO** pending separate approved proof.
+
 **Files:**
 - Modify: `frontend/app/page.tsx`
 - Modify: `frontend/app/globals.css`
@@ -735,19 +737,19 @@ Expected: inquiry feature has zero generic `sendLineMessage` callers; `dangerous
 - Recent message uses two-line clamp; datetime/status remain visible; zero unanswered copy is `未対応のお問い合わせはありません`.
 - Mobile detail is single-column/full-width; touch targets are at least 44px; long inquiry/reply text wraps and scrolls inside bounded regions.
 
-- [ ] **Step 1: Add failing navigation/state tests.**
+- [x] **Step 1: Add failing navigation/state tests.**
 
 Pure tests cover recent-item ID handoff, unanswered filter handoff, zero state, 2-line preview helper, and deterministic mobile Back transition. Backend test asserts Dashboard recent inquiry response excludes `line_user_id` and includes status/timestamps.
 
-- [ ] **Step 2: Run RED.**
+- [x] **Step 2: Run RED.**
 
 Expected: Dashboard handlers/response contract do not yet expose the new navigation state.
 
-- [ ] **Step 3: Implement Dashboard and responsive state completion.**
+- [x] **Step 3: Implement Dashboard and responsive state completion.**
 
 Pass `initialInquiryId/initialStatus` into `InquiryWorkspace` without introducing a new router in this PR. Add explicit `loading`, `empty`, `error`, `sending`, `delivery_unknown`, `sent`, `read-only` rendering. Keep Desktop list+detail and Mobile list/detail transition; do not change global navigation outside inquiries.
 
-- [ ] **Step 4: Run local GREEN before any staging access.**
+- [x] **Step 4: Run local GREEN before any staging access.**
 
 ```powershell
 cd backend
@@ -788,7 +790,7 @@ Use only synthetic non-PII staging fixtures in a dedicated test company. Prove: 
 
 Deploy Backend with feature gate false, verify reads/PATCH and RLS access. Enable only in staging with fake LINE transport or a non-delivering contract test; prove 200/202/409/422/502/503 mappings without contacting a real applicant. Browser sends neither company nor raw destination.
 
-- [ ] **Step 8: Commit UI/state completion.**
+- [x] **Step 8: Commit UI/state completion.**
 
 ```powershell
 git add -- frontend/app/page.tsx frontend/app/globals.css frontend/features/inquiries/InquiryWorkspace.tsx frontend/features/inquiries/InquiriesView.tsx frontend/features/inquiries/InquiryDetail.tsx frontend/features/inquiries/inquiry-response.ts frontend/tests/inquiry-response.test.ts backend/tests/test_inquiry_response_api.py
@@ -812,7 +814,7 @@ Staging command output containing connection strings, tokens, user IDs or messag
 - Runbook states feature flag, migration gates, safe metrics, manual unknown-delivery reconciliation, production activation and rollback.
 - Documents distinguish repository implementation, staging proof and production deployment; none is inferred from another.
 
-- [ ] **Step 1: Write a failing documentation contract test/check.**
+- [x] **Step 1: Write a failing documentation contract test/check.**
 
 Run a repository search for the required runbook headings before creation:
 
@@ -822,18 +824,19 @@ rg -n "Production preflight|Migration order|Feature activation|Delivery unknown|
 
 Expected: missing file causes FAIL.
 
-- [ ] **Step 2: Write exact rollout and rollback instructions.**
+- [x] **Step 2: Write exact rollout and rollback instructions.**
 
 Production preflight must require: approved backup; remote migration history reconciliation; schema equivalence to tested staging; zero invalid status/company NULL rows; verified Backend credential; frontend/backend versions containing the same API contract; feature flag false; approved change window; LINE retry behavior reviewed; no real applicant used in smoke tests.
 
 Production order:
 
-1. deploy app code with reply flag false;
-2. apply migrations 1→4 one at a time with catalog/row-count checks;
-3. smoke-test list/detail/PATCH using an approved non-PII test record;
-4. enable the flag for the fixed current company only;
-5. monitor counts of safe outcome codes, `pending`, `delivery_unknown`, 409/5xx and finalizer failures without message/assignee/destination;
-6. expand only after the observation window has zero unexplained unknown/finalizer mismatch.
+1. keep the 旧appを稼働したまま and do not deploy code that selects the new schema;
+2. apply additive migration 1→4 one at a time with catalog/row-count checks;
+3. deploy matching Backend/Frontend with `INQUIRY_REPLY_WORKFLOW_ENABLED=false`;
+4. smoke-test 一覧、詳細、PATCH using an approved non-PII test record;
+5. explicitly enable the flag for the 固定`COMPANY_ID` current company only;
+6. monitor counts of safe outcome codes, `pending`, `delivery_unknown`, 409/5xx and finalizer failures without message/assignee/destination;
+7. expand only after the observation window has zero unexplained unknown/finalizer mismatch.
 
 Rollback:
 
@@ -843,7 +846,7 @@ Rollback:
 - reconcile every `delivery_unknown` with its existing idempotency/retry key inside 24h; after 24h require operator review and a newly confirmed action;
 - schema rollback is allowed only when no reply row/log correlation exists and a separate approved migration has been staging-tested.
 
-- [ ] **Step 3: Update factual documents and run placeholder/secret checks.**
+- [x] **Step 3: Update factual documents and run placeholder/secret checks.**
 
 Mark Auth/RLS user policies as not implemented, fixed company/admin key as current, and generic LINE endpoint as excluded from inquiry replies. Run:
 
@@ -851,13 +854,20 @@ Mark Auth/RLS user policies as not implemented, fixed company/admin key as curre
 $markers = @(("TB" + "D"), ("TO" + "DO"), ("未" + "定"), ("要" + "検討"), ("適切に" + "実装"))
 $paths = @("docs/INQUIRY_RESPONSE_RUNBOOK.md", "docs/INQUIRY_RESPONSE_WORKFLOW.md", "docs/superpowers/plans/2026-08-06-inquiry-response-workflow.md")
 if (Select-String -Path $paths -Pattern $markers) { exit 1 }
-rg -n "(eyJ[A-Za-z0-9_-]+\.|Bearer [A-Za-z0-9_-]{12,}|LINE_ACCESS_TOKEN=|SUPABASE_KEY=|sb_secret_[A-Za-z0-9_-]+)" $paths
+$secretPattern = @(
+  "eyJ[A-Za-z0-9_-]+\.",
+  "Bearer [A-Za-z0-9_-]{12,}",
+  ("LINE_ACCESS" + "_TOKEN="),
+  ("SUPABASE" + "_KEY="),
+  ("sb_" + "secret_[A-Za-z0-9_-]+")
+) -join "|"
+rg -n $secretPattern $paths
 rg -n "company_id:|line_user_id:" frontend/features/inquiries frontend/types/index.ts
 ```
 
 Expected: placeholder and secret-value scans have zero matches. The Frontend field scan has no inquiry reply request field; any pre-existing unrelated type match is inspected and recorded rather than silently accepted. The descriptive word `service_role` appears only as a role/key classification, never followed by a key value.
 
-- [ ] **Step 4: Execute final local verification.**
+- [x] **Step 4: Execute final local verification.**
 
 ```powershell
 python -m pip check
@@ -878,7 +888,7 @@ Expected: dependency check/syntax/all Backend tests/Frontend tests/typecheck/bui
 
 If `next build` rewrites only generated comments in tracked `frontend/next-env.d.ts`, inspect the diff and restore that generated-only change with `apply_patch`; do not include it in this feature PR.
 
-- [ ] **Step 5: Commit documentation.**
+- [x] **Step 5: Commit documentation.**
 
 ```powershell
 git add -- docs/INQUIRY_RESPONSE_WORKFLOW.md docs/requirements.md docs/CODEBASE_AUDIT.md docs/INQUIRY_RESPONSE_RUNBOOK.md docs/superpowers/plans/2026-08-06-inquiry-response-workflow.md

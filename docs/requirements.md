@@ -162,7 +162,13 @@ shared/faq_templates.json
 - 応募者はLINEメニューから自由文の問い合わせを送信できること
 - 問い合わせをLINEユーザーID、本文、日時と関連付けて保存すること
 - 採用担当者は管理画面で問い合わせ一覧を確認できること
-- 対応状況、担当者、返信、完了管理は未実装または要検討
+- 採用担当者は詳細、対応状況、担当者、返信履歴を確認し、確認dialogを経て専用返信APIからLINE返信できること
+- 問い合わせ返信は汎用`POST /api/line/send`を使用せず、企業スコープ済み問い合わせからBackendが送信先を解決すること
+- 結果不明は`delivery_unknown`として監査可能に保持し、LINE受理とDB最終化が確認できるまで`対応済み`へ推測更新しないこと
+
+repositoryには一覧/詳細/PATCH/専用返信API、返信UI、default-offの`INQUIRY_REPLY_WORKFLOW_ENABLED`、4 migrationファイル、local/offline testsが実装されている。現在の境界は固定`COMPANY_ID`とserver-to-server `ADMIN_API_KEY`であり、Supabase Auth利用者、membership/role、利用者JWTに基づくRLS policyは未実装である。
+
+Task 14のstaging checksは実行されていない。このsessionでも4 migrationは適用しておらず、staging/production deploymentは未実施である。repository実装、local/offline proof、staging proof、production deploymentは別々に確認し、approved stagingでmigrationとapplication behaviorを証明するまでdeploymentは **NO-GO** とする。運用手順は`docs/INQUIRY_RESPONSE_RUNBOOK.md`を正とする。
 
 ### 6.5 FAQ
 
@@ -429,7 +435,7 @@ shared/faq_templates.json
 | LINE Webhook | 一部実装 | 署名検証後にテキストメッセージを処理。友だち追加処理なし |
 | LINE内応募 | 実装済み | 確認、修正、キャンセル、DB保存あり |
 | 応募途中永続化 | 実装済み | `application_sessions`を正とし、回答ごとに保存して再開可能 |
-| 問い合わせ | 基本実装済み | 保存と一覧。対応管理は未実装 |
+| 問い合わせ | repository実装・local proof済み | 一覧/詳細/PATCH/専用返信/履歴/UIを実装。Task 14 staging未検証、4 migrationはこのsessionで未適用、deployment NO-GO |
 | FAQ | 基本実装済み | 新旧方式が併存。閲覧ログなし |
 | 面接日程調整 | 基本実装済み | 候補送信と確定。変更、履歴、競合対策なし |
 | 応募者管理 | 基本実装済み | 一覧、詳細、ステータス、メモ、タグ |

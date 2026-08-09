@@ -1,0 +1,597 @@
+from __future__ import annotations
+
+import re
+import unittest
+from pathlib import Path
+
+
+MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "supabase"
+    / "migrations"
+    / "202608070001_inquiry_workflow_columns.sql"
+)
+
+INQUIRY_REPLIES_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "supabase"
+    / "migrations"
+    / "202608070002_inquiry_replies.sql"
+)
+
+LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "supabase"
+    / "migrations"
+    / "202608070003_line_message_log_inquiry_reply.sql"
+)
+
+FINALIZE_INQUIRY_REPLY_MIGRATION_PATH = (
+    Path(__file__).resolve().parents[2]
+    / "supabase"
+    / "migrations"
+    / "202608070004_finalize_inquiry_reply.sql"
+)
+
+
+def _has_exact_inquiry_replies_grant_contract(sql: str) -> bool:
+    """Return whether inquiry_replies has only its server-role table grant."""
+    without_block_comments = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
+    without_comments = re.sub(r"--[^\r\n]*", "", without_block_comments)
+    grants = [
+        " ".join(statement.lower().split())
+        for statement in without_comments.split(";")
+        if re.match(r"^\s*grant\b", statement, flags=re.IGNORECASE)
+    ]
+    return grants == [
+        "grant select, insert, update on table public.inquiry_replies to service_role"
+    ]
+
+
+def _finalizer_execute_statements(sql: str) -> list[str]:
+    """Return every security-sensitive privilege statement in the migration."""
+    without_block_comments = re.sub(r"/\*.*?\*/", "", sql, flags=re.DOTALL)
+    without_comments = re.sub(r"--[^\r\n]*", "", without_block_comments)
+    statements = [
+        " ".join(statement.lower().split())
+        for statement in without_comments.split(";")
+        if re.match(
+            r"^\s*(?:grant|revoke|alter\s+(?:function|routine)|"
+            r"alter\s+default\s+privileges)\b",
+            statement,
+            flags=re.IGNORECASE,
+        )
+        or re.search(
+            r"\bexecute\s+(?:format\s*\(|['$])",
+            statement,
+            flags=re.IGNORECASE,
+        )
+    ]
+    delimiter = re.compile(r"\$(?:[a-z_][a-z0-9_]*)?\$", re.IGNORECASE)
+    cursor = 0
+    while opening := delimiter.search(without_comments, cursor):
+        closing_start = without_comments.find(opening.group(0), opening.end())
+        if closing_start < 0:
+            statements.append("unterminated dollar-quoted body")
+            break
+        body = without_comments[opening.end():closing_start]
+        if re.search(r"\bexecute\b", body, flags=re.IGNORECASE):
+            statements.append("dynamic execute in dollar-quoted body")
+        cursor = closing_start + len(opening.group(0))
+    return statements
+
+
+def _finalizer_result_key_sets(sql: str) -> list[list[str]]:
+    """Return ordered JSON keys from each simple finalizer result object."""
+    normalized = " ".join(sql.lower().split())
+    payloads = re.findall(r"jsonb_build_object\((.*?)\)", normalized)
+    key_sets: list[list[str]] = []
+    for payload in payloads:
+        arguments = [argument.strip() for argument in payload.split(",")]
+        if len(arguments) % 2 != 0:
+            return []
+        key_sets.append(
+            [argument.strip("'") for argument in arguments[::2]]
+        )
+    return key_sets
+
+
+class InquiryWorkflowMigrationTests(unittest.TestCase):
+    def test_inquiry_metadata_contract(self) -> None:
+        """Protect inquiry metadata DDL from unsafe tenant or status backfills."""
+        self.assertTrue(
+            MIGRATION_PATH.is_file(),
+            f"missing inquiry workflow migration: {MIGRATION_PATH}",
+        )
+        sql = MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        self.assertIn("where company_id is null", normalized)
+        self.assertIn("where status is null", normalized)
+        self.assertRegex(
+            normalized,
+            r"where status not in \('未対応', '対応中', '対応済み'\)",
+        )
+        self.assertGreaterEqual(normalized.count("raise exception"), 3)
+        self.assertNotIn("update public.inquiries", normalized)
+        self.assertNotIn("set company_id =", normalized)
+        self.assertNotIn("set status =", normalized)
+
+        self.assertIn(
+            "add column if not exists assignee_name text", normalized
+        )
+        self.assertIn(
+            "add column if not exists last_replied_at timestamptz", normalized
+        )
+        self.assertIn(
+            "add column if not exists updated_at timestamptz default now()",
+            normalized,
+        )
+        self.assertIn("alter column updated_at set not null", normalized)
+        self.assertRegex(
+            normalized,
+            r"constraint inquiries_assignee_name_check check \( assignee_name is null or \(char_length\(assignee_name\) between 1 and 80 and btrim\(assignee_name\) <> ''\) \)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiries_status_check check \(status in \('未対応', '対応中', '対応済み'\)\)",
+        )
+        self.assertIn("alter column status set not null", normalized)
+        self.assertIn("alter column company_id set not null", normalized)
+        self.assertRegex(
+            normalized,
+            r"constraint inquiries_company_id_id_key unique \(company_id, id\)",
+        )
+        self.assertIn(
+            "create index if not exists idx_inquiries_company_status_created_at on public.inquiries (company_id, status, created_at desc)",
+            normalized,
+        )
+        self.assertIn(
+            "drop trigger if exists trg_inquiries_set_updated_at on public.inquiries",
+            normalized,
+        )
+        self.assertIn(
+            "create trigger trg_inquiries_set_updated_at before update on public.inquiries for each row execute function public.set_updated_at()",
+            normalized,
+        )
+
+    def test_inquiry_replies_contract(self) -> None:
+        """Protect append-only, tenant-scoped inquiry reply history DDL."""
+        self.assertTrue(
+            INQUIRY_REPLIES_MIGRATION_PATH.is_file(),
+            f"missing inquiry replies migration: {INQUIRY_REPLIES_MIGRATION_PATH}",
+        )
+        sql = INQUIRY_REPLIES_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        for column in (
+            "id uuid primary key default gen_random_uuid()",
+            "company_id text not null",
+            "inquiry_id uuid not null",
+            "assignee_name text not null",
+            "message text not null",
+            "delivery_status text not null default 'pending'",
+            "idempotency_key uuid not null",
+            "line_retry_key uuid not null",
+            "safe_error_code text",
+            "actor_user_id uuid",
+            "created_at timestamptz not null default now()",
+            "updated_at timestamptz not null default now()",
+            "sent_at timestamptz",
+        ):
+            with self.subTest(column=column):
+                self.assertIn(column, normalized)
+
+        self.assertNotRegex(
+            normalized,
+            r"company_id text not null default\s+[^, )]+",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_company_inquiry_fkey foreign key \(company_id, inquiry_id\) references public\.inquiries \(company_id, id\) on delete restrict",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_company_id_id_key unique \(company_id, id\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_company_inquiry_idempotency_key unique \(company_id, inquiry_id, idempotency_key\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_line_retry_key_key unique \(line_retry_key\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_assignee_name_check check \(char_length\(assignee_name\) between 1 and 80 and btrim\(assignee_name\) <> ''\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_message_check check \(btrim\(message\) <> ''\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint inquiry_replies_delivery_status_check check \(delivery_status in \('pending', 'sending', 'sent', 'failed', 'delivery_unknown'\)\)",
+        )
+
+        self.assertIn(
+            "create index idx_inquiry_replies_company_inquiry_created_at on public.inquiry_replies (company_id, inquiry_id, created_at desc)",
+            normalized,
+        )
+        self.assertIn(
+            "create index idx_inquiry_replies_company_delivery_status_created_at on public.inquiry_replies (company_id, delivery_status, created_at)",
+            normalized,
+        )
+        self.assertIn(
+            "alter table public.inquiry_replies enable row level security",
+            normalized,
+        )
+        self.assertIn(
+            "revoke all on table public.inquiry_replies from public",
+            normalized,
+        )
+        self.assertIn(
+            "revoke all on table public.inquiry_replies from anon",
+            normalized,
+        )
+        self.assertIn(
+            "revoke all on table public.inquiry_replies from authenticated",
+            normalized,
+        )
+        self.assertTrue(_has_exact_inquiry_replies_grant_contract(sql))
+        self.assertNotRegex(normalized, r"create policy\s+[^;]*inquiry_replies")
+        self.assertNotRegex(normalized, r"foreign key \(actor_user_id\)")
+        self.assertNotIn("references auth.", normalized)
+        self.assertIn(
+            "create trigger trg_inquiry_replies_set_updated_at before update on public.inquiry_replies for each row execute function public.set_updated_at()",
+            normalized,
+        )
+        self.assertNotRegex(
+            sql,
+            r"(?im)^\s*(?:insert\s+into|update\s+|delete\s+from)\s+",
+        )
+
+    def test_inquiry_replies_grant_contract_rejects_broader_statements(self) -> None:
+        """A grant checker must reject broad privileges and mixed browser roles."""
+        valid = (
+            "grant select, insert, update on table public.inquiry_replies "
+            "to service_role;"
+        )
+        self.assertTrue(_has_exact_inquiry_replies_grant_contract(valid))
+
+        for malicious in (
+            "grant all on table public.inquiry_replies to service_role;",
+            "grant all privileges on table public.inquiry_replies to service_role;",
+            "grant select, insert, update, delete on table public.inquiry_replies "
+            "to service_role;",
+            "grant select, insert, update on table public.inquiry_replies "
+            "to service_role, authenticated;",
+            "grant select on table public.inquiry_replies to service_role;",
+        ):
+            with self.subTest(malicious=malicious):
+                self.assertFalse(_has_exact_inquiry_replies_grant_contract(malicious))
+
+        for additional_grant in (
+            'grant delete on table "public"."inquiry_replies" to service_role;',
+            "grant select on all tables in schema public to authenticated;",
+            "/* legacy exception */\ngrant delete on table public.inquiry_replies "
+            "to service_role;",
+        ):
+            with self.subTest(additional_grant=additional_grant):
+                self.assertFalse(
+                    _has_exact_inquiry_replies_grant_contract(
+                        f"{valid}\n{additional_grant}"
+                    )
+                )
+
+    def test_line_message_log_inquiry_reply_correlation_contract(self) -> None:
+        """Protect nullable, tenant-scoped reply-to-log correlation DDL."""
+        self.assertTrue(
+            LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH.is_file(),
+            "missing line message log inquiry reply migration: "
+            f"{LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH}",
+        )
+        sql = LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH.read_text(
+            encoding="utf-8"
+        )
+        normalized = " ".join(sql.lower().split())
+
+        self.assertIn(
+            "add column if not exists inquiry_reply_id uuid", normalized
+        )
+        self.assertNotIn("inquiry_reply_id uuid not null", normalized)
+        self.assertRegex(
+            normalized,
+            r"constraint line_message_logs_inquiry_reply_company_check "
+            r"check \(inquiry_reply_id is null or company_id is not null\)",
+        )
+        self.assertRegex(
+            normalized,
+            r"constraint line_message_logs_company_inquiry_reply_fkey "
+            r"foreign key \(company_id, inquiry_reply_id\) "
+            r"references public\.inquiry_replies \(company_id, id\) "
+            r"on delete restrict",
+        )
+        self.assertIn(
+            "create index if not exists "
+            "idx_line_message_logs_company_inquiry_reply "
+            "on public.line_message_logs (company_id, inquiry_reply_id)",
+            normalized,
+        )
+        self.assertIn(
+            "create unique index if not exists "
+            "uq_line_message_logs_company_inquiry_reply "
+            "on public.line_message_logs (company_id, inquiry_reply_id) "
+            "where inquiry_reply_id is not null",
+            normalized,
+        )
+        self.assertNotIn("alter column company_id set not null", normalized)
+        self.assertNotIn("alter column id", normalized)
+        self.assertNotIn("alter column message", normalized)
+        self.assertNotIn("line_message_logs_pkey", normalized)
+        self.assertNotRegex(
+            sql,
+            r"(?im)^\s*(?:insert\s+into|update\s+|delete\s+from)\s+",
+        )
+
+    def test_finalize_inquiry_reply_function_contract(self) -> None:
+        """Protect tenant-scoped, locked and idempotent reply finalization."""
+        self.assertTrue(
+            FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.is_file(),
+            "missing finalize inquiry reply migration: "
+            f"{FINALIZE_INQUIRY_REPLY_MIGRATION_PATH}",
+        )
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        self.assertRegex(
+            normalized,
+            r"create function public\.finalize_inquiry_reply\( "
+            r"p_company_id text, p_inquiry_id uuid, p_reply_id uuid "
+            r"\) returns jsonb language plpgsql security invoker "
+            r"set search_path = pg_catalog",
+        )
+        self.assertNotIn("security definer", normalized)
+        self.assertNotRegex(normalized, r"p_(?:message|assignee|line_user_id)\b")
+
+        self.assertRegex(
+            normalized,
+            r"from public\.inquiry_replies (?:as )?r "
+            r"where r\.company_id = p_company_id "
+            r"and r\.inquiry_id = p_inquiry_id "
+            r"and r\.id = p_reply_id for update",
+        )
+        self.assertRegex(
+            normalized,
+            r"from public\.inquiries (?:as )?i "
+            r"where i\.company_id = p_company_id "
+            r"and i\.id = p_inquiry_id for update",
+        )
+        self.assertEqual(normalized.count("for update"), 3)
+
+        sent_branch_match = re.search(
+            r"if v_reply_delivery_status = 'sent' then (.*?) end if; "
+            r"update public\.inquiries",
+            normalized,
+        )
+        self.assertIsNotNone(sent_branch_match)
+        sent_branch = sent_branch_match.group(1) if sent_branch_match else ""
+        self.assertIn("return pg_catalog.jsonb_build_object(", sent_branch)
+        self.assertRegex(
+            normalized,
+            r"update public\.inquiry_replies (?:as )?r set "
+            r"delivery_status = 'sent', safe_error_code = null, "
+            r"sent_at = v_sent_at where r\.company_id = p_company_id "
+            r"and r\.inquiry_id = p_inquiry_id and r\.id = p_reply_id",
+        )
+        self.assertRegex(
+            normalized,
+            r"insert into public\.line_message_logs \( company_id, line_user_id, "
+            r"message, direction, message_type, inquiry_reply_id \) "
+            r"select p_company_id, v_line_user_id, v_reply_message, "
+            r"'outbound', 'inquiry_reply', p_reply_id where not exists \( "
+            r"select 1 from public\.line_message_logs (?:as )?existing_log "
+            r"where existing_log\.company_id = p_company_id "
+            r"and existing_log\.inquiry_reply_id = p_reply_id \)",
+        )
+        self.assertRegex(
+            normalized,
+            r"if v_inquiry_status <> '対応中' then .*? end if; .*? "
+            r"update public\.inquiries (?:as )?i set status = '対応済み', "
+            r"assignee_name = v_reply_assignee_name, "
+            r"last_replied_at = v_sent_at, updated_at = v_sent_at "
+            r"where i\.company_id = p_company_id "
+            r"and i\.id = p_inquiry_id and i\.status = '対応中'",
+        )
+        expected_result_keys = [
+            "inquiry_id",
+            "reply_id",
+            "line_message_log_id",
+            "delivery_status",
+            "inquiry_status",
+            "sent_at",
+            "inquiry_updated_at",
+        ]
+        self.assertEqual(
+            _finalizer_result_key_sets(sql),
+            [expected_result_keys, expected_result_keys],
+        )
+
+    def test_finalizer_validates_an_existing_log_before_completion(self) -> None:
+        """A stale or mismatched correlation must abort finalization."""
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        fallback_match = re.search(
+            r"if v_reply_delivery_status = 'sent' or v_log_id is null then "
+            r"(.*?) end if; if v_reply_delivery_status = 'sent' then",
+            normalized,
+        )
+        self.assertIsNotNone(fallback_match)
+        fallback = fallback_match.group(1) if fallback_match else ""
+        self.assertRegex(
+            fallback,
+            r"select l\.id, l\.direction, l\.message_type, l\.message, "
+            r"l\.line_user_id into v_log_id, v_log_direction, "
+            r"v_log_message_type, v_log_message, v_log_line_user_id "
+            r"from public\.line_message_logs (?:as )?l "
+            r"where l\.company_id = p_company_id "
+            r"and l\.inquiry_reply_id = p_reply_id for update",
+        )
+        self.assertRegex(
+            fallback,
+            r"if not found then raise exception using errcode = '23514', "
+            r"message = 'inquiry_reply_log_integrity_error'; end if;",
+        )
+        for comparison in (
+            "v_log_direction is distinct from 'outbound'",
+            "v_log_message_type is distinct from 'inquiry_reply'",
+            "v_log_message is distinct from v_reply_message",
+            "v_log_line_user_id is distinct from v_line_user_id",
+        ):
+            with self.subTest(comparison=comparison):
+                self.assertIn(comparison, fallback)
+        self.assertEqual(
+            fallback.count("message = 'inquiry_reply_log_integrity_error'"),
+            2,
+        )
+
+    def test_sent_replay_validates_the_locked_log_before_returning(self) -> None:
+        """A sent replay must reject a missing or mismatched correlation."""
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        replay_flow = re.search(
+            r"if v_reply_delivery_status = 'sent' or v_log_id is null then "
+            r"(.*?) end if; if v_reply_delivery_status = 'sent' then "
+            r"(.*?) end if; update public\.inquiries",
+            normalized,
+        )
+        self.assertIsNotNone(replay_flow)
+        validation = replay_flow.group(1) if replay_flow else ""
+        replay_return = replay_flow.group(2) if replay_flow else ""
+        self.assertRegex(
+            validation,
+            r"select l\.id, l\.direction, l\.message_type, l\.message, "
+            r"l\.line_user_id into v_log_id, v_log_direction, "
+            r"v_log_message_type, v_log_message, v_log_line_user_id "
+            r"from public\.line_message_logs (?:as )?l "
+            r"where l\.company_id = p_company_id "
+            r"and l\.inquiry_reply_id = p_reply_id for update",
+        )
+        self.assertRegex(
+            validation,
+            r"if not found then raise exception using errcode = '23514', "
+            r"message = 'inquiry_reply_log_integrity_error'; end if;",
+        )
+        for comparison in (
+            "v_log_direction is distinct from 'outbound'",
+            "v_log_message_type is distinct from 'inquiry_reply'",
+            "v_log_message is distinct from v_reply_message",
+            "v_log_line_user_id is distinct from v_line_user_id",
+        ):
+            with self.subTest(comparison=comparison):
+                self.assertIn(comparison, validation)
+        self.assertEqual(
+            validation.count("message = 'inquiry_reply_log_integrity_error'"),
+            2,
+        )
+        self.assertIn("return pg_catalog.jsonb_build_object(", replay_return)
+
+    def test_finalizer_requires_the_locked_reply_update_to_match(self) -> None:
+        """A vanished or changed locked reply must abort before completion."""
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+        normalized = " ".join(sql.lower().split())
+
+        self.assertRegex(
+            normalized,
+            r"update public\.inquiry_replies (?:as )?r set "
+            r"delivery_status = 'sent', safe_error_code = null, "
+            r"sent_at = v_sent_at where r\.company_id = p_company_id "
+            r"and r\.inquiry_id = p_inquiry_id and r\.id = p_reply_id "
+            r"and r\.delivery_status = v_reply_delivery_status "
+            r"returning r\.id into v_updated_reply_id; "
+            r"if not found then raise exception using errcode = '55000', "
+            r"message = 'inquiry_reply_update_conflict'; end if;",
+        )
+
+    def test_finalize_inquiry_reply_execute_grant_contract(self) -> None:
+        """Only the server role may execute the exact finalizer signature."""
+        self.assertTrue(
+            FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.is_file(),
+            "missing finalize inquiry reply migration: "
+            f"{FINALIZE_INQUIRY_REPLY_MIGRATION_PATH}",
+        )
+        sql = FINALIZE_INQUIRY_REPLY_MIGRATION_PATH.read_text(encoding="utf-8")
+
+        self.assertEqual(
+            _finalizer_execute_statements(sql),
+            [
+                "revoke execute on function "
+                "public.finalize_inquiry_reply(text, uuid, uuid) from public",
+                "revoke execute on function "
+                "public.finalize_inquiry_reply(text, uuid, uuid) from anon",
+                "revoke execute on function "
+                "public.finalize_inquiry_reply(text, uuid, uuid) from authenticated",
+                "grant execute on function "
+                "public.finalize_inquiry_reply(text, uuid, uuid) to service_role",
+            ],
+        )
+
+    def test_finalizer_grant_contract_rejects_forbidden_privilege_ddl(
+        self,
+    ) -> None:
+        """A finalizer grant checker must reject indirect browser access."""
+        valid = """
+            revoke execute on function
+              public.finalize_inquiry_reply(text, uuid, uuid) from public;
+            revoke execute on function
+              public.finalize_inquiry_reply(text, uuid, uuid) from anon;
+            revoke execute on function
+              public.finalize_inquiry_reply(text, uuid, uuid) from authenticated;
+            grant execute on function
+              public.finalize_inquiry_reply(text, uuid, uuid) to service_role;
+        """
+        expected = [
+            "revoke execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) from public",
+            "revoke execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) from anon",
+            "revoke execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) from authenticated",
+            "grant execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) to service_role",
+        ]
+        self.assertEqual(_finalizer_execute_statements(valid), expected)
+
+        for forbidden in (
+            "grant execute on all functions in schema public to authenticated;",
+            "grant execute on all functions in schema public to anon;",
+            "grant all privileges on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) to public;",
+            "do $$ begin execute 'grant execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) "
+            "to authenticated'; end $$;",
+            "alter function public.finalize_inquiry_reply(text, uuid, uuid) "
+            "owner to authenticated;",
+            "alter default privileges in schema public "
+            "grant execute on functions to anon;",
+            "alter routine public.finalize_inquiry_reply(text, uuid, uuid) "
+            "owner to authenticated;",
+            "do $audit$ declare ddl text := 'grant execute on function "
+            "public.finalize_inquiry_reply(text, uuid, uuid) to authenticated'; "
+            "begin execute ddl; end $audit$;",
+            "create function public.hidden_grant() returns void "
+            "language plpgsql as $$ declare ddl text := 'grant execute on "
+            "all functions in schema public to anon'; begin execute ddl; end $$;",
+        ):
+            with self.subTest(forbidden=forbidden):
+                self.assertNotEqual(
+                    _finalizer_execute_statements(f"{valid}\n{forbidden}"),
+                    expected,
+                )
+
+
+if __name__ == "__main__":
+    unittest.main()
