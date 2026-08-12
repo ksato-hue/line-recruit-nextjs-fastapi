@@ -10,7 +10,8 @@ The approved implementation worktree passed the toolchain gate and all required 
 
 - Worktree: `C:\Users\kouta\マイドライブ\github\line-recruit-staging-supabase-baseline`
 - Branch: `agent/staging-supabase-baseline-implementation`
-- HEAD: `dd62664b87a7236c63934adb88df1d6dc2dc48b4`
+- Initial isolation/base HEAD: `dd62664b87a7236c63934adb88df1d6dc2dc48b4`
+- Last committed HEAD reviewed before this report-only clarification: `6ded8203127058edcb763f300c68f36d57b6cf91`
 - Intended Task 1 deliverables: root `package.json`, root `package-lock.json`, and this verification report.
 - Root dependency diff: direct dev dependency `supabase: 2.113.0`; lockfile contains the Supabase CLI package and its platform/transitive packages only.
 - No migration SQL/files were added or modified.
@@ -21,12 +22,25 @@ Each shell reconstructed process PATH from current Machine and User PATH values 
 
 - `npx.cmd --no-install supabase --version`: `2.113.0` (exit 0)
 - `docker --version`: Docker client `29.7.2` (exit 0)
-- `docker version`: exit 0; Docker Desktop server `4.86.0 (236216)`, Engine `29.7.2`
+- `docker version`: exit 0; Docker Desktop server `4.86.0 (236216)`, Engine `29.7.2` (accepted GO evidence; usable daemon confirmed)
 - `psql --version`: PostgreSQL `16.14` (exit 0)
 - `python --version`: `Python 3.12.10`
 - `node --version`: `v24.18.0`
 - `npm --version`: `11.16.0`
 
+## PostgreSQL client-only host evidence
+
+These checks were read-only and did not invoke `psql` against any database.
+
+- `Get-Service -Name 'postgresql*'`: `(none)`.
+- `Get-Process -Name postgres`: `(none)`.
+- `Get-NetTCPConnection -LocalPort 5432`: `(none)`.
+- `C:\Program Files\PostgreSQL\16` top-level footprint: `bin`, `installer`, `lib`, `scripts`, `commandlinetools_3rd_party_licenses.txt`, `installation_summary.log`, `uninstall-postgresql.dat`, and `uninstall-postgresql.exe`; `data_directory_present=False`.
+- `installation_summary.log`: records a `Command Line Tools Installation Directory` and no populated data directory.
+- PostgreSQL installation registry key: `Branding: PostgreSQL 16`, `CLT_Version: 16.14.2`; no server version or data-directory property was present.
+- No matching PostgreSQL uninstall metadata record with a separate server component was returned.
+
+These observations support the approved client-only installation and show no matching PostgreSQL service, `postgres` process, or listener on port 5432 at check time. They do not prove that no server binary exists anywhere under arbitrary names or that no external database exists; no database connection was attempted.
 ## Current regression evidence
 
 - `python -m pip check`: exit 0; `No broken requirements found.`
@@ -39,13 +53,12 @@ Each shell reconstructed process PATH from current Machine and User PATH values 
 
 ## Current concerns
 
-- The approved Docker installation target was 4.84.0, while the usable Docker server reports 4.86.0; Docker client/daemon functionality passed, but the version-policy difference is recorded for review.
 - The first frontend `npm ci` timed out; the repeated exact install completed successfully.
 - `npm ci` reported 3 high-severity audit findings; no audit remediation was requested in Task 1.
 
 ## Verification scope
 
-`git diff --check` passed before commit. Only the three intended Task 1 deliverables are to be staged and committed with the required message. No credentials, tokens, database URLs, or Docker environment details beyond versions are recorded.
+`git diff --check` passed before this follow-up commit. Only this tracked verification report is to be staged for the follow-up evidence clarification commit. No credentials, tokens, database URLs, or Docker environment details beyond versions are recorded.
 
 ## Historical attempt history
 ## Isolation evidence
