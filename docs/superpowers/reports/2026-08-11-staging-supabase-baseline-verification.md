@@ -175,3 +175,9 @@ Read-only host checks (no installer download, GUI, elevation, reboot, license ac
 - Virtualization query returned `VirtualizationFirmwareEnabled=False; SLAT=False`; hardware virtualization cannot be treated as available.
 
 **NO-GO: Docker prerequisite blocked.** The first required WSL feature verification/enablement requires an elevated token (and may require restart), which is explicitly outside the allowed actions. Docker 4.84.0 was not downloaded or installed. Do not proceed to psql or regressions. Manual action required: an administrator must verify/enable WSL 2 and hardware virtualization, then rerun this gate; only after prerequisites are satisfied may the approved per-user installer be considered.
+
+## Task 2 approved migration-chain gate (2026-08-13)
+
+Human review approved the non-final ordering values `202608060001_public_schema_current_state_baseline.sql` and `202608060002_fail_closed_security_privileges.sql`, ahead of `202608070001`. The exact tracked local CLI `2.113.0` listed the required ten-version order in an isolated temporary project with Vector excluded. The approved lock records the two paths, server role `service_role`, six final active paths in order, and SHA-256 checksums for all four active inquiry migrations.
+
+This gate deliberately does not create the two approved migration SQL files; they remain future work. No production or staging database/MCP access, migration application, legacy move, or Task 3 work occurred.

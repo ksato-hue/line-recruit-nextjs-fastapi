@@ -1,0 +1,22 @@
+{
+  "baseline_version": "202608060001",
+  "security_version": "202608060002",
+  "baseline_path": "supabase/migrations/202608060001_public_schema_current_state_baseline.sql",
+  "security_path": "supabase/migrations/202608060002_fail_closed_security_privileges.sql",
+  "supabase_cli_version": "2.113.0",
+  "backend_database_role": "service_role",
+  "final_active_paths": [
+    "supabase/migrations/202608060001_public_schema_current_state_baseline.sql",
+    "supabase/migrations/202608060002_fail_closed_security_privileges.sql",
+    "supabase/migrations/202608070001_inquiry_workflow_columns.sql",
+    "supabase/migrations/202608070002_inquiry_replies.sql",
+    "supabase/migrations/202608070003_line_message_log_inquiry_reply.sql",
+    "supabase/migrations/202608070004_finalize_inquiry_reply.sql"
+  ],
+  "inquiry_migration_sha256": {
+    "supabase/migrations/202608070001_inquiry_workflow_columns.sql": "60f690c9a8f16a1e6e956be7ca359f7cc663804ea9da3360b7ee56736dc9cd36",
+    "supabase/migrations/202608070002_inquiry_replies.sql": "ff07907eeffbba788f7f63d4289c51bde1dfab367bfaf331c7a3042b8b110664",
+    "supabase/migrations/202608070003_line_message_log_inquiry_reply.sql": "c00fc97b35a28bab30e7977d8e8c0f752e473534e9881027e9aa12f5b9466714",
+    "supabase/migrations/202608070004_finalize_inquiry_reply.sql": "d638c10210ab770d3bb76b7bf689583961aacbc9fd3233e8e5c98ccb619627e9"
+  }
+}
