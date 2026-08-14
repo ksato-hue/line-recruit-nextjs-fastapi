@@ -30,6 +30,19 @@ INQUIRY_PATHS = (
     "supabase/migrations/202608070004_finalize_inquiry_reply.sql",
 )
 FINAL_ACTIVE_PATHS = (BASELINE_PATH, SECURITY_PATH, *INQUIRY_PATHS)
+LEGACY_ARCHIVE_DIRECTORY = (
+    REPOSITORY_ROOT / "supabase" / "legacy_migrations" / "2026-07-pre-baseline"
+)
+LEGACY_MANIFEST_PATH = LEGACY_ARCHIVE_DIRECTORY / "MANIFEST.md"
+LEGACY_MIGRATION_FILENAMES = (
+    "202607190001_mvp_security_foundation.sql",
+    "202607190002_admin_configuration.sql",
+    "202607200001_application_sessions.sql",
+    "202607210001_applicant_tags.sql",
+)
+LEGACY_MIGRATION_PREFIXES = tuple(
+    filename[:12] for filename in LEGACY_MIGRATION_FILENAMES
+)
 
 
 class StagingMigrationChainTests(unittest.TestCase):
@@ -82,6 +95,42 @@ class StagingMigrationChainTests(unittest.TestCase):
             for path in INQUIRY_PATHS
         }
         self.assertEqual(lock["inquiry_migration_sha256"], expected_hashes)
+
+    def test_pre_baseline_legacy_migrations_are_archived_with_verified_hashes(self) -> None:
+        """Reject replayable legacy migrations, altered archive bytes, and missing checksums."""
+        manifest = (
+            LEGACY_MANIFEST_PATH.read_text(encoding="utf-8")
+            if LEGACY_MANIFEST_PATH.is_file()
+            else ""
+        )
+        manifest_hashes = {}
+        for line in manifest.splitlines():
+            cells = [cell.strip() for cell in line.split("|")]
+            if len(cells) >= 3 and cells[1] in LEGACY_MIGRATION_FILENAMES:
+                manifest_hashes[cells[1]] = cells[2]
+
+        active_filenames = {path.name for path in MIGRATIONS_DIRECTORY.glob("*.sql")}
+        for prefix in LEGACY_MIGRATION_PREFIXES:
+            with self.subTest(prefix=prefix):
+                self.assertFalse(
+                    any(filename.startswith(prefix) for filename in active_filenames),
+                    f"legacy migration remains active: {prefix}",
+                )
+
+        for filename in LEGACY_MIGRATION_FILENAMES:
+            with self.subTest(filename=filename):
+                archived_path = LEGACY_ARCHIVE_DIRECTORY / filename
+                self.assertTrue(archived_path.is_file())
+                self.assertIn(filename, manifest_hashes)
+                if archived_path.is_file():
+                    self.assertEqual(
+                        manifest_hashes.get(filename),
+                        hashlib.sha256(archived_path.read_bytes()).hexdigest(),
+                    )
+        self.assertTrue(
+            LEGACY_MANIFEST_PATH.is_file(),
+            f"missing legacy migration manifest: {LEGACY_MANIFEST_PATH}",
+        )
 
 
 if __name__ == "__main__":
