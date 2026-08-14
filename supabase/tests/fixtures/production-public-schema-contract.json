@@ -1,0 +1,263 @@
+{
+  "schema": "public",
+  "task_7_completion_rpc_body": "separately tested in Task 7",
+  "function_signatures": [
+    {"name": "set_updated_at", "argument_types": [], "returns": "trigger", "required_in_task_6": true},
+    {
+      "name": "complete_application_session",
+      "argument_types": ["uuid", "text", "text", "text", "text", "text", "text", "text", "text"],
+      "returns": "jsonb",
+      "required_in_task_6": false
+    }
+  ],
+  "legacy_nullable_company_id_columns": [
+    "applicants.company_id",
+    "faq_categories.company_id",
+    "faqs.company_id",
+    "inquiries.company_id",
+    "interview_slots.company_id",
+    "line_message_logs.company_id"
+  ],
+  "required_company_id_columns": [
+    "app_settings.company_id",
+    "applicant_status_settings.company_id",
+    "application_sessions.company_id",
+    "faq_settings.company_id",
+    "question_tree_settings.company_id"
+  ],
+  "tables": {
+    "app_settings": {
+      "columns": {
+        "company_id": {"type": "text", "nullable": false, "default": null},
+        "key": {"type": "text", "nullable": false, "default": null},
+        "value": {"type": "jsonb", "nullable": false, "default": null},
+        "created_at": {"type": "timestamptz", "nullable": false, "default": "now()"},
+        "updated_at": {"type": "timestamptz", "nullable": false, "default": "now()"}
+      },
+      "constraints": {"app_settings_pkey": "PRIMARY KEY (company_id, key)"}
+    },
+    "applicant_status_settings": {
+      "columns": {
+        "company_id": {"type": "text", "nullable": false, "default": null},
+        "status_key": {"type": "text", "nullable": false, "default": null},
+        "name": {"type": "text", "nullable": false, "default": null},
+        "sort_order": {"type": "integer", "nullable": false, "default": "0"},
+        "is_active": {"type": "boolean", "nullable": false, "default": "true"},
+        "created_at": {"type": "timestamptz", "nullable": false, "default": "now()"},
+        "updated_at": {"type": "timestamptz", "nullable": false, "default": "now()"}
+      },
+      "constraints": {
+        "applicant_status_settings_pkey": "PRIMARY KEY (company_id, status_key)",
+        "applicant_status_settings_company_id_name_key": "UNIQUE (company_id, name)"
+      }
+    },
+    "applicants": {
+      "columns": {
+        "id": {"type": "uuid", "nullable": false, "default": "gen_random_uuid()"},
+        "line_user_id": {"type": "text", "nullable": false, "default": null},
+        "name": {"type": "text", "nullable": true, "default": null},
+        "phone": {"type": "text", "nullable": true, "default": null},
+        "job": {"type": "text", "nullable": true, "default": null},
+        "motivation": {"type": "text", "nullable": true, "default": null},
+        "status": {"type": "text", "nullable": true, "default": "'\u65b0\u898f\u5fdc\u52df'::text"},
+        "created_at": {"type": "timestamptz", "nullable": true, "default": "now()"},
+        "interview_status": {"type": "text", "nullable": true, "default": "'\u672a\u8abf\u6574'::text"},
+        "interview_date": {"type": "text", "nullable": true, "default": null},
+        "memo": {"type": "text", "nullable": true, "default": null},
+        "company_id": {"type": "text", "nullable": true, "default": null},
+        "application_session_id": {"type": "uuid", "nullable": true, "default": null},
+        "tags": {"type": "jsonb", "nullable": false, "default": "'[]'::jsonb"}
+      },
+      "constraints": {
+        "applicants_pkey": "PRIMARY KEY (id)",
+        "applicants_tags_array_check": "CHECK (jsonb_typeof(tags) = 'array'::text)"
+      }
+    },
+    "application_sessions": {
+      "columns": {
+        "id": {"type": "uuid", "nullable": false, "default": "gen_random_uuid()"},
+        "company_id": {"type": "text", "nullable": false, "default": null},
+        "line_user_id": {"type": "text", "nullable": false, "default": null},
+        "status": {"type": "text", "nullable": false, "default": "'active'::text"},
+        "current_question_key": {"type": "text", "nullable": true, "default": null},
+        "answers": {"type": "jsonb", "nullable": false, "default": "'[]'::jsonb"},
+        "started_at": {"type": "timestamptz", "nullable": false, "default": "now()"},
+        "last_activity_at": {"type": "timestamptz", "nullable": false, "default": "now()"},
+        "completed_at": {"type": "timestamptz", "nullable": true, "default": null},
+        "cancelled_at": {"type": "timestamptz", "nullable": true, "default": null},
+        "reminder_1h_sent_at": {"type": "timestamptz", "nullable": true, "default": null},
+        "reminder_24h_sent_at": {"type": "timestamptz", "nullable": true, "default": null},
+        "reminder_3d_sent_at": {"type": "timestamptz", "nullable": true, "default": null},
+        "last_event_id": {"type": "text", "nullable": true, "default": null},
+        "created_at": {"type": "timestamptz", "nullable": false, "default": "now()"},
+        "updated_at": {"type": "timestamptz", "nullable": false, "default": "now()"}
+      },
+      "constraints": {
+        "application_sessions_pkey": "PRIMARY KEY (id)",
+        "application_sessions_status_check": "CHECK (status = ANY (ARRAY['active'::text, 'completed'::text, 'cancelled'::text]))",
+        "application_sessions_answers_array_check": "CHECK (jsonb_typeof(answers) = 'array'::text)"
+      }
+    },
+    "contacts": {
+      "columns": {
+        "line_user_id": {"type": "text", "nullable": false, "default": null},
+        "display_name": {"type": "text", "nullable": true, "default": null},
+        "status": {"type": "text", "nullable": true, "default": "'\u53cb\u3060\u3061\u8ffd\u52a0'::text"},
+        "created_at": {"type": "timestamptz", "nullable": true, "default": "now()"}
+      },
+      "constraints": {"contacts_pkey": "PRIMARY KEY (line_user_id)"}
+    },
+    "faq_categories": {
+      "columns": {
+        "id": {"type": "uuid", "nullable": false, "default": "gen_random_uuid()"},
+        "name": {"type": "text", "nullable": false, "default": null},
+        "sort_order": {"type": "integer", "nullable": true, "default": "0"},
+        "is_active": {"type": "boolean", "nullable": true, "default": "true"},
+        "created_at": {"type": "timestamptz", "nullable": true, "default": "now()"},
+        "updated_at": {"type": "timestamptz", "nullable": true, "default": "now()"},
+        "company_id": {"type": "text", "nullable": true, "default": null}
+      },
+      "constraints": {
+        "faq_categories_pkey": "PRIMARY KEY (id)",
+        "faq_categories_name_key": "UNIQUE (name)"
+      }
+    },
+    "faq_settings": {
+      "columns": {
+        "company_id": {"type": "text", "nullable": false, "default": null},
+        "faq_key": {"type": "text", "nullable": false, "default": null},
+        "answer": {"type": "text", "nullable": false, "default": "''::text"},
+        "is_visible": {"type": "boolean", "nullable": false, "default": "false"},
+        "created_at": {"type": "timestamptz", "nullable": false, "default": "now()"},
+        "updated_at": {"type": "timestamptz", "nullable": false, "default": "now()"}
+      },
+      "constraints": {"faq_settings_pkey": "PRIMARY KEY (company_id, faq_key)"}
+    },
+    "faqs": {
+      "columns": {
+        "id": {"type": "uuid", "nullable": false, "default": "gen_random_uuid()"},
+        "category_id": {"type": "uuid", "nullable": false, "default": null},
+        "question": {"type": "text", "nullable": false, "default": null},
+        "answer": {"type": "text", "nullable": false, "default": "''::text"},
+        "is_visible": {"type": "boolean", "nullable": false, "default": "false"},
+        "sort_order": {"type": "integer", "nullable": true, "default": "0"},
+        "created_at": {"type": "timestamptz", "nullable": true, "default": "now()"},
+        "updated_at": {"type": "timestamptz", "nullable": true, "default": "now()"},
+        "company_id": {"type": "text", "nullable": true, "default": null}
+      },
+      "constraints": {
+        "faqs_pkey": "PRIMARY KEY (id)",
+        "faqs_category_id_question_key": "UNIQUE (category_id, question)",
+        "faqs_category_id_fkey": "FOREIGN KEY (category_id) REFERENCES public.faq_categories(id) ON DELETE CASCADE"
+      }
+    },
+    "inquiries": {
+      "columns": {
+        "id": {"type": "uuid", "nullable": false, "default": "gen_random_uuid()"},
+        "line_user_id": {"type": "text", "nullable": false, "default": null},
+        "message": {"type": "text", "nullable": false, "default": null},
+        "status": {"type": "text", "nullable": true, "default": "'\u672a\u5bfe\u5fdc'::text"},
+        "created_at": {"type": "timestamptz", "nullable": true, "default": "now()"},
+        "company_id": {"type": "text", "nullable": true, "default": null}
+      },
+      "constraints": {"inquiries_pkey": "PRIMARY KEY (id)"}
+    },
+    "interview_slots": {
+      "columns": {
+        "id": {"type": "uuid", "nullable": false, "default": "gen_random_uuid()"},
+        "applicant_id": {"type": "uuid", "nullable": false, "default": null},
+        "interview_round": {"type": "text", "nullable": true, "default": null},
+        "candidate_1": {"type": "text", "nullable": true, "default": null},
+        "candidate_2": {"type": "text", "nullable": true, "default": null},
+        "candidate_3": {"type": "text", "nullable": true, "default": null},
+        "selected_date": {"type": "text", "nullable": true, "default": null},
+        "status": {"type": "text", "nullable": true, "default": "'\u5019\u88dc\u65e5\u9001\u4fe1\u524d'::text"},
+        "created_at": {"type": "timestamptz", "nullable": true, "default": "now()"},
+        "line_user_id": {"type": "text", "nullable": true, "default": null},
+        "slot_datetime": {"type": "timestamptz", "nullable": true, "default": null},
+        "selected_at": {"type": "timestamptz", "nullable": true, "default": null},
+        "company_id": {"type": "text", "nullable": true, "default": null}
+      },
+      "constraints": {"interview_slots_pkey": "PRIMARY KEY (id)"}
+    },
+    "line_message_logs": {
+      "columns": {
+        "id": {"type": "uuid", "nullable": false, "default": "gen_random_uuid()"},
+        "created_at": {"type": "timestamptz", "nullable": false, "default": "now()"},
+        "line_user_id": {"type": "text", "nullable": false, "default": null},
+        "message": {"type": "text", "nullable": true, "default": null},
+        "direction": {"type": "text", "nullable": true, "default": null},
+        "message_type": {"type": "text", "nullable": true, "default": null},
+        "company_id": {"type": "text", "nullable": true, "default": null}
+      },
+      "constraints": {"line_message_logs_pkey": "PRIMARY KEY (id)"}
+    },
+    "question_tree_settings": {
+      "columns": {
+        "company_id": {"type": "text", "nullable": false, "default": null},
+        "tree": {"type": "jsonb", "nullable": false, "default": "'{}'::jsonb"},
+        "created_at": {"type": "timestamptz", "nullable": false, "default": "now()"},
+        "updated_at": {"type": "timestamptz", "nullable": false, "default": "now()"}
+      },
+      "constraints": {"question_tree_settings_pkey": "PRIMARY KEY (company_id)"}
+    }
+  },
+  "indexes": {
+    "constraint_backed": [
+      "app_settings_pkey",
+      "applicant_status_settings_pkey",
+      "applicant_status_settings_company_id_name_key",
+      "applicants_pkey",
+      "application_sessions_pkey",
+      "contacts_pkey",
+      "faq_categories_pkey",
+      "faq_categories_name_key",
+      "faq_settings_pkey",
+      "faqs_pkey",
+      "faqs_category_id_question_key",
+      "inquiries_pkey",
+      "interview_slots_pkey",
+      "line_message_logs_pkey",
+      "question_tree_settings_pkey"
+    ],
+    "explicit": {
+      "uq_app_settings_company_key": "CREATE UNIQUE INDEX uq_app_settings_company_key ON public.app_settings USING btree (company_id, key);",
+      "uq_applicant_status_settings_company_key": "CREATE UNIQUE INDEX uq_applicant_status_settings_company_key ON public.applicant_status_settings USING btree (company_id, status_key);",
+      "uq_applicant_status_settings_company_name": "CREATE UNIQUE INDEX uq_applicant_status_settings_company_name ON public.applicant_status_settings USING btree (company_id, name);",
+      "idx_applicant_status_settings_company_sort": "CREATE INDEX idx_applicant_status_settings_company_sort ON public.applicant_status_settings USING btree (company_id, sort_order);",
+      "idx_applicants_company_created_at": "CREATE INDEX idx_applicants_company_created_at ON public.applicants USING btree (company_id, created_at DESC);",
+      "uq_applicants_application_session": "CREATE UNIQUE INDEX uq_applicants_application_session ON public.applicants USING btree (application_session_id) WHERE application_session_id IS NOT NULL;",
+      "uq_application_sessions_active_user": "CREATE UNIQUE INDEX uq_application_sessions_active_user ON public.application_sessions USING btree (company_id, line_user_id) WHERE status = 'active'::text;",
+      "idx_application_sessions_company_status_activity": "CREATE INDEX idx_application_sessions_company_status_activity ON public.application_sessions USING btree (company_id, status, last_activity_at);",
+      "idx_application_sessions_company_started": "CREATE INDEX idx_application_sessions_company_started ON public.application_sessions USING btree (company_id, started_at DESC);",
+      "idx_faq_categories_active": "CREATE INDEX idx_faq_categories_active ON public.faq_categories USING btree (is_active);",
+      "idx_faq_categories_company_sort": "CREATE INDEX idx_faq_categories_company_sort ON public.faq_categories USING btree (company_id, sort_order);",
+      "idx_faq_categories_sort_order": "CREATE INDEX idx_faq_categories_sort_order ON public.faq_categories USING btree (sort_order);",
+      "uq_faq_settings_company_key": "CREATE UNIQUE INDEX uq_faq_settings_company_key ON public.faq_settings USING btree (company_id, faq_key);",
+      "idx_faq_settings_company_visible": "CREATE INDEX idx_faq_settings_company_visible ON public.faq_settings USING btree (company_id, is_visible);",
+      "idx_faqs_category_id": "CREATE INDEX idx_faqs_category_id ON public.faqs USING btree (category_id);",
+      "idx_faqs_company_category_sort": "CREATE INDEX idx_faqs_company_category_sort ON public.faqs USING btree (company_id, category_id, sort_order);",
+      "idx_faqs_sort_order": "CREATE INDEX idx_faqs_sort_order ON public.faqs USING btree (sort_order);",
+      "idx_faqs_visible": "CREATE INDEX idx_faqs_visible ON public.faqs USING btree (is_visible);",
+      "idx_inquiries_company_created_at": "CREATE INDEX idx_inquiries_company_created_at ON public.inquiries USING btree (company_id, created_at DESC);",
+      "idx_interview_slots_applicant_id": "CREATE INDEX idx_interview_slots_applicant_id ON public.interview_slots USING btree (applicant_id);",
+      "idx_interview_slots_company_applicant": "CREATE INDEX idx_interview_slots_company_applicant ON public.interview_slots USING btree (company_id, applicant_id);",
+      "idx_interview_slots_company_line_datetime": "CREATE INDEX idx_interview_slots_company_line_datetime ON public.interview_slots USING btree (company_id, line_user_id, slot_datetime);",
+      "idx_interview_slots_line_user_id": "CREATE INDEX idx_interview_slots_line_user_id ON public.interview_slots USING btree (line_user_id);",
+      "idx_interview_slots_status": "CREATE INDEX idx_interview_slots_status ON public.interview_slots USING btree (status);",
+      "idx_line_message_logs_company_created_at": "CREATE INDEX idx_line_message_logs_company_created_at ON public.line_message_logs USING btree (company_id, created_at DESC);",
+      "idx_line_message_logs_created_at": "CREATE INDEX idx_line_message_logs_created_at ON public.line_message_logs USING btree (created_at);",
+      "idx_line_message_logs_line_user_id": "CREATE INDEX idx_line_message_logs_line_user_id ON public.line_message_logs USING btree (line_user_id);",
+      "uq_question_tree_settings_company": "CREATE UNIQUE INDEX uq_question_tree_settings_company ON public.question_tree_settings USING btree (company_id);"
+    }
+  },
+  "triggers": {
+    "set_app_settings_updated_at": "CREATE TRIGGER set_app_settings_updated_at BEFORE UPDATE ON public.app_settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();",
+    "set_applicant_status_settings_updated_at": "CREATE TRIGGER set_applicant_status_settings_updated_at BEFORE UPDATE ON public.applicant_status_settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();",
+    "set_application_sessions_updated_at": "CREATE TRIGGER set_application_sessions_updated_at BEFORE UPDATE ON public.application_sessions FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();",
+    "trg_faq_categories_updated_at": "CREATE TRIGGER trg_faq_categories_updated_at BEFORE UPDATE ON public.faq_categories FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();",
+    "set_faq_settings_updated_at": "CREATE TRIGGER set_faq_settings_updated_at BEFORE UPDATE ON public.faq_settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();",
+    "trg_faqs_updated_at": "CREATE TRIGGER trg_faqs_updated_at BEFORE UPDATE ON public.faqs FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();",
+    "set_question_tree_settings_updated_at": "CREATE TRIGGER set_question_tree_settings_updated_at BEFORE UPDATE ON public.question_tree_settings FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();"
+  }
+}

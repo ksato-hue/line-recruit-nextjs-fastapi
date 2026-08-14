@@ -11,6 +11,13 @@ from pathlib import Path
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 LOCK_PATH = REPOSITORY_ROOT / "supabase" / "migration-chain.lock.json"
 MIGRATIONS_DIRECTORY = REPOSITORY_ROOT / "supabase" / "migrations"
+STRUCTURAL_CONTRACT_PATH = (
+    REPOSITORY_ROOT
+    / "supabase"
+    / "tests"
+    / "fixtures"
+    / "production-public-schema-contract.json"
+)
 VERSION_PATTERN = re.compile(r"^\d{12}$")
 BASELINE_VERSION = "202608060001"
 SECURITY_VERSION = "202608060002"
@@ -110,7 +117,199 @@ def split_top_level_sql_statements(sql: str) -> list[str]:
     return statements
 
 
+def normalize_sql_fragment(fragment: str) -> str:
+    normalized = re.sub(r"\s+", " ", fragment).strip().lower()
+    normalized = re.sub(r"\(\s+", "(", normalized)
+    return re.sub(r"\s+\)", ")", normalized)
+
+
+def split_top_level_comma_items(sql: str) -> list[str]:
+    items = []
+    item_start = 0
+    depth = 0
+    in_string = False
+    cursor = 0
+    while cursor < len(sql):
+        character = sql[cursor]
+        if character == "'":
+            if in_string and cursor + 1 < len(sql) and sql[cursor + 1] == "'":
+                cursor += 2
+                continue
+            in_string = not in_string
+        elif not in_string:
+            if character == "(":
+                depth += 1
+            elif character == ")":
+                depth -= 1
+            elif character == "," and depth == 0:
+                items.append(sql[item_start:cursor].strip())
+                item_start = cursor + 1
+        cursor += 1
+    final_item = sql[item_start:].strip()
+    if final_item:
+        items.append(final_item)
+    return items
+
+
+def expected_column_definition(name: str, contract: dict[str, object]) -> str:
+    definition = f"{name} {contract['type']}"
+    if not contract["nullable"]:
+        definition += " NOT NULL"
+    if contract["default"] is not None:
+        definition += f" DEFAULT {contract['default']}"
+    return normalize_sql_fragment(definition)
+
+
 class StagingMigrationChainTests(unittest.TestCase):
+    def test_baseline_matches_approved_structural_inventory(self) -> None:
+        """Reject missing or altered base objects and any fixed tenant default."""
+        contract = json.loads(STRUCTURAL_CONTRACT_PATH.read_text(encoding="utf-8"))
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        baseline_path = REPOSITORY_ROOT / lock["baseline_path"]
+        migration = baseline_path.read_text(encoding="utf-8")
+        normalized = re.sub(r"--[^\n]*|/\*.*?\*/", "", migration, flags=re.DOTALL)
+        normalized = normalized.lower()
+
+        table_bodies = {
+            name: body
+            for name, body in re.findall(
+                r"\bcreate\s+table\s+public\.([a-z_][\w$]*)\s*"
+                r"\((.*?)\)\s*;",
+                normalized,
+                flags=re.DOTALL,
+            )
+        }
+        self.assertEqual(set(table_bodies), set(contract["tables"]))
+
+        actual_table_items = {}
+        all_constraint_definitions = {}
+        for table_name, table_contract in contract["tables"].items():
+            actual_items = [
+                normalize_sql_fragment(item)
+                for item in split_top_level_comma_items(table_bodies[table_name])
+            ]
+            expected_items = [
+                expected_column_definition(column_name, column_contract)
+                for column_name, column_contract in table_contract["columns"].items()
+            ]
+            for constraint_name, definition in table_contract["constraints"].items():
+                normalized_definition = normalize_sql_fragment(
+                    f"CONSTRAINT {constraint_name} {definition}"
+                )
+                expected_items.append(normalized_definition)
+                all_constraint_definitions[constraint_name] = normalized_definition
+            self.assertEqual(
+                actual_items,
+                expected_items,
+                f"unexpected structural definition for public.{table_name}",
+            )
+            actual_table_items[table_name] = actual_items
+
+        self.assertEqual(len(contract["tables"]), 12)
+        self.assertEqual(len(all_constraint_definitions), 19)
+
+        legacy_company_columns = contract["legacy_nullable_company_id_columns"]
+        self.assertEqual(len(legacy_company_columns), 6)
+        for qualified_column in legacy_company_columns:
+            table_name, column_name = qualified_column.split(".")
+            with self.subTest(legacy_company_id=qualified_column):
+                self.assertEqual(column_name, "company_id")
+                self.assertIn("company_id text", actual_table_items[table_name])
+
+        for qualified_column in contract["required_company_id_columns"]:
+            table_name, column_name = qualified_column.split(".")
+            with self.subTest(required_company_id=qualified_column):
+                self.assertEqual(column_name, "company_id")
+                self.assertIn("company_id text not null", actual_table_items[table_name])
+
+        self.assertFalse(
+            any(
+                item.startswith("company_id ")
+                for item in actual_table_items["contacts"]
+            ),
+            "public.contacts must not gain a company_id column",
+        )
+        for table_name, actual_items in actual_table_items.items():
+            company_columns = [
+                item for item in actual_items if item.startswith("company_id ")
+            ]
+            for company_column in company_columns:
+                with self.subTest(no_tenant_default=table_name):
+                    self.assertNotIn(" default ", company_column)
+
+        statements = split_top_level_sql_statements(normalized)
+        explicit_indexes = {}
+        triggers = {}
+        for statement in statements:
+            index_match = re.match(
+                r"^create\s+(?:unique\s+)?index\s+([a-z_][\w$]*)\b",
+                statement,
+            )
+            if index_match is not None:
+                explicit_indexes[index_match.group(1)] = normalize_sql_fragment(
+                    statement
+                )
+            trigger_match = re.match(
+                r"^create\s+trigger\s+([a-z_][\w$]*)\b",
+                statement,
+            )
+            if trigger_match is not None:
+                triggers[trigger_match.group(1)] = normalize_sql_fragment(statement)
+            self.assertNotRegex(
+                statement,
+                r"^(?:insert|update|delete|merge|copy|truncate)\b",
+                "baseline must not contain top-level business DML",
+            )
+
+        expected_explicit_indexes = {
+            name: normalize_sql_fragment(definition)
+            for name, definition in contract["indexes"]["explicit"].items()
+        }
+        self.assertEqual(explicit_indexes, expected_explicit_indexes)
+        self.assertEqual(len(explicit_indexes), 28)
+
+        constraint_backed_indexes = contract["indexes"]["constraint_backed"]
+        self.assertEqual(len(constraint_backed_indexes), 15)
+        for index_name in constraint_backed_indexes:
+            with self.subTest(constraint_backed_index=index_name):
+                self.assertIn(index_name, all_constraint_definitions)
+                self.assertRegex(
+                    all_constraint_definitions[index_name],
+                    r"\b(?:primary key|unique)\b",
+                )
+        self.assertEqual(
+            len(constraint_backed_indexes) + len(explicit_indexes),
+            43,
+        )
+
+        expected_triggers = {
+            name: normalize_sql_fragment(definition)
+            for name, definition in contract["triggers"].items()
+        }
+        self.assertEqual(triggers, expected_triggers)
+        self.assertEqual(len(triggers), 7)
+
+        self.assertEqual(
+            contract["task_7_completion_rpc_body"],
+            "separately tested in Task 7",
+        )
+        required_functions = [
+            signature
+            for signature in contract["function_signatures"]
+            if signature["required_in_task_6"]
+        ]
+        self.assertEqual(
+            required_functions,
+            [
+                {
+                    "name": "set_updated_at",
+                    "argument_types": [],
+                    "returns": "trigger",
+                    "required_in_task_6": True,
+                }
+            ],
+        )
+
     def test_baseline_timestamp_function_is_secure_and_has_no_business_dml(self) -> None:
         """Reject a baseline that can expose or alter more than timestamp updates."""
         lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
@@ -128,7 +327,14 @@ class StagingMigrationChainTests(unittest.TestCase):
         self.assertRegex(normalized, r"commit\s*;\s*$")
 
         statements = split_top_level_sql_statements(normalized)
-        self.assertEqual(len(statements), 4)
+        contract = json.loads(STRUCTURAL_CONTRACT_PATH.read_text(encoding="utf-8"))
+        expected_statement_count = (
+            4
+            + len(contract["tables"])
+            + len(contract["indexes"]["explicit"])
+            + len(contract["triggers"])
+        )
+        self.assertEqual(len(statements), expected_statement_count)
         self.assertRegex(statements[0], r'^begin\s*;$')
         self.assertRegex(
             statements[1],
@@ -140,7 +346,7 @@ class StagingMigrationChainTests(unittest.TestCase):
             r'^create\s+(?:or\s+replace\s+)?function\s+'
             r'public\s*\.\s*set_updated_at\s*\(\s*\)',
         )
-        self.assertRegex(statements[3], r'^commit\s*;$')
+        self.assertRegex(statements[-1], r'^commit\s*;$')
 
         extensions = re.findall(
             r"\bcreate\s+extension(?:\s+if\s+not\s+exists)?\s+([\w\"]+)",
@@ -148,15 +354,67 @@ class StagingMigrationChainTests(unittest.TestCase):
         )
         self.assertEqual(extensions, ["pgcrypto"])
 
-        create_object_kinds = re.findall(
-            r'\bcreate\s+(?:or\s+replace\s+)?([a-z_]+)\b',
-            normalized,
+        create_statements = [
+            statement for statement in statements if statement.startswith("create ")
+        ]
+        for statement in create_statements:
+            self.assertRegex(
+                statement,
+                r"^create\s+(?:extension|(?:or\s+replace\s+)?function|table|"
+                r"(?:unique\s+)?index|trigger)\b",
+            )
+        self.assertEqual(
+            sum(
+                bool(re.match(r"^create\s+extension\b", statement))
+                for statement in create_statements
+            ),
+            1,
         )
-        self.assertEqual(create_object_kinds, ['extension', 'function'])
-        self.assertNotRegex(
-            normalized,
-            r'\b(?:alter|drop|truncate|comment|grant|revoke|security\s+label|do|call|copy|merge|execute|perform)\b',
+        self.assertEqual(
+            sum(
+                bool(
+                    re.match(
+                        r"^create\s+(?:or\s+replace\s+)?function\b",
+                        statement,
+                    )
+                )
+                for statement in create_statements
+            ),
+            1,
         )
+        self.assertEqual(
+            sum(
+                bool(re.match(r"^create\s+table\b", statement))
+                for statement in create_statements
+            ),
+            len(contract["tables"]),
+        )
+        self.assertEqual(
+            sum(
+                bool(
+                    re.match(
+                        r"^create\s+(?:unique\s+)?index\b",
+                        statement,
+                    )
+                )
+                for statement in create_statements
+            ),
+            len(contract["indexes"]["explicit"]),
+        )
+        self.assertEqual(
+            sum(
+                bool(re.match(r"^create\s+trigger\b", statement))
+                for statement in create_statements
+            ),
+            len(contract["triggers"]),
+        )
+        for statement in statements:
+            self.assertNotRegex(
+                statement,
+                r"^(?:alter|drop|truncate|comment|grant|revoke|"
+                r"security\s+label|do|call|copy|merge|execute|perform|"
+                r"insert|update|delete)\b",
+            )
         function_names = re.findall(
             r'\bcreate\s+(?:or\s+replace\s+)?function\s+'
             r'([a-z_][\w$]*)\s*\.\s*([a-z_][\w$]*)',
@@ -188,7 +446,6 @@ class StagingMigrationChainTests(unittest.TestCase):
             normalized,
             r"\bgrant\b[^;]*\bto\b[^;]*\b(?:public|anon|authenticated)\b",
         )
-        self.assertNotRegex(normalized, r"\b(?:insert|update|delete)\b")
 
     def test_approved_migration_chain_lock_contract(self) -> None:
         """Reject a missing, collided, reordered, or altered approved chain."""
