@@ -61,6 +61,14 @@ class TenantQuery:
             "payload": copy.deepcopy(self.insert_data),
         })
 
+        if (
+            self.table_name == "interview_slots"
+            and self.insert_data is not None
+            and self.database.fail_next_interview_slot_insert
+        ):
+            self.database.fail_next_interview_slot_insert = False
+            raise RuntimeError("forced interview_slots insert failure")
+
         rows = self.database.rows[self.table_name]
         if self.insert_data is not None:
             values = self.insert_data if isinstance(self.insert_data, list) else [self.insert_data]
@@ -169,6 +177,7 @@ class TenantSupabase:
         }
         self.executed: list[dict] = []
         self.inserted = {table_name: [] for table_name in self.rows}
+        self.fail_next_interview_slot_insert = False
 
     def table(self, name: str):
         if name not in self.rows:
@@ -300,6 +309,32 @@ class InterviewTenantScopeTests(TenantScopeTestCase):
             all(row["company_id"] == main.COMPANY_ID for row in insert_query["payload"])
         )
         self.assert_last_query_is_scoped("applicants", "update")
+
+    def test_interview_create_fallback_insert_sets_company_id_explicitly(self):
+        self.database.fail_next_interview_slot_insert = True
+
+        with (
+            patch.object(main, "push_line_message"),
+            patch.object(main, "try_insert_line_message_log"),
+        ):
+            main.api_create_interview_slots(
+                "own-applicant",
+                main.InterviewSlotCreate(
+                    slots=["2026-08-10T10:00", "2026-08-10T11:00"]
+                ),
+            )
+
+        insert_queries = [
+            query
+            for query in self.database.executed
+            if query["table"] == "interview_slots" and query["operation"] == "insert"
+        ]
+        self.assertEqual(2, len(insert_queries))
+        fallback_payload = insert_queries[-1]["payload"]
+        self.assertTrue(all("interview_type" not in row for row in fallback_payload))
+        self.assertTrue(
+            all(row["company_id"] == main.COMPANY_ID for row in fallback_payload)
+        )
 
     def test_interview_create_rejects_other_company_applicant_before_side_effects(self):
         with (

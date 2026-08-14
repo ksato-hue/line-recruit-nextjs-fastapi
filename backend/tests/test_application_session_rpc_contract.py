@@ -24,6 +24,14 @@ class EmptyQuery:
 
 
 class CompletionRpc:
+    """Test-only result model from the approved fixed interface, not SQL evidence."""
+
+    CONTRACT_SOURCE = (
+        "docs/superpowers/plans/"
+        "2026-08-11-staging-supabase-baseline-implementation.md "
+        "(Fixed Existing Interfaces)"
+    )
+
     def __init__(self, database, name: str, params: dict):
         self.database = database
         self.name = name
@@ -98,6 +106,16 @@ class ApplicationSessionRpcContractTests(unittest.TestCase):
             "motivation": "Build products",
         }
         main.application_tree_sessions[self.user_id] = {"id": self.session_id}
+
+    def test_completion_rpc_contract_model_cites_approved_fixed_interface(self):
+        self.assertEqual(
+            (
+                "docs/superpowers/plans/"
+                "2026-08-11-staging-supabase-baseline-implementation.md "
+                "(Fixed Existing Interfaces)"
+            ),
+            CompletionRpc.CONTRACT_SOURCE,
+        )
 
     def test_completion_rpc_preserves_first_completion_and_replay_contract(self):
         self._seed_confirmation()
