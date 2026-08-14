@@ -274,7 +274,12 @@ class InquiryTenantScopeTests(TenantScopeTestCase):
         ):
             main.handle_message("line-user", "問い合わせ本文")
 
-        self.assertEqual("tenant-a", self.database.inserted[-1].get("company_id"))
+        insert_query = next(
+            query
+            for query in reversed(self.database.queries)
+            if query.table_name == "inquiries" and query.insert_data is not None
+        )
+        self.assertEqual(main.COMPANY_ID, insert_query.insert_data["company_id"])
 
 
 if __name__ == "__main__":

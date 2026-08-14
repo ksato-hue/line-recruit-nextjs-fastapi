@@ -58,6 +58,7 @@ class TenantQuery:
             "operation": operation,
             "eq": copy.deepcopy(self.equal_filters),
             "neq": copy.deepcopy(self.not_equal_filters),
+            "payload": copy.deepcopy(self.insert_data),
         })
 
         rows = self.database.rows[self.table_name]
@@ -294,7 +295,10 @@ class InterviewTenantScopeTests(TenantScopeTestCase):
 
         inserted = self.database.inserted["interview_slots"]
         self.assertEqual(2, len(inserted))
-        self.assertTrue(all(row.get("company_id") == "tenant-a" for row in inserted))
+        insert_query = self.database.last_query("interview_slots", "insert")
+        self.assertTrue(
+            all(row["company_id"] == main.COMPANY_ID for row in insert_query["payload"])
+        )
         self.assert_last_query_is_scoped("applicants", "update")
 
     def test_interview_create_rejects_other_company_applicant_before_side_effects(self):
@@ -391,7 +395,8 @@ class LineMessageTenantScopeTests(TenantScopeTestCase):
 
         inserted = self.database.inserted["line_message_logs"]
         self.assertEqual(1, len(inserted))
-        self.assertEqual("tenant-a", inserted[0].get("company_id"))
+        insert_query = self.database.last_query("line_message_logs", "insert")
+        self.assertEqual(main.COMPANY_ID, insert_query["payload"]["company_id"])
 
 
 if __name__ == "__main__":

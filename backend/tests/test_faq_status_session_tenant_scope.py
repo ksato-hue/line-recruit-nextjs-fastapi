@@ -76,6 +76,7 @@ class TenantQuery:
             "table": self.table_name,
             "operation": operation,
             "eq": copy.deepcopy(self.equal_filters),
+            "payload": copy.deepcopy(self.insert_data),
         })
 
         rows = self.database.rows[self.table_name]
@@ -252,7 +253,8 @@ class FAQCategoryTenantScopeTests(TenantScopeTestCase):
     def test_category_insert_writes_company_id(self):
         created = main.api_create_faq_category(main.FAQCategoryPayload(name="New category"))
 
-        self.assertEqual("tenant-a", created["company_id"])
+        insert_query = self.database.last_query("faq_categories", "insert")
+        self.assertEqual(main.COMPANY_ID, insert_query["payload"]["company_id"])
 
     def test_other_company_category_update_returns_404_without_mutation(self):
         before = copy.deepcopy(self.database.row("faq_categories", "other-category", "tenant-b"))
@@ -336,7 +338,8 @@ class FAQTenantScopeTests(TenantScopeTestCase):
             )
         )
 
-        self.assertEqual("tenant-a", created["company_id"])
+        insert_query = self.database.last_query("faqs", "insert")
+        self.assertEqual(main.COMPANY_ID, insert_query["payload"]["company_id"])
 
     def test_faq_create_rejects_other_company_category_without_insert(self):
         before = copy.deepcopy(self.database.rows["faqs"])
