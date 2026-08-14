@@ -106,6 +106,10 @@ class StagingMigrationChainTests(unittest.TestCase):
             normalized,
         )
         self.assertEqual(create_object_kinds, ['extension', 'function'])
+        self.assertNotRegex(
+            normalized,
+            r'\b(?:alter|drop|truncate|comment|grant|revoke|security\s+label|do|call|copy|merge|execute|perform)\b',
+        )
         function_names = re.findall(
             r'\bcreate\s+(?:or\s+replace\s+)?function\s+'
             r'([a-z_][\w$]*)\s*\.\s*([a-z_][\w$]*)',
