@@ -79,6 +79,49 @@ def canonical_archive_blob_sha256(archive_path: Path, repository_path: str) -> s
 
 
 class StagingMigrationChainTests(unittest.TestCase):
+    def test_baseline_timestamp_function_is_secure_and_has_no_business_dml(self) -> None:
+        """Reject a baseline that can expose or alter more than timestamp updates."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        baseline_path = REPOSITORY_ROOT / lock["baseline_path"]
+        self.assertTrue(
+            baseline_path.is_file(),
+            f"locked baseline migration does not exist: {baseline_path}",
+        )
+
+        migration = baseline_path.read_text(encoding="utf-8")
+        normalized = re.sub(r"--[^\n]*|/\*.*?\*/", "", migration, flags=re.DOTALL)
+        normalized = normalized.lower()
+
+        self.assertRegex(normalized, r"^\s*begin\s*;")
+        self.assertRegex(normalized, r"commit\s*;\s*$")
+
+        extensions = re.findall(
+            r"\bcreate\s+extension(?:\s+if\s+not\s+exists)?\s+([\w\"]+)",
+            normalized,
+        )
+        self.assertEqual(extensions, ["pgcrypto"])
+
+        function_contract = re.compile(
+            r"\bcreate\s+(?:or\s+replace\s+)?function\s+"
+            r"public\s*\.\s*set_updated_at\s*\(\s*\)\s*"
+            r"returns\s+trigger\b.*?\bsecurity\s+invoker\b.*?"
+            r"\bset\s+search_path\s*=\s*pg_catalog\b",
+            re.DOTALL,
+        )
+        self.assertRegex(normalized, function_contract)
+        self.assertNotRegex(normalized, r"\bsecurity\s+definer\b")
+        self.assertRegex(
+            normalized,
+            r"\bnew\s*\.\s*updated_at\s*:=\s*"
+            r"pg_catalog\s*\.\s*(?:now|statement_timestamp|"
+            r"transaction_timestamp|clock_timestamp)\s*\(\s*\)",
+        )
+        self.assertNotRegex(
+            normalized,
+            r"\bgrant\b[^;]*\bto\b[^;]*\b(?:public|anon|authenticated)\b",
+        )
+        self.assertNotRegex(normalized, r"\b(?:insert|update|delete)\b")
+
     def test_approved_migration_chain_lock_contract(self) -> None:
         """Reject a missing, collided, reordered, or altered approved chain."""
         self.assertTrue(
@@ -103,6 +146,7 @@ class StagingMigrationChainTests(unittest.TestCase):
         self.assertEqual(lock["final_active_paths"], list(FINAL_ACTIVE_PATHS))
 
         active_filenames = {path.name for path in MIGRATIONS_DIRECTORY.glob("*.sql")}
+        active_filenames -= {Path(BASELINE_PATH).name, Path(SECURITY_PATH).name}
         history = subprocess.run(
             ["git", "log", "--all", "--name-only", "--format=", "--", "supabase"],
             cwd=REPOSITORY_ROOT,
@@ -110,6 +154,8 @@ class StagingMigrationChainTests(unittest.TestCase):
             capture_output=True,
             text=True,
         ).stdout.splitlines()
+        approved_paths = {BASELINE_PATH, SECURITY_PATH}
+        history = [path for path in history if path.replace('\\', '/') not in approved_paths]
         for version in (BASELINE_VERSION, SECURITY_VERSION):
             with self.subTest(version=version):
                 self.assertFalse(
