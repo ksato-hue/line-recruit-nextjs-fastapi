@@ -293,20 +293,31 @@ class StagingMigrationChainTests(unittest.TestCase):
             contract["task_7_completion_rpc_body"],
             "separately tested in Task 7",
         )
-        required_functions = [
-            signature
-            for signature in contract["function_signatures"]
-            if signature["required_in_task_6"]
-        ]
         self.assertEqual(
-            required_functions,
+            contract["function_signatures"],
             [
                 {
                     "name": "set_updated_at",
                     "argument_types": [],
                     "returns": "trigger",
                     "required_in_task_6": True,
-                }
+                },
+                {
+                    "name": "complete_application_session",
+                    "argument_types": [
+                        "uuid",
+                        "text",
+                        "text",
+                        "text",
+                        "text",
+                        "text",
+                        "text",
+                        "text",
+                        "text",
+                    ],
+                    "returns": "jsonb",
+                    "required_in_task_6": False,
+                },
             ],
         )
 
@@ -431,6 +442,22 @@ class StagingMigrationChainTests(unittest.TestCase):
             re.DOTALL,
         )
         self.assertRegex(normalized, function_contract)
+        timestamp_function = re.search(
+            r"\bcreate\s+(?:or\s+replace\s+)?function\s+"
+            r"public\s*\.\s*set_updated_at\s*\(\s*\)\s*"
+            r"returns\s+trigger\b.*?\bas\s+"
+            r"(?P<quote>\$(?:[a-z_][\w]*)?\$)"
+            r"(?P<body>.*?)"
+            r"(?P=quote)\s*;",
+            normalized,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(timestamp_function)
+        self.assertEqual(
+            normalize_sql_fragment(timestamp_function.group("body")),
+            "begin new.updated_at := pg_catalog.now(); return new; end;",
+            "public.set_updated_at() must retain the exact approved Task 5 body",
+        )
         self.assertRegex(
             normalized,
             r'\bset\s+search_path\s*=\s*pg_catalog\s+as\b',
