@@ -78,6 +78,38 @@ def canonical_archive_blob_sha256(archive_path: Path, repository_path: str) -> s
     return hashlib.sha256(blob).hexdigest()
 
 
+DOLLAR_QUOTE_PATTERN = re.compile(r'\$(?:[a-z_][\w]*)?\$', re.IGNORECASE)
+
+
+def split_top_level_sql_statements(sql: str) -> list[str]:
+    statements = []
+    statement_start = 0
+    cursor = 0
+    dollar_quote = None
+    while cursor < len(sql):
+        if dollar_quote is not None:
+            closing_index = sql.find(dollar_quote, cursor)
+            if closing_index < 0:
+                raise ValueError('unterminated dollar-quoted SQL body')
+            cursor = closing_index + len(dollar_quote)
+            dollar_quote = None
+            continue
+
+        dollar_quote_match = DOLLAR_QUOTE_PATTERN.match(sql, cursor)
+        if dollar_quote_match is not None:
+            dollar_quote = dollar_quote_match.group()
+            cursor = dollar_quote_match.end()
+            continue
+
+        if sql[cursor] == ';':
+            statement = sql[statement_start : cursor + 1].strip()
+            if statement:
+                statements.append(statement)
+            statement_start = cursor + 1
+        cursor += 1
+    return statements
+
+
 class StagingMigrationChainTests(unittest.TestCase):
     def test_baseline_timestamp_function_is_secure_and_has_no_business_dml(self) -> None:
         """Reject a baseline that can expose or alter more than timestamp updates."""
@@ -94,6 +126,21 @@ class StagingMigrationChainTests(unittest.TestCase):
 
         self.assertRegex(normalized, r"^\s*begin\s*;")
         self.assertRegex(normalized, r"commit\s*;\s*$")
+
+        statements = split_top_level_sql_statements(normalized)
+        self.assertEqual(len(statements), 4)
+        self.assertRegex(statements[0], r'^begin\s*;$')
+        self.assertRegex(
+            statements[1],
+            r'^create\s+extension\s+if\s+not\s+exists\s+pgcrypto\s+'
+            r'with\s+schema\s+extensions\s*;$',
+        )
+        self.assertRegex(
+            statements[2],
+            r'^create\s+(?:or\s+replace\s+)?function\s+'
+            r'public\s*\.\s*set_updated_at\s*\(\s*\)',
+        )
+        self.assertRegex(statements[3], r'^commit\s*;$')
 
         extensions = re.findall(
             r"\bcreate\s+extension(?:\s+if\s+not\s+exists)?\s+([\w\"]+)",
