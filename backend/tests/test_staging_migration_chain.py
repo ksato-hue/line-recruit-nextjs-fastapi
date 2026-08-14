@@ -40,9 +40,42 @@ LEGACY_MIGRATION_FILENAMES = (
     "202607200001_application_sessions.sql",
     "202607210001_applicant_tags.sql",
 )
+LEGACY_MIGRATION_ORIGINAL_COMMITS = {
+    "202607190001_mvp_security_foundation.sql": "49a3362340a1cb5b12f83cd8c67d404409ec6f43",
+    "202607190002_admin_configuration.sql": "447cf981da084042751fa65dcae072fa8ef5a3f7",
+    "202607200001_application_sessions.sql": "29373824b601e02c93f01dddd598add65575d815",
+    "202607210001_applicant_tags.sql": "62344479c9f633f82ca62bf1f36f3a08aa4d0cb4",
+}
 LEGACY_MIGRATION_PREFIXES = tuple(
     filename[:12] for filename in LEGACY_MIGRATION_FILENAMES
 )
+
+
+def canonical_git_blob_sha256(revision: str, repository_path: str) -> str:
+    blob = subprocess.run(
+        ["git", "show", f"{revision}:{repository_path}"],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return hashlib.sha256(blob).hexdigest()
+
+
+def canonical_archive_blob_sha256(archive_path: Path, repository_path: str) -> str:
+    object_id = subprocess.run(
+        ["git", "hash-object", f"--path={repository_path}", str(archive_path)],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    blob = subprocess.run(
+        ["git", "cat-file", "blob", object_id],
+        cwd=REPOSITORY_ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return hashlib.sha256(blob).hexdigest()
 
 
 class StagingMigrationChainTests(unittest.TestCase):
@@ -103,11 +136,11 @@ class StagingMigrationChainTests(unittest.TestCase):
             if LEGACY_MANIFEST_PATH.is_file()
             else ""
         )
-        manifest_hashes = {}
+        manifest_entries = {}
         for line in manifest.splitlines():
             cells = [cell.strip() for cell in line.split("|")]
-            if len(cells) >= 3 and cells[1] in LEGACY_MIGRATION_FILENAMES:
-                manifest_hashes[cells[1]] = cells[2]
+            if len(cells) >= 4 and cells[1] in LEGACY_MIGRATION_FILENAMES:
+                manifest_entries[cells[1]] = (cells[2], cells[3])
 
         active_filenames = {path.name for path in MIGRATIONS_DIRECTORY.glob("*.sql")}
         for prefix in LEGACY_MIGRATION_PREFIXES:
@@ -121,11 +154,34 @@ class StagingMigrationChainTests(unittest.TestCase):
             with self.subTest(filename=filename):
                 archived_path = LEGACY_ARCHIVE_DIRECTORY / filename
                 self.assertTrue(archived_path.is_file())
-                self.assertIn(filename, manifest_hashes)
+                self.assertIn(filename, manifest_entries)
                 if archived_path.is_file():
+                    manifest_hash, manifest_commit = manifest_entries[filename]
+                    original_commit = LEGACY_MIGRATION_ORIGINAL_COMMITS[filename]
+                    original_path = f"supabase/migrations/{filename}"
+                    archive_repository_path = (
+                        f"supabase/legacy_migrations/2026-07-pre-baseline/{filename}"
+                    )
+                    original_hash = canonical_git_blob_sha256(
+                        original_commit, original_path
+                    )
+                    archived_hash = canonical_archive_blob_sha256(
+                        archived_path, archive_repository_path
+                    )
                     self.assertEqual(
-                        manifest_hashes.get(filename),
-                        hashlib.sha256(archived_path.read_bytes()).hexdigest(),
+                        manifest_commit,
+                        original_commit,
+                        "manifest must retain the original first-add commit",
+                    )
+                    self.assertEqual(
+                        manifest_hash,
+                        original_hash,
+                        "manifest SHA-256 must be calculated from original canonical Git bytes",
+                    )
+                    self.assertEqual(
+                        archived_hash,
+                        original_hash,
+                        "archive canonical Git bytes must equal original canonical Git bytes",
                     )
         self.assertTrue(
             LEGACY_MANIFEST_PATH.is_file(),
