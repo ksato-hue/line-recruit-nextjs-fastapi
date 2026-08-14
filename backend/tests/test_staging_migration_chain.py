@@ -101,6 +101,19 @@ class StagingMigrationChainTests(unittest.TestCase):
         )
         self.assertEqual(extensions, ["pgcrypto"])
 
+        create_object_kinds = re.findall(
+            r'\bcreate\s+(?:or\s+replace\s+)?([a-z_]+)\b',
+            normalized,
+        )
+        self.assertEqual(create_object_kinds, ['extension', 'function'])
+        function_names = re.findall(
+            r'\bcreate\s+(?:or\s+replace\s+)?function\s+'
+            r'([a-z_][\w$]*)\s*\.\s*([a-z_][\w$]*)',
+            normalized,
+        )
+        self.assertEqual(function_names, [('public', 'set_updated_at')])
+        self.assertNotRegex(normalized, r'\bcomplete_application_session\b')
+
         function_contract = re.compile(
             r"\bcreate\s+(?:or\s+replace\s+)?function\s+"
             r"public\s*\.\s*set_updated_at\s*\(\s*\)\s*"
@@ -109,6 +122,10 @@ class StagingMigrationChainTests(unittest.TestCase):
             re.DOTALL,
         )
         self.assertRegex(normalized, function_contract)
+        self.assertRegex(
+            normalized,
+            r'\bset\s+search_path\s*=\s*pg_catalog\s+as\b',
+        )
         self.assertNotRegex(normalized, r"\bsecurity\s+definer\b")
         self.assertRegex(
             normalized,
