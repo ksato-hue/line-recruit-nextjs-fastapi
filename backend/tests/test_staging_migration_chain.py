@@ -258,12 +258,100 @@ def completion_table_reference_contract_errors(body: str) -> list[str]:
     return errors
 
 
+def mask_sql_comments_and_literals(sql: str) -> str:
+    """Mask non-code SQL while preserving offsets and statement delimiters."""
+    masked = list(sql)
+
+    def mask_range(start: int, end: int) -> None:
+        for index in range(start, end):
+            if masked[index] not in {"\r", "\n"}:
+                masked[index] = " "
+
+    cursor = 0
+    while cursor < len(sql):
+        if sql.startswith("--", cursor):
+            end = sql.find("\n", cursor + 2)
+            end = len(sql) if end < 0 else end
+            mask_range(cursor, end)
+            cursor = end
+            continue
+        if sql.startswith("/*", cursor):
+            depth = 1
+            end = cursor + 2
+            while end < len(sql) and depth:
+                if sql.startswith("/*", end):
+                    depth += 1
+                    end += 2
+                elif sql.startswith("*/", end):
+                    depth -= 1
+                    end += 2
+                else:
+                    end += 1
+            if depth:
+                raise ValueError("unterminated SQL block comment")
+            mask_range(cursor, end)
+            cursor = end
+            continue
+        if sql[cursor] == "'":
+            end = cursor + 1
+            while end < len(sql):
+                if sql[end] != "'":
+                    end += 1
+                    continue
+                if end + 1 < len(sql) and sql[end + 1] == "'":
+                    end += 2
+                    continue
+                end += 1
+                break
+            else:
+                raise ValueError("unterminated SQL string literal")
+            mask_range(cursor, end)
+            cursor = end
+            continue
+        if sql[cursor] == '"':
+            end = cursor + 1
+            while end < len(sql):
+                if sql[end] != '"':
+                    end += 1
+                    continue
+                if end + 1 < len(sql) and sql[end + 1] == '"':
+                    end += 2
+                    continue
+                end += 1
+                break
+            else:
+                raise ValueError("unterminated SQL quoted identifier")
+            mask_range(cursor, end)
+            cursor = end
+            continue
+        dollar_quote = DOLLAR_QUOTE_PATTERN.match(sql, cursor)
+        if dollar_quote is not None:
+            delimiter = dollar_quote.group()
+            closing_index = sql.find(delimiter, dollar_quote.end())
+            if closing_index < 0:
+                raise ValueError("unterminated dollar-quoted SQL literal")
+            end = closing_index + len(delimiter)
+            mask_range(cursor, end)
+            cursor = end
+            continue
+        cursor += 1
+    return "".join(masked)
+
+
 def completion_update_contract_errors(body: str) -> list[str]:
-    update_statements = [
-        statement
-        for statement in split_top_level_sql_statements(body)
-        if re.match(r"^update\s+", statement)
-    ]
+    masked_body = mask_sql_comments_and_literals(body)
+    update_statements = []
+    for update in re.finditer(
+        r"\bupdate\s+(?:(?:[a-z_][\w$]*)\.)?[a-z_][\w$]*\b",
+        masked_body,
+        flags=re.IGNORECASE,
+    ):
+        statement_end = masked_body.find(";", update.end())
+        if statement_end < 0:
+            return ["unterminated update statement"]
+        update_statements.append(
+            normalize_sql_fragment(body[update.start() : statement_end + 1])
+        )
     if len(update_statements) != 1:
         return ["completion function must contain exactly one update"]
     scoped_update = re.fullmatch(
@@ -786,6 +874,48 @@ class StagingMigrationChainTests(unittest.TestCase):
             ["completion function must contain exactly one update"],
             completion_update_contract_errors(mutated_body),
         )
+
+    def test_completion_update_guard_rejects_nested_unscoped_update(
+        self,
+    ) -> None:
+        """Reject an extra update nested behind a PL/pgSQL control-flow prefix."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        body = completion_function_body(migration)
+        body_before_final_end, final_end = body.rsplit("end;", 1)
+        mutated_body = (
+            body_before_final_end
+            + " if p_event_id is null then"
+            + " update public.application_sessions set status = 'completed';"
+            + " end if; end;"
+            + final_end
+        )
+        self.assertEqual(
+            ["completion function must contain exactly one update"],
+            completion_update_contract_errors(mutated_body),
+        )
+
+    def test_completion_update_guard_ignores_comments_and_string_literals(
+        self,
+    ) -> None:
+        """Do not mistake inert UPDATE text for executable statements."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        body = completion_function_body(migration)
+        body_before_final_end, final_end = body.rsplit("end;", 1)
+        mutated_body = (
+            body_before_final_end
+            + " raise notice 'UPDATE public.application_sessions;';"
+            + " perform $message$UPDATE public.application_sessions;$message$;"
+            + " -- UPDATE public.application_sessions;\n"
+            + " /* UPDATE public.application_sessions; */ end;"
+            + final_end
+        )
+        self.assertEqual([], completion_update_contract_errors(mutated_body))
 
     def test_approved_migration_chain_lock_contract(self) -> None:
         """Reject a missing, collided, reordered, or altered approved chain."""
