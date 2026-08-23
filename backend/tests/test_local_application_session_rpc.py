@@ -3,9 +3,12 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import unittest
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+from threading import Barrier
+from unittest.mock import patch
 from urllib.parse import urlparse
 from uuid import uuid4
 
@@ -118,7 +121,10 @@ class LocalApplicationSessionRpcTests(unittest.TestCase):
             "p_event_id": f"task7-event-{uuid4().hex}",
         }
 
+        start_barrier = Barrier(2)
+
         def complete() -> dict[str, object]:
+            start_barrier.wait(timeout=10)
             return self._request(
                 "POST",
                 "rpc/complete_application_session",
@@ -182,6 +188,96 @@ class LocalApplicationSessionRpcTests(unittest.TestCase):
                     "line_user_id": f"eq.{self.line_user_id}",
                 },
             )
+
+
+class LocalApplicationSessionRpcSynchronizationTests(unittest.TestCase):
+    def test_both_workers_cross_one_barrier_before_rpc_dispatch(self) -> None:
+        """Reject executor coverage that can dispatch before both workers are ready."""
+        barriers = []
+        dispatch_arrival_counts = []
+        response_lock = threading.Lock()
+
+        class RecordingBarrier:
+            def __init__(self, parties: int):
+                self._barrier = threading.Barrier(parties)
+                self._lock = threading.Lock()
+                self._arrivals = 0
+
+            @property
+            def arrivals(self) -> int:
+                with self._lock:
+                    return self._arrivals
+
+            def wait(self, timeout: float | None = None) -> int:
+                with self._lock:
+                    self._arrivals += 1
+                return self._barrier.wait(timeout=timeout)
+
+        class FakeResponse:
+            def __init__(self, payload):
+                self.payload = payload
+
+            def json(self):
+                return self.payload
+
+        def barrier_factory(parties: int) -> RecordingBarrier:
+            barrier = RecordingBarrier(parties)
+            barriers.append(barrier)
+            return barrier
+
+        def fake_request(method: str, path: str, **_kwargs) -> FakeResponse:
+            if path == "rpc/complete_application_session":
+                with response_lock:
+                    dispatch_arrival_counts.append(
+                        barriers[0].arrivals if barriers else 0
+                    )
+                    is_first = len(dispatch_arrival_counts) == 1
+                if is_first:
+                    return FakeResponse(
+                        {
+                            "created": True,
+                            "already_completed": False,
+                            "applicant": {
+                                "id": "synthetic-applicant",
+                                "line_user_id": "synthetic-user",
+                                "name": "Synthetic applicant",
+                                "phone": None,
+                                "job": "Synthetic role",
+                                "motivation": "Barrier verification",
+                                "status": "synthetic-new",
+                                "created_at": "2026-01-01T00:00:00Z",
+                                "interview_status": "synthetic",
+                                "interview_date": None,
+                                "memo": None,
+                                "company_id": "synthetic-company",
+                                "application_session_id": "synthetic-session",
+                                "tags": [],
+                            },
+                        }
+                    )
+                return FakeResponse(
+                    {"created": False, "already_completed": True}
+                )
+            if method == "GET" and path == "applicants":
+                return FakeResponse([{"id": "synthetic-applicant"}])
+            return FakeResponse(None)
+
+        local_test = LocalApplicationSessionRpcTests(
+            "test_concurrent_completion_is_idempotent_and_creates_one_applicant"
+        )
+        local_test.session_id = "synthetic-session"
+        local_test.company_id = "synthetic-company"
+        local_test.line_user_id = "synthetic-user"
+        with (
+            patch(f"{__name__}.Barrier", side_effect=barrier_factory, create=True),
+            patch.object(local_test, "_headers", return_value={}),
+            patch.object(local_test, "_request", side_effect=fake_request),
+        ):
+            local_test.test_concurrent_completion_is_idempotent_and_creates_one_applicant()
+
+        self.assertEqual(1, len(barriers))
+        self.assertEqual(2, barriers[0].arrivals)
+        self.assertEqual([2, 2], dispatch_arrival_counts)
 
 
 if __name__ == "__main__":

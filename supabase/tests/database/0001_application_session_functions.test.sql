@@ -131,7 +131,7 @@ VALUES (
     'Synthetic role',
     'First completion',
     'synthetic-new',
-    'task7-replay-event'
+    'task7-first-event'
   )
 );
 

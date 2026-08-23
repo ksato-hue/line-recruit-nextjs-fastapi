@@ -158,6 +158,125 @@ def split_top_level_comma_items(sql: str) -> list[str]:
     return items
 
 
+def extract_unquoted_function_call_arguments(
+    sql: str,
+    qualified_function_name: str,
+) -> list[str]:
+    """Return argument text for real calls, ignoring names inside SQL strings."""
+    calls = []
+    cursor = 0
+    in_string = False
+    while cursor < len(sql):
+        character = sql[cursor]
+        if character == "'":
+            if in_string and cursor + 1 < len(sql) and sql[cursor + 1] == "'":
+                cursor += 2
+                continue
+            in_string = not in_string
+            cursor += 1
+            continue
+        if in_string or not sql.startswith(qualified_function_name, cursor):
+            cursor += 1
+            continue
+
+        opening_parenthesis = cursor + len(qualified_function_name)
+        while (
+            opening_parenthesis < len(sql)
+            and sql[opening_parenthesis].isspace()
+        ):
+            opening_parenthesis += 1
+        if (
+            opening_parenthesis >= len(sql)
+            or sql[opening_parenthesis] != "("
+        ):
+            cursor += len(qualified_function_name)
+            continue
+
+        depth = 1
+        call_cursor = opening_parenthesis + 1
+        call_in_string = False
+        while call_cursor < len(sql) and depth:
+            call_character = sql[call_cursor]
+            if call_character == "'":
+                if (
+                    call_in_string
+                    and call_cursor + 1 < len(sql)
+                    and sql[call_cursor + 1] == "'"
+                ):
+                    call_cursor += 2
+                    continue
+                call_in_string = not call_in_string
+            elif not call_in_string:
+                if call_character == "(":
+                    depth += 1
+                elif call_character == ")":
+                    depth -= 1
+            call_cursor += 1
+        if depth:
+            raise ValueError(f"unterminated call to {qualified_function_name}")
+        calls.append(sql[opening_parenthesis + 1 : call_cursor - 1])
+        cursor = call_cursor
+    return calls
+
+
+def completion_function_body(migration: str) -> str:
+    normalized = re.sub(r"--[^\n]*|/\*.*?\*/", "", migration, flags=re.DOTALL)
+    normalized = normalized.lower()
+    function = re.search(
+        r"\bcreate\s+(?:or\s+replace\s+)?function\s+"
+        r"public\s*\.\s*complete_application_session\s*\(.*?\)\s*"
+        r"returns\s+jsonb\b.*?\bas\s+"
+        r"(?P<quote>\$(?:[a-z_][\w]*)?\$)"
+        r"(?P<body>.*?)(?P=quote)\s*;",
+        normalized,
+        flags=re.DOTALL,
+    )
+    if function is None:
+        raise ValueError("complete_application_session() is absent")
+    return normalize_sql_fragment(function.group("body"))
+
+
+def completion_table_reference_contract_errors(body: str) -> list[str]:
+    body_without_string_literals = re.sub(r"'(?:''|[^'])*'", "''", body)
+    references = re.findall(
+        r"\b(?:from|join|insert\s+into|update|delete\s+from)\s+"
+        r"((?:[a-z_][\w$]*\.)?[a-z_][\w$]*)\b",
+        body_without_string_literals,
+    )
+    allowed_references = {
+        "public.application_sessions",
+        "public.applicants",
+    }
+    errors = []
+    if set(references) != allowed_references:
+        errors.append("table references must match the two-table allowlist")
+    unqualified_references = [
+        reference for reference in references if "." not in reference
+    ]
+    if unqualified_references:
+        errors.append("all table references must be schema-qualified")
+    return errors
+
+
+def completion_update_contract_errors(body: str) -> list[str]:
+    update_statements = [
+        statement
+        for statement in split_top_level_sql_statements(body)
+        if re.match(r"^update\s+", statement)
+    ]
+    if len(update_statements) != 1:
+        return ["completion function must contain exactly one update"]
+    scoped_update = re.fullmatch(
+        r"update\s+public\.application_sessions\s+as\s+session\s+set\s+"
+        r".*?where\s+session\.id\s*=\s*p_session_id\s+"
+        r"and\s+session\.company_id\s*=\s*p_company_id\s+"
+        r"and\s+session\.line_user_id\s*=\s*p_line_user_id\s+"
+        r"and\s+session\.status\s*=\s*'active'\s*;",
+        update_statements[0],
+    )
+    return [] if scoped_update is not None else ["missing scoped session update"]
+
+
 def expected_column_definition(name: str, contract: dict[str, object]) -> str:
     definition = f"{name} {contract['type']}"
     if not contract["nullable"]:
@@ -530,21 +649,9 @@ class StagingMigrationChainTests(unittest.TestCase):
         )
 
         body = normalize_sql_fragment(completion_function.group("body"))
-        table_references = set(
-            re.findall(
-                r"\b(?:from|join|insert\s+into|update|delete\s+from)\s+"
-                r"([a-z_][\w$]*\.[a-z_][\w$]*)\b",
-                body,
-            )
-        )
         self.assertEqual(
-            table_references,
-            {"public.application_sessions", "public.applicants"},
-        )
-        self.assertNotRegex(
-            body,
-            r"\b(?:from|join|insert\s+into|update|delete\s+from)\s+"
-            r"(?:application_sessions|applicants)\b",
+            [],
+            completion_table_reference_contract_errors(body),
         )
         self.assertNotRegex(body, r"\bsecurity\s+definer\b")
         self.assertNotRegex(body, r"\bexecute\b")
@@ -574,13 +681,9 @@ class StagingMigrationChainTests(unittest.TestCase):
             body,
             r"values\s*\(\s*p_company_id\s*,\s*p_session_id\s*,\s*p_line_user_id",
         )
-        self.assertRegex(
-            body,
-            r"update\s+public\.application_sessions\s+as\s+session\s+set\s+"
-            r".*?where\s+session\.id\s*=\s*p_session_id\s+"
-            r"and\s+session\.company_id\s*=\s*p_company_id\s+"
-            r"and\s+session\.line_user_id\s*=\s*p_line_user_id\s+"
-            r"and\s+session\.status\s*=\s*'active'",
+        self.assertEqual(
+            [],
+            completion_update_contract_errors(body),
         )
         self.assertRegex(
             body,
@@ -619,6 +722,70 @@ class StagingMigrationChainTests(unittest.TestCase):
         self.assertNotRegex(normalized, r"\bsecurity\s+definer\b")
         self.assertNotRegex(normalized, r"\bexecute\b")
         self.assertNotRegex(normalized, r"\bgrant\b|\brevoke\b")
+
+    def test_pgtap_exact_replay_reuses_all_nine_parameters(self) -> None:
+        """Reject replay coverage that changes any request parameter."""
+        sql = DATABASE_COMPLETION_TEST_PATH.read_text(encoding="utf-8")
+        calls = extract_unquoted_function_call_arguments(
+            sql,
+            "public.complete_application_session",
+        )
+        self.assertEqual(2, len(calls), "pgTAP must make two direct RPC calls")
+        first_arguments = split_top_level_comma_items(calls[0])
+        replay_arguments = split_top_level_comma_items(calls[1])
+        self.assertEqual(9, len(first_arguments))
+        self.assertEqual(first_arguments, replay_arguments)
+
+    def test_completion_table_guard_rejects_unqualified_business_reference(
+        self,
+    ) -> None:
+        """Reject a business-table reference hidden from qualified-only scans."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        mutated_body = completion_function_body(migration) + (
+            " perform 1 from applicants;"
+        )
+        self.assertEqual(
+            [
+                "table references must match the two-table allowlist",
+                "all table references must be schema-qualified",
+            ],
+            completion_table_reference_contract_errors(mutated_body),
+        )
+
+    def test_completion_table_guard_rejects_additional_public_business_table(
+        self,
+    ) -> None:
+        """Reject a schema-qualified table outside the two-table allowlist."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        mutated_body = completion_function_body(migration) + (
+            " perform 1 from public.contacts;"
+        )
+        self.assertEqual(
+            ["table references must match the two-table allowlist"],
+            completion_table_reference_contract_errors(mutated_body),
+        )
+
+    def test_completion_update_guard_rejects_additional_unscoped_update(
+        self,
+    ) -> None:
+        """Reject a second application-session update even when one is scoped."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        mutated_body = completion_function_body(migration) + (
+            " update public.application_sessions set status = 'completed';"
+        )
+        self.assertEqual(
+            ["completion function must contain exactly one update"],
+            completion_update_contract_errors(mutated_body),
+        )
 
     def test_approved_migration_chain_lock_contract(self) -> None:
         """Reject a missing, collided, reordered, or altered approved chain."""
