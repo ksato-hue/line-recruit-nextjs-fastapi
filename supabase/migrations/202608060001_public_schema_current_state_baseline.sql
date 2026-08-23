@@ -266,4 +266,108 @@ CREATE TRIGGER set_question_tree_settings_updated_at
   BEFORE UPDATE ON public.question_tree_settings
   FOR EACH ROW EXECUTE FUNCTION public.set_updated_at();
 
+CREATE OR REPLACE FUNCTION public.complete_application_session(
+  p_session_id uuid,
+  p_company_id text,
+  p_line_user_id text,
+  p_name text,
+  p_phone text,
+  p_job text,
+  p_motivation text,
+  p_applicant_status text,
+  p_event_id text DEFAULT NULL
+)
+RETURNS jsonb
+LANGUAGE plpgsql
+SECURITY INVOKER
+SET search_path = pg_catalog
+AS $function$
+DECLARE
+  v_session_status text;
+  v_applicant jsonb;
+  v_created boolean := false;
+  v_updated_count integer;
+BEGIN
+  SELECT session.status
+  INTO v_session_status
+  FROM public.application_sessions AS session
+  WHERE session.id = p_session_id
+    AND session.company_id = p_company_id
+    AND session.line_user_id = p_line_user_id
+  FOR UPDATE;
+
+  IF NOT FOUND THEN
+    RAISE EXCEPTION 'application session not found';
+  END IF;
+
+  IF v_session_status = 'completed' THEN
+    RETURN pg_catalog.jsonb_build_object(
+      'created', false,
+      'already_completed', true
+    );
+  END IF;
+
+  IF v_session_status <> 'active' THEN
+    RAISE EXCEPTION 'application session is not active';
+  END IF;
+
+  SELECT pg_catalog.to_jsonb(applicant.*)
+  INTO v_applicant
+  FROM public.applicants AS applicant
+  WHERE applicant.application_session_id = p_session_id
+    AND applicant.company_id = p_company_id
+    AND applicant.line_user_id = p_line_user_id
+  ORDER BY applicant.created_at DESC
+  LIMIT 1;
+
+  IF v_applicant IS NULL THEN
+    INSERT INTO public.applicants AS applicant (
+      company_id,
+      application_session_id,
+      line_user_id,
+      name,
+      phone,
+      job,
+      motivation,
+      status
+    )
+    VALUES (
+      p_company_id,
+      p_session_id,
+      p_line_user_id,
+      p_name,
+      p_phone,
+      p_job,
+      p_motivation,
+      p_applicant_status
+    )
+    RETURNING pg_catalog.to_jsonb(applicant.*) INTO v_applicant;
+    v_created := true;
+  END IF;
+
+  UPDATE public.application_sessions AS session
+  SET status = 'completed',
+      current_question_key = NULL,
+      answers = '[]'::pg_catalog.jsonb,
+      completed_at = COALESCE(session.completed_at, pg_catalog.now()),
+      last_activity_at = pg_catalog.now(),
+      last_event_id = COALESCE(p_event_id, session.last_event_id)
+  WHERE session.id = p_session_id
+    AND session.company_id = p_company_id
+    AND session.line_user_id = p_line_user_id
+    AND session.status = 'active';
+
+  GET DIAGNOSTICS v_updated_count = ROW_COUNT;
+  IF v_updated_count <> 1 THEN
+    RAISE EXCEPTION 'application session completion update failed';
+  END IF;
+
+  RETURN pg_catalog.jsonb_build_object(
+    'created', v_created,
+    'already_completed', false,
+    'applicant', v_applicant
+  );
+END;
+$function$;
+
 COMMIT;

@@ -18,6 +18,13 @@ STRUCTURAL_CONTRACT_PATH = (
     / "fixtures"
     / "production-public-schema-contract.json"
 )
+DATABASE_COMPLETION_TEST_PATH = (
+    REPOSITORY_ROOT
+    / "supabase"
+    / "tests"
+    / "database"
+    / "0001_application_session_functions.test.sql"
+)
 VERSION_PATTERN = re.compile(r"^\d{12}$")
 BASELINE_VERSION = "202608060001"
 SECURITY_VERSION = "202608060002"
@@ -340,7 +347,7 @@ class StagingMigrationChainTests(unittest.TestCase):
         statements = split_top_level_sql_statements(normalized)
         contract = json.loads(STRUCTURAL_CONTRACT_PATH.read_text(encoding="utf-8"))
         expected_statement_count = (
-            4
+            5
             + len(contract["tables"])
             + len(contract["indexes"]["explicit"])
             + len(contract["triggers"])
@@ -391,7 +398,7 @@ class StagingMigrationChainTests(unittest.TestCase):
                 )
                 for statement in create_statements
             ),
-            1,
+            2,
         )
         self.assertEqual(
             sum(
@@ -431,8 +438,13 @@ class StagingMigrationChainTests(unittest.TestCase):
             r'([a-z_][\w$]*)\s*\.\s*([a-z_][\w$]*)',
             normalized,
         )
-        self.assertEqual(function_names, [('public', 'set_updated_at')])
-        self.assertNotRegex(normalized, r'\bcomplete_application_session\b')
+        self.assertEqual(
+            function_names,
+            [
+                ('public', 'set_updated_at'),
+                ('public', 'complete_application_session'),
+            ],
+        )
 
         function_contract = re.compile(
             r"\bcreate\s+(?:or\s+replace\s+)?function\s+"
@@ -473,6 +485,140 @@ class StagingMigrationChainTests(unittest.TestCase):
             normalized,
             r"\bgrant\b[^;]*\bto\b[^;]*\b(?:public|anon|authenticated)\b",
         )
+
+    def test_application_completion_function_is_hardened_and_contract_compatible(
+        self,
+    ) -> None:
+        """Reject loss of locking, tenant scope, idempotency, or RPC compatibility."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        baseline_path = REPOSITORY_ROOT / lock["baseline_path"]
+        migration = baseline_path.read_text(encoding="utf-8")
+        normalized = re.sub(r"--[^\n]*|/\*.*?\*/", "", migration, flags=re.DOTALL)
+        normalized = normalized.lower()
+
+        completion_function = re.search(
+            r"\bcreate\s+(?:or\s+replace\s+)?function\s+"
+            r"public\s*\.\s*complete_application_session\s*\("
+            r"(?P<arguments>.*?)\)\s*returns\s+jsonb\s+"
+            r"language\s+plpgsql\s+security\s+invoker\s+"
+            r"set\s+search_path\s*=\s*pg_catalog\s+"
+            r"as\s+(?P<quote>\$(?:[a-z_][\w]*)?\$)"
+            r"(?P<body>.*?)(?P=quote)\s*;",
+            normalized,
+            flags=re.DOTALL,
+        )
+        self.assertIsNotNone(
+            completion_function,
+            "locked baseline must define complete_application_session() with the hardened header",
+        )
+        arguments = normalize_sql_fragment(completion_function.group("arguments"))
+        self.assertEqual(
+            arguments,
+            normalize_sql_fragment(
+                """
+                p_session_id uuid,
+                p_company_id text,
+                p_line_user_id text,
+                p_name text,
+                p_phone text,
+                p_job text,
+                p_motivation text,
+                p_applicant_status text,
+                p_event_id text default null
+                """
+            ),
+        )
+
+        body = normalize_sql_fragment(completion_function.group("body"))
+        table_references = set(
+            re.findall(
+                r"\b(?:from|join|insert\s+into|update|delete\s+from)\s+"
+                r"([a-z_][\w$]*\.[a-z_][\w$]*)\b",
+                body,
+            )
+        )
+        self.assertEqual(
+            table_references,
+            {"public.application_sessions", "public.applicants"},
+        )
+        self.assertNotRegex(
+            body,
+            r"\b(?:from|join|insert\s+into|update|delete\s+from)\s+"
+            r"(?:application_sessions|applicants)\b",
+        )
+        self.assertNotRegex(body, r"\bsecurity\s+definer\b")
+        self.assertNotRegex(body, r"\bexecute\b")
+
+        self.assertRegex(
+            body,
+            r"select\s+session\.status\s+into\s+v_session_status\s+"
+            r"from\s+public\.application_sessions\s+as\s+session\s+"
+            r"where\s+session\.id\s*=\s*p_session_id\s+"
+            r"and\s+session\.company_id\s*=\s*p_company_id\s+"
+            r"and\s+session\.line_user_id\s*=\s*p_line_user_id\s+"
+            r"for\s+update",
+        )
+        self.assertRegex(
+            body,
+            r"from\s+public\.applicants\s+as\s+applicant\s+"
+            r"where\s+applicant\.application_session_id\s*=\s*p_session_id\s+"
+            r"and\s+applicant\.company_id\s*=\s*p_company_id\s+"
+            r"and\s+applicant\.line_user_id\s*=\s*p_line_user_id",
+        )
+        self.assertRegex(
+            body,
+            r"insert\s+into\s+public\.applicants\s+as\s+applicant\s*\("
+            r"\s*company_id\s*,\s*application_session_id\s*,\s*line_user_id",
+        )
+        self.assertRegex(
+            body,
+            r"values\s*\(\s*p_company_id\s*,\s*p_session_id\s*,\s*p_line_user_id",
+        )
+        self.assertRegex(
+            body,
+            r"update\s+public\.application_sessions\s+as\s+session\s+set\s+"
+            r".*?where\s+session\.id\s*=\s*p_session_id\s+"
+            r"and\s+session\.company_id\s*=\s*p_company_id\s+"
+            r"and\s+session\.line_user_id\s*=\s*p_line_user_id\s+"
+            r"and\s+session\.status\s*=\s*'active'",
+        )
+        self.assertRegex(
+            body,
+            r"get\s+diagnostics\s+v_updated_count\s*=\s*row_count\s*;\s*"
+            r"if\s+v_updated_count\s*<>\s*1\s+then\s+raise\s+exception",
+        )
+        self.assertRegex(
+            body,
+            r"if\s+v_session_status\s*=\s*'completed'\s+then\s+"
+            r"return\s+pg_catalog\.jsonb_build_object\s*\("
+            r"\s*'created'\s*,\s*false\s*,\s*"
+            r"'already_completed'\s*,\s*true\s*\)",
+        )
+        self.assertRegex(
+            body,
+            r"if\s+v_session_status\s*<>\s*'active'\s+then\s+raise\s+exception",
+        )
+        self.assertRegex(
+            body,
+            r"return\s+pg_catalog\.jsonb_build_object\s*\("
+            r"\s*'created'\s*,\s*v_created\s*,\s*"
+            r"'already_completed'\s*,\s*false\s*,\s*"
+            r"'applicant'\s*,\s*v_applicant\s*\)",
+        )
+
+    def test_database_completion_contract_is_deferred_transactional_sql(self) -> None:
+        """Reject a non-rollback pgTAP suite or accidental privilege/dynamic SQL."""
+        sql = DATABASE_COMPLETION_TEST_PATH.read_text(encoding="utf-8")
+        normalized = re.sub(r"--[^\n]*|/\*.*?\*/", "", sql, flags=re.DOTALL)
+        normalized = normalize_sql_fragment(normalized)
+
+        self.assertRegex(normalized, r"^begin\s*;")
+        self.assertRegex(normalized, r"select\s+plan\s*\(\s*15\s*\)")
+        self.assertRegex(normalized, r"select\s+\*\s+from\s+finish\s*\(\s*\)")
+        self.assertRegex(normalized, r"rollback\s*;\s*$")
+        self.assertNotRegex(normalized, r"\bsecurity\s+definer\b")
+        self.assertNotRegex(normalized, r"\bexecute\b")
+        self.assertNotRegex(normalized, r"\bgrant\b|\brevoke\b")
 
     def test_approved_migration_chain_lock_contract(self) -> None:
         """Reject a missing, collided, reordered, or altered approved chain."""
