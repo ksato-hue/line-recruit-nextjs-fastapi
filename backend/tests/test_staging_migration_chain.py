@@ -321,7 +321,6 @@ def mask_sql_comments_and_literals(sql: str) -> str:
                 break
             else:
                 raise ValueError("unterminated SQL quoted identifier")
-            mask_range(cursor, end)
             cursor = end
             continue
         dollar_quote = DOLLAR_QUOTE_PATTERN.match(sql, cursor)
@@ -338,29 +337,104 @@ def mask_sql_comments_and_literals(sql: str) -> str:
     return "".join(masked)
 
 
-def completion_update_contract_errors(body: str) -> list[str]:
+def normalized_sql_identifier(token: re.Match[str]) -> str | None:
+    quoted_identifier = token.group("quoted_identifier")
+    if quoted_identifier is not None:
+        return quoted_identifier[1:-1].replace('""', '"')
+    word = token.group("word")
+    return word.lower() if word is not None else None
+
+
+def executable_update_statements(body: str) -> list[tuple[str, str]]:
+    """Return normalized targets/statements for DML UPDATE, excluding row locks."""
     masked_body = mask_sql_comments_and_literals(body)
-    update_statements = []
-    for update in re.finditer(
-        r"\bupdate\s+(?:(?:[a-z_][\w$]*)\.)?[a-z_][\w$]*\b",
-        masked_body,
+    token_pattern = re.compile(
+        r'(?P<quoted_identifier>"(?:[^"]|"")*")'
+        r'|(?P<word>[a-z_][\w$]*)'
+        r'|(?P<semicolon>;)'
+        r'|(?P<dot>\.)'
+        r'|(?P<symbol>\S)',
         flags=re.IGNORECASE,
-    ):
-        statement_end = masked_body.find(";", update.end())
-        if statement_end < 0:
-            return ["unterminated update statement"]
-        update_statements.append(
-            normalize_sql_fragment(body[update.start() : statement_end + 1])
+    )
+    tokens = list(token_pattern.finditer(masked_body))
+    updates = []
+    for index, token in enumerate(tokens):
+        word = token.group("word")
+        if word is None or word.lower() != "update":
+            continue
+
+        preceding_words = []
+        preceding_index = index - 1
+        while preceding_index >= 0 and len(preceding_words) < 3:
+            preceding_token = tokens[preceding_index]
+            if preceding_token.group("semicolon") is not None:
+                break
+            preceding_word = preceding_token.group("word")
+            if preceding_word is not None:
+                preceding_words.append(preceding_word.lower())
+            preceding_index -= 1
+        if preceding_words[:1] == ["for"]:
+            continue
+        if preceding_words[:3] == ["key", "no", "for"]:
+            continue
+
+        target_index = index + 1
+        if (
+            target_index < len(tokens)
+            and (tokens[target_index].group("word") or "").lower() == "only"
+        ):
+            target_index += 1
+        if target_index >= len(tokens):
+            raise ValueError("update statement has no target")
+        first_identifier = normalized_sql_identifier(tokens[target_index])
+        if first_identifier is None:
+            raise ValueError("update statement has an invalid target")
+        target = first_identifier
+        if (
+            target_index + 2 < len(tokens)
+            and tokens[target_index + 1].group("dot") is not None
+        ):
+            second_identifier = normalized_sql_identifier(tokens[target_index + 2])
+            if second_identifier is None:
+                raise ValueError("update statement has an invalid qualified target")
+            target = f"{first_identifier}.{second_identifier}"
+
+        statement_end = next(
+            (
+                candidate.end()
+                for candidate in tokens[index + 1 :]
+                if candidate.group("semicolon") is not None
+            ),
+            None,
         )
-    if len(update_statements) != 1:
+        if statement_end is None:
+            raise ValueError("unterminated update statement")
+        updates.append(
+            (
+                target,
+                normalize_sql_fragment(body[token.start() : statement_end]),
+            )
+        )
+    return updates
+
+
+def completion_update_contract_errors(body: str) -> list[str]:
+    try:
+        updates = executable_update_statements(body)
+    except ValueError as error:
+        return [str(error)]
+    if len(updates) != 1:
         return ["completion function must contain exactly one update"]
+    update_target, update_statement = updates[0]
+    if update_target != "public.application_sessions":
+        return ["missing scoped session update"]
     scoped_update = re.fullmatch(
         r"update\s+public\.application_sessions\s+as\s+session\s+set\s+"
         r".*?where\s+session\.id\s*=\s*p_session_id\s+"
         r"and\s+session\.company_id\s*=\s*p_company_id\s+"
         r"and\s+session\.line_user_id\s*=\s*p_line_user_id\s+"
         r"and\s+session\.status\s*=\s*'active'\s*;",
-        update_statements[0],
+        update_statement,
     )
     return [] if scoped_update is not None else ["missing scoped session update"]
 
@@ -896,6 +970,49 @@ class StagingMigrationChainTests(unittest.TestCase):
             ["completion function must contain exactly one update"],
             completion_update_contract_errors(mutated_body),
         )
+
+    def test_completion_update_guard_rejects_nested_quoted_unscoped_update(
+        self,
+    ) -> None:
+        """Reject a nested update whose relation uses quoted identifiers."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        body = completion_function_body(migration)
+        body_before_final_end, final_end = body.rsplit("end;", 1)
+        mutated_body = (
+            body_before_final_end
+            + " if p_event_id is null then"
+            + ' update "public"."application_sessions"'
+            + " set status = 'completed';"
+            + " end if; end;"
+            + final_end
+        )
+        self.assertEqual(
+            ["completion function must contain exactly one update"],
+            completion_update_contract_errors(mutated_body),
+        )
+
+    def test_completion_update_guard_ignores_valid_row_lock_variants(
+        self,
+    ) -> None:
+        """Do not classify PostgreSQL FOR UPDATE clauses as DML updates."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        body = completion_function_body(migration)
+        lock_clauses = (
+            "for update of session;",
+            "for update nowait;",
+            "for update skip locked;",
+        )
+        for lock_clause in lock_clauses:
+            with self.subTest(lock_clause=lock_clause):
+                mutated_body = body.replace("for update;", lock_clause, 1)
+                self.assertNotEqual(body, mutated_body)
+                self.assertEqual([], completion_update_contract_errors(mutated_body))
 
     def test_completion_update_guard_ignores_comments_and_string_literals(
         self,
