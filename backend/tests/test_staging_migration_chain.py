@@ -25,6 +25,13 @@ DATABASE_COMPLETION_TEST_PATH = (
     / "database"
     / "0001_application_session_functions.test.sql"
 )
+DATABASE_SECURITY_TEST_PATH = (
+    REPOSITORY_ROOT
+    / "supabase"
+    / "tests"
+    / "database"
+    / "0002_fail_closed_security.test.sql"
+)
 VERSION_PATTERN = re.compile(r"^\d{12}$")
 BASELINE_VERSION = "202608060001"
 SECURITY_VERSION = "202608060002"
@@ -44,6 +51,27 @@ INQUIRY_PATHS = (
     "supabase/migrations/202608070004_finalize_inquiry_reply.sql",
 )
 FINAL_ACTIVE_PATHS = (BASELINE_PATH, SECURITY_PATH, *INQUIRY_PATHS)
+BASE_TABLES = (
+    "app_settings",
+    "applicant_status_settings",
+    "applicants",
+    "application_sessions",
+    "contacts",
+    "faq_categories",
+    "faq_settings",
+    "faqs",
+    "inquiries",
+    "interview_slots",
+    "line_message_logs",
+    "question_tree_settings",
+)
+APPLICATION_FUNCTIONS = (
+    "public.set_updated_at()",
+    (
+        "public.complete_application_session("
+        "uuid, text, text, text, jsonb, text, jsonb, timestamptz, text)"
+    ),
+)
 LEGACY_ARCHIVE_DIRECTORY = (
     REPOSITORY_ROOT / "supabase" / "legacy_migrations" / "2026-07-pre-baseline"
 )
@@ -897,6 +925,126 @@ class StagingMigrationChainTests(unittest.TestCase):
         replay_arguments = split_top_level_comma_items(calls[1])
         self.assertEqual(9, len(first_arguments))
         self.assertEqual(first_arguments, replay_arguments)
+
+    def test_fail_closed_security_migration_is_exact(self) -> None:
+        """Reject missing RLS or any privilege broadening beyond the allowlist."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        self.assertEqual("service_role", lock["backend_database_role"])
+        security_path = REPOSITORY_ROOT / lock["security_path"]
+        self.assertTrue(
+            security_path.is_file(),
+            f"locked security migration is absent: {security_path}",
+        )
+        migration = security_path.read_text(encoding="utf-8")
+        executable = re.sub(
+            r"--[^\n]*|/\*.*?\*/",
+            "",
+            migration,
+            flags=re.DOTALL,
+        )
+        statements = [
+            normalize_sql_fragment(statement)
+            for statement in split_top_level_sql_statements(executable)
+        ]
+
+        qualified_tables = ", ".join(
+            f"public.{table_name}" for table_name in BASE_TABLES
+        )
+        functions = ", ".join(APPLICATION_FUNCTIONS)
+        client_roles = "public, anon, authenticated"
+        expected_statements = [
+            "begin;",
+            *(
+                f"alter table public.{table_name} enable row level security;"
+                for table_name in BASE_TABLES
+            ),
+            f"revoke create on schema public from {client_roles};",
+            "grant usage on schema public to service_role;",
+            (
+                f"revoke all privileges on table {qualified_tables} "
+                f"from {client_roles};"
+            ),
+            (
+                "grant select, insert, update, delete on table "
+                f"{qualified_tables} to service_role;"
+            ),
+            (
+                f"revoke all privileges on function {functions} "
+                f"from {client_roles};"
+            ),
+            f"grant execute on function {functions} to service_role;",
+            (
+                "alter default privileges in schema public revoke all privileges "
+                f"on tables from {client_roles};"
+            ),
+            (
+                "alter default privileges in schema public revoke all privileges "
+                f"on functions from {client_roles};"
+            ),
+            (
+                "alter default privileges in schema public revoke all privileges "
+                f"on sequences from {client_roles};"
+            ),
+            "commit;",
+        ]
+        expected_statements = [
+            normalize_sql_fragment(statement) for statement in expected_statements
+        ]
+        self.assertEqual(expected_statements, statements)
+
+        normalized = " ".join(statements)
+        self.assertNotRegex(normalized, r"\bforce\s+row\s+level\s+security\b")
+        self.assertNotRegex(normalized, r"\b(?:create|alter|drop)\s+policy\b")
+        self.assertNotRegex(normalized, r"\balter\s+role\b")
+        self.assertNotRegex(normalized, r"\bowner\s+to\b")
+        self.assertNotRegex(normalized, r"\bgrant\s+all(?:\s+privileges)?\b")
+        self.assertNotRegex(
+            normalized,
+            r"\bgrant\b[^;]*\bto\b[^;]*\b(?:public|anon|authenticated)\b",
+        )
+        self.assertNotRegex(
+            normalized,
+            r"\bon\s+all\s+(?:tables|functions|sequences)\s+in\s+schema\b",
+        )
+        self.assertNotRegex(
+            normalized,
+            (
+                r"\b(?:auth|storage|realtime|extensions|graphql|graphql_public|"
+                r"net|vault|supabase_functions)\."
+            ),
+        )
+
+    def test_database_security_contract_is_deferred_transactional_sql(self) -> None:
+        """Reject pgTAP coverage that omits a fail-closed runtime invariant."""
+        sql = DATABASE_SECURITY_TEST_PATH.read_text(encoding="utf-8")
+        normalized = re.sub(r"--[^\n]*|/\*.*?\*/", "", sql, flags=re.DOTALL)
+        normalized = normalize_sql_fragment(normalized)
+
+        self.assertRegex(normalized, r"^begin\s*;")
+        self.assertRegex(normalized, r"select\s+plan\s*\(\s*13\s*\)")
+        self.assertRegex(normalized, r"\brelrowsecurity\b")
+        self.assertRegex(normalized, r"\brelforcerowsecurity\b")
+        self.assertRegex(normalized, r"\bpg_catalog\.pg_policy\b")
+        self.assertRegex(normalized, r"\bhas_table_privilege\b")
+        self.assertRegex(normalized, r"\bhas_function_privilege\b")
+        self.assertRegex(normalized, r"\bhas_schema_privilege\b")
+        for table_name in BASE_TABLES:
+            with self.subTest(table_name=table_name):
+                self.assertIn(f"'{table_name}'", normalized)
+        for function in APPLICATION_FUNCTIONS:
+            with self.subTest(function=function):
+                self.assertIn(f"'{function}'", normalized)
+        for role_name in ("public", "anon", "authenticated", "service_role"):
+            with self.subTest(role_name=role_name):
+                self.assertIn(role_name, normalized)
+        for object_kind in ("table", "function", "sequence"):
+            with self.subTest(object_kind=object_kind):
+                self.assertRegex(
+                    normalized,
+                    rf"create\s+{object_kind}\s+public\.task8_default_privilege_",
+                )
+        self.assertRegex(normalized, r"select\s+\*\s+from\s+finish\s*\(\s*\)")
+        self.assertRegex(normalized, r"rollback\s*;\s*$")
 
     def test_completion_table_guard_rejects_unqualified_business_reference(
         self,
