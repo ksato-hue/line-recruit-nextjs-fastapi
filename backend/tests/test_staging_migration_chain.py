@@ -6,6 +6,7 @@ import re
 import subprocess
 import unittest
 from pathlib import Path
+from unittest import mock
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
@@ -184,6 +185,353 @@ def split_top_level_comma_items(sql: str) -> list[str]:
     if final_item:
         items.append(final_item)
     return items
+
+
+def pgtap_assertion_signature(
+    statement: str,
+) -> tuple[str, str, str | None] | None:
+    match = re.fullmatch(r"select (is|ok)\((.*)\);", statement)
+    if match is None:
+        return None
+    function_name = match.group(1)
+    arguments = split_top_level_comma_items(match.group(2))
+    expected_argument_count = 3 if function_name == "is" else 2
+    if len(arguments) != expected_argument_count:
+        return ("invalid", statement, None)
+    expected = arguments[1] if function_name == "is" else None
+    return (function_name, arguments[0], expected)
+
+
+def expected_database_security_assertion_signatures(
+) -> list[tuple[str, str, str | None]]:
+    contracts = (
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM task8_application_functions AS expected
+              WHERE pg_catalog.to_regprocedure(expected.function_signature)
+                IS NOT NULL
+            )
+            """,
+            "2::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_class AS relation
+              INNER JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = relation.relnamespace
+              INNER JOIN task8_base_tables AS expected
+                ON expected.table_name = relation.relname
+              WHERE namespace.nspname = 'public'
+                AND relation.relrowsecurity
+            )
+            """,
+            "12::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_class AS relation
+              INNER JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = relation.relnamespace
+              INNER JOIN task8_base_tables AS expected
+                ON expected.table_name = relation.relname
+              WHERE namespace.nspname = 'public'
+                AND relation.relforcerowsecurity
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM pg_catalog.pg_policy AS policy
+              INNER JOIN pg_catalog.pg_class AS relation
+                ON relation.oid = policy.polrelid
+              INNER JOIN pg_catalog.pg_namespace AS namespace
+                ON namespace.oid = relation.relnamespace
+              INNER JOIN task8_base_tables AS expected
+                ON expected.table_name = relation.relname
+              WHERE namespace.nspname = 'public'
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM task8_base_tables AS expected
+              CROSS JOIN (
+                VALUES ('anon'), ('authenticated')
+              ) AS client_role(role_name)
+              CROSS JOIN (
+                VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')
+              ) AS table_privilege(privilege_name)
+              WHERE pg_catalog.has_table_privilege(
+                client_role.role_name,
+                pg_catalog.format('public.%I', expected.table_name),
+                table_privilege.privilege_name
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM task8_base_tables AS expected
+              CROSS JOIN (
+                VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')
+              ) AS table_privilege(privilege_name)
+              WHERE NOT pg_catalog.has_table_privilege(
+                'service_role',
+                pg_catalog.format('public.%I', expected.table_name),
+                table_privilege.privilege_name
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "ok",
+            """
+            (
+              SELECT
+                role.rolsuper
+                OR role.rolbypassrls
+                OR NOT EXISTS (
+                  SELECT 1
+                  FROM task8_base_tables AS expected
+                  INNER JOIN pg_catalog.pg_class AS relation
+                    ON relation.relname = expected.table_name
+                  INNER JOIN pg_catalog.pg_namespace AS namespace
+                    ON namespace.oid = relation.relnamespace
+                  WHERE namespace.nspname = 'public'
+                    AND relation.relowner <> role.oid
+                )
+              FROM pg_catalog.pg_roles AS role
+              WHERE role.rolname = 'service_role'
+            )
+            """,
+            None,
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM task8_application_functions AS expected
+              INNER JOIN pg_catalog.pg_proc AS routine
+                ON routine.oid =
+                  pg_catalog.to_regprocedure(expected.function_signature)
+              CROSS JOIN LATERAL pg_catalog.aclexplode(
+                COALESCE(
+                  routine.proacl,
+                  pg_catalog.acldefault('f', routine.proowner)
+                )
+              ) AS function_acl
+              WHERE function_acl.grantee = 0
+                AND function_acl.privilege_type = 'EXECUTE'
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM task8_application_functions AS expected
+              CROSS JOIN (
+                VALUES ('anon'), ('authenticated')
+              ) AS client_role(role_name)
+              WHERE pg_catalog.has_function_privilege(
+                client_role.role_name,
+                pg_catalog.to_regprocedure(expected.function_signature),
+                'EXECUTE'
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM task8_application_functions AS expected
+              WHERE NOT pg_catalog.has_function_privilege(
+                'service_role',
+                pg_catalog.to_regprocedure(expected.function_signature),
+                'EXECUTE'
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM (
+                VALUES ('anon'), ('authenticated')
+              ) AS client_role(role_name)
+              WHERE pg_catalog.has_schema_privilege(
+                client_role.role_name,
+                'public',
+                'CREATE'
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "ok",
+            "pg_catalog.has_schema_privilege('service_role', 'public', 'USAGE')",
+            None,
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM (
+                VALUES ('anon'), ('authenticated')
+              ) AS client_role(role_name)
+              CROSS JOIN (
+                VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')
+              ) AS table_privilege(privilege_name)
+              WHERE pg_catalog.has_table_privilege(
+                client_role.role_name,
+                'public.task8_default_privilege_table',
+                table_privilege.privilege_name
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM (
+                VALUES ('anon'), ('authenticated')
+              ) AS client_role(role_name)
+              WHERE pg_catalog.has_function_privilege(
+                client_role.role_name,
+                'public.task8_default_privilege_function()',
+                'EXECUTE'
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM (
+                VALUES ('anon'), ('authenticated')
+              ) AS client_role(role_name)
+              CROSS JOIN (
+                VALUES ('USAGE'), ('SELECT'), ('UPDATE')
+              ) AS sequence_privilege(privilege_name)
+              WHERE pg_catalog.has_sequence_privilege(
+                client_role.role_name,
+                'public.task8_default_privilege_sequence',
+                sequence_privilege.privilege_name
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+    )
+    return [
+        (function_name, normalize_sql_fragment(actual), expected)
+        for function_name, actual, expected in contracts
+    ]
+
+
+def database_security_contract_errors(sql: str) -> list[str]:
+    executable = re.sub(r"--[^\n]*|/\*.*?\*/", "", sql, flags=re.DOTALL)
+    statements = [
+        normalize_sql_fragment(statement)
+        for statement in split_top_level_sql_statements(executable)
+    ]
+    errors = []
+    if not statements or statements[0] != "begin;":
+        errors.append("pgTAP contract must begin a transaction")
+    if not statements or statements[-1] != "rollback;":
+        errors.append("pgTAP contract must end with rollback")
+    if statements.count("select plan(15);") != 1:
+        errors.append("pgTAP contract must plan exactly 15 assertions")
+    if statements.count("select * from finish();") != 1:
+        errors.append("pgTAP contract must finish exactly once")
+
+    expected_table_inventory = normalize_sql_fragment(
+        "INSERT INTO task8_base_tables (table_name) VALUES "
+        + ", ".join(f"('{table_name}')" for table_name in BASE_TABLES)
+        + ";"
+    )
+    expected_function_inventory = normalize_sql_fragment(
+        "INSERT INTO task8_application_functions (function_signature) VALUES "
+        + ", ".join(f"('{function}')" for function in APPLICATION_FUNCTIONS)
+        + ";"
+    )
+    required_statements = (
+        normalize_sql_fragment(
+            "CREATE TEMPORARY TABLE task8_base_tables "
+            "(table_name text PRIMARY KEY) ON COMMIT DROP;"
+        ),
+        expected_table_inventory,
+        normalize_sql_fragment(
+            "CREATE TEMPORARY TABLE task8_application_functions "
+            "(function_signature text PRIMARY KEY) ON COMMIT DROP;"
+        ),
+        expected_function_inventory,
+        normalize_sql_fragment(
+            "CREATE TABLE public.task8_default_privilege_table "
+            "(id integer PRIMARY KEY);"
+        ),
+        normalize_sql_fragment(
+            "CREATE FUNCTION public.task8_default_privilege_function() "
+            "RETURNS integer LANGUAGE sql SECURITY INVOKER "
+            "SET search_path = pg_catalog AS 'SELECT 1';"
+        ),
+        "create sequence public.task8_default_privilege_sequence;",
+    )
+    for required_statement in required_statements:
+        if statements.count(required_statement) != 1:
+            errors.append(
+                "missing or altered structural statement: " + required_statement
+            )
+
+    assertion_signatures = [
+        signature
+        for statement in statements
+        if (signature := pgtap_assertion_signature(statement)) is not None
+    ]
+    if assertion_signatures != expected_database_security_assertion_signatures():
+        errors.append(
+            "pgTAP assertion structures must match the exact 15-case security matrix"
+        )
+    return errors
 
 
 def extract_unquoted_function_call_arguments(
@@ -1017,34 +1365,84 @@ class StagingMigrationChainTests(unittest.TestCase):
     def test_database_security_contract_is_deferred_transactional_sql(self) -> None:
         """Reject pgTAP coverage that omits a fail-closed runtime invariant."""
         sql = DATABASE_SECURITY_TEST_PATH.read_text(encoding="utf-8")
-        normalized = re.sub(r"--[^\n]*|/\*.*?\*/", "", sql, flags=re.DOTALL)
-        normalized = normalize_sql_fragment(normalized)
+        errors = database_security_contract_errors(sql)
+        self.assertEqual([], errors, "\n".join(errors))
 
-        self.assertRegex(normalized, r"^begin\s*;")
-        self.assertRegex(normalized, r"select\s+plan\s*\(\s*13\s*\)")
-        self.assertRegex(normalized, r"\brelrowsecurity\b")
-        self.assertRegex(normalized, r"\brelforcerowsecurity\b")
-        self.assertRegex(normalized, r"\bpg_catalog\.pg_policy\b")
-        self.assertRegex(normalized, r"\bhas_table_privilege\b")
-        self.assertRegex(normalized, r"\bhas_function_privilege\b")
-        self.assertRegex(normalized, r"\bhas_schema_privilege\b")
-        for table_name in BASE_TABLES:
-            with self.subTest(table_name=table_name):
-                self.assertIn(f"'{table_name}'", normalized)
-        for function in APPLICATION_FUNCTIONS:
-            with self.subTest(function=function):
-                self.assertIn(f"'{function}'", normalized)
-        for role_name in ("public", "anon", "authenticated", "service_role"):
-            with self.subTest(role_name=role_name):
-                self.assertIn(role_name, normalized)
-        for object_kind in ("table", "function", "sequence"):
-            with self.subTest(object_kind=object_kind):
-                self.assertRegex(
-                    normalized,
-                    rf"create\s+{object_kind}\s+public\.task8_default_privilege_",
+    def test_database_security_contract_requires_service_role_rls_capability(
+        self,
+    ) -> None:
+        """Reject ACL-only coverage that never proves service_role can pass RLS."""
+        sql = DATABASE_SECURITY_TEST_PATH.read_text(encoding="utf-8")
+        statements = [
+            normalize_sql_fragment(statement)
+            for statement in split_top_level_sql_statements(sql)
+        ]
+        self.assertTrue(
+            any(
+                statement.startswith("select ok(")
+                and all(
+                    token in statement
+                    for token in (
+                        "pg_catalog.pg_roles",
+                        "rolsuper",
+                        "rolbypassrls",
+                        "relowner",
+                        "task8_base_tables",
+                        "service_role",
+                    )
                 )
-        self.assertRegex(normalized, r"select\s+\*\s+from\s+finish\s*\(\s*\)")
-        self.assertRegex(normalized, r"rollback\s*;\s*$")
+                for statement in statements
+            ),
+            "pgTAP must prove service_role can bypass RLS or owns every base table",
+        )
+
+    def test_database_security_contract_requires_both_functions_to_exist(
+        self,
+    ) -> None:
+        """Reject privilege assertions that can discard unresolved signatures."""
+        sql = DATABASE_SECURITY_TEST_PATH.read_text(encoding="utf-8")
+        statements = [
+            normalize_sql_fragment(statement)
+            for statement in split_top_level_sql_statements(sql)
+        ]
+        self.assertTrue(
+            any(
+                statement.startswith("select is(")
+                and all(
+                    token in statement
+                    for token in (
+                        "task8_application_functions",
+                        "pg_catalog.to_regprocedure",
+                        "is not null",
+                        "2::bigint",
+                    )
+                )
+                for statement in statements
+            ),
+            "pgTAP must fail unless both exact application signatures resolve",
+        )
+
+    def test_database_security_contract_rejects_inert_assertion_tokens(
+        self,
+    ) -> None:
+        """Reject real query text hidden in 15 unconditional assertion labels."""
+        sql = DATABASE_SECURITY_TEST_PATH.read_text(encoding="utf-8")
+        inert_statements = []
+        replaced_assertions = 0
+        for statement in split_top_level_sql_statements(sql):
+            normalized = normalize_sql_fragment(statement)
+            if pgtap_assertion_signature(normalized) is None:
+                inert_statements.append(statement)
+                continue
+            replaced_assertions += 1
+            inert_statements.append(
+                "SELECT ok(true, $inert$" + statement + "$inert$);"
+            )
+        self.assertEqual(15, replaced_assertions)
+        inert_sql = "\n".join(inert_statements)
+        with mock.patch.object(Path, "read_text", return_value=inert_sql):
+            with self.assertRaises(AssertionError):
+                self.test_database_security_contract_is_deferred_transactional_sql()
 
     def test_completion_table_guard_rejects_unqualified_business_reference(
         self,

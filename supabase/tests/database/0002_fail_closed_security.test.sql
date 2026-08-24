@@ -2,7 +2,7 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 
-SELECT plan(13);
+SELECT plan(15);
 
 CREATE TEMPORARY TABLE task8_base_tables (
   table_name text PRIMARY KEY
@@ -33,6 +33,16 @@ VALUES
   (
     'public.complete_application_session(uuid, text, text, text, jsonb, text, jsonb, timestamptz, text)'
   );
+
+SELECT is(
+  (
+    SELECT pg_catalog.count(*)
+    FROM task8_application_functions AS expected
+    WHERE pg_catalog.to_regprocedure(expected.function_signature) IS NOT NULL
+  ),
+  2::bigint,
+  'both exact application function signatures resolve'
+);
 
 SELECT is(
   (
@@ -115,6 +125,27 @@ SELECT is(
   ),
   0::bigint,
   'service_role has required CRUD and SELECT access on every base table'
+);
+
+SELECT ok(
+  (
+    SELECT
+      role.rolsuper
+      OR role.rolbypassrls
+      OR NOT EXISTS (
+        SELECT 1
+        FROM task8_base_tables AS expected
+        INNER JOIN pg_catalog.pg_class AS relation
+          ON relation.relname = expected.table_name
+        INNER JOIN pg_catalog.pg_namespace AS namespace
+          ON namespace.oid = relation.relnamespace
+        WHERE namespace.nspname = 'public'
+          AND relation.relowner <> role.oid
+      )
+    FROM pg_catalog.pg_roles AS role
+    WHERE role.rolname = 'service_role'
+  ),
+  'service_role can bypass RLS or owns every base table'
 );
 
 SELECT is(
