@@ -5,6 +5,7 @@ import json
 import re
 import subprocess
 import unittest
+from collections.abc import Mapping, Sequence
 from pathlib import Path
 from unittest import mock
 
@@ -52,6 +53,20 @@ INQUIRY_PATHS = (
     "supabase/migrations/202608070004_finalize_inquiry_reply.sql",
 )
 FINAL_ACTIVE_PATHS = (BASELINE_PATH, SECURITY_PATH, *INQUIRY_PATHS)
+CANONICAL_INQUIRY_SHA256 = {
+    "supabase/migrations/202608070001_inquiry_workflow_columns.sql": (
+        "60f690c9a8f16a1e6e956be7ca359f7cc663804ea9da3360b7ee56736dc9cd36"
+    ),
+    "supabase/migrations/202608070002_inquiry_replies.sql": (
+        "ff07907eeffbba788f7f63d4289c51bde1dfab367bfaf331c7a3042b8b110664"
+    ),
+    "supabase/migrations/202608070003_line_message_log_inquiry_reply.sql": (
+        "c00fc97b35a28bab30e7977d8e8c0f752e473534e9881027e9aa12f5b9466714"
+    ),
+    "supabase/migrations/202608070004_finalize_inquiry_reply.sql": (
+        "d638c10210ab770d3bb76b7bf689583961aacbc9fd3233e8e5c98ccb619627e9"
+    ),
+}
 BASE_TABLES = (
     "app_settings",
     "applicant_status_settings",
@@ -119,6 +134,75 @@ def canonical_archive_blob_sha256(archive_path: Path, repository_path: str) -> s
         capture_output=True,
     ).stdout
     return hashlib.sha256(blob).hexdigest()
+
+
+def inquiry_chain_contract_errors(
+    active_paths: Sequence[str], inquiry_sql_by_path: Mapping[str, bytes]
+) -> list[str]:
+    errors = []
+    if tuple(active_paths) != FINAL_ACTIVE_PATHS:
+        errors.append("active migration order")
+
+    supplied_paths = set(inquiry_sql_by_path)
+    expected_paths = set(INQUIRY_PATHS)
+    if supplied_paths != expected_paths:
+        errors.append("inquiry migration filenames")
+
+    for path, expected_hash in CANONICAL_INQUIRY_SHA256.items():
+        sql = inquiry_sql_by_path.get(path)
+        if sql is None:
+            errors.append(f"missing inquiry migration: {path}")
+        elif hashlib.sha256(sql).hexdigest() != expected_hash:
+            errors.append(f"SHA-256 mismatch: {path}")
+    return errors
+
+
+def migration_capabilities(sql: str) -> set[str]:
+    normalized = normalize_sql_fragment(mask_sql_comments_and_literals(sql))
+    capabilities = set()
+    patterns = {
+        "inquiries": r"\bcreate table public\.inquiries\s*\(",
+        "line_message_logs": (
+            r"\bcreate table public\.line_message_logs\s*\("
+        ),
+        "set_updated_at": (
+            r"\bcreate or replace function public\.set_updated_at\s*\("
+        ),
+        "inquiries_company_id_id_key": (
+            r"\badd constraint inquiries_company_id_id_key "
+            r"unique \(company_id, id\)"
+        ),
+        "inquiry_replies": (
+            r"\bcreate table public\.inquiry_replies\s*\("
+        ),
+        "finalize_inquiry_reply": (
+            r"\bcreate function public\.finalize_inquiry_reply\s*\("
+        ),
+    }
+    for capability, pattern in patterns.items():
+        if re.search(pattern, normalized):
+            capabilities.add(capability)
+
+    if re.search(r"\bcreate extension if not exists pgcrypto\b", normalized) and re.search(
+        r"\bdefault gen_random_uuid\(\)", normalized
+    ):
+        capabilities.add("uuid_generation")
+
+    correlation_patterns = (
+        r"\badd column if not exists inquiry_reply_id uuid\b",
+        (
+            r"\bforeign key \(company_id, inquiry_reply_id\) references "
+            r"public\.inquiry_replies \(company_id, id\)"
+        ),
+        (
+            r"\bcreate unique index if not exists "
+            r"uq_line_message_logs_company_inquiry_reply on "
+            r"public\.line_message_logs \(company_id, inquiry_reply_id\)"
+        ),
+    )
+    if all(re.search(pattern, normalized) for pattern in correlation_patterns):
+        capabilities.add("inquiry_reply_correlation")
+    return capabilities
 
 
 DOLLAR_QUOTE_PATTERN = re.compile(r'\$(?:[a-z_][\w]*)?\$', re.IGNORECASE)
@@ -1632,6 +1716,127 @@ class StagingMigrationChainTests(unittest.TestCase):
             for path in INQUIRY_PATHS
         }
         self.assertEqual(lock["inquiry_migration_sha256"], expected_hashes)
+
+    def test_canonical_inquiry_migration_identity_and_active_order(self) -> None:
+        """Reject extra active SQL, renamed versions, or altered inquiry bytes."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        active_paths = tuple(
+            f"supabase/migrations/{path.name}"
+            for path in sorted(MIGRATIONS_DIRECTORY.glob("*.sql"))
+        )
+        inquiry_sql_by_path = {
+            path: (REPOSITORY_ROOT / path).read_bytes()
+            for path in INQUIRY_PATHS
+        }
+
+        self.assertEqual(
+            [],
+            inquiry_chain_contract_errors(active_paths, inquiry_sql_by_path),
+        )
+        self.assertEqual(list(FINAL_ACTIVE_PATHS), lock["final_active_paths"])
+        self.assertEqual(
+            CANONICAL_INQUIRY_SHA256,
+            lock["inquiry_migration_sha256"],
+        )
+
+    def test_inquiry_chain_guard_rejects_in_memory_mutations(self) -> None:
+        """Prove rename, reorder, and content mutations cannot pass the guard."""
+        canonical_paths = list(FINAL_ACTIVE_PATHS)
+        canonical_sql = {
+            path: (REPOSITORY_ROOT / path).read_bytes()
+            for path in INQUIRY_PATHS
+        }
+        renamed_path = INQUIRY_PATHS[0].replace(
+            "202608070001_", "202608070005_"
+        )
+        renamed_paths = canonical_paths.copy()
+        renamed_paths[2] = renamed_path
+        renamed_sql = canonical_sql.copy()
+        renamed_sql[renamed_path] = renamed_sql.pop(INQUIRY_PATHS[0])
+        reordered_paths = canonical_paths.copy()
+        reordered_paths[2], reordered_paths[3] = (
+            reordered_paths[3],
+            reordered_paths[2],
+        )
+        modified_sql = canonical_sql.copy()
+        modified_sql[INQUIRY_PATHS[0]] += b"\n-- in-memory mutation"
+
+        mutations = (
+            ("renamed", renamed_paths, renamed_sql, "active migration order"),
+            (
+                "reordered",
+                reordered_paths,
+                canonical_sql,
+                "active migration order",
+            ),
+            (
+                "modified",
+                canonical_paths,
+                modified_sql,
+                f"SHA-256 mismatch: {INQUIRY_PATHS[0]}",
+            ),
+        )
+        for mutation, active_paths, sql_by_path, expected_error in mutations:
+            with self.subTest(mutation=mutation):
+                self.assertIn(
+                    expected_error,
+                    inquiry_chain_contract_errors(active_paths, sql_by_path),
+                )
+
+    def test_inquiry_migration_dependencies_are_satisfied_in_order(self) -> None:
+        """Reject any inquiry migration that precedes an object it requires."""
+        sql_by_path = {
+            path: (REPOSITORY_ROOT / path).read_text(encoding="utf-8")
+            for path in FINAL_ACTIVE_PATHS
+        }
+        required_before = {
+            INQUIRY_PATHS[0]: {
+                "inquiries",
+                "set_updated_at",
+            },
+            INQUIRY_PATHS[1]: {
+                "inquiries_company_id_id_key",
+                "set_updated_at",
+                "uuid_generation",
+            },
+            INQUIRY_PATHS[2]: {
+                "line_message_logs",
+                "inquiry_replies",
+            },
+            INQUIRY_PATHS[3]: {
+                "inquiries",
+                "line_message_logs",
+                "inquiry_replies",
+                "inquiry_reply_correlation",
+            },
+        }
+        expected_provided = {
+            BASELINE_PATH: {
+                "inquiries",
+                "line_message_logs",
+                "set_updated_at",
+                "uuid_generation",
+            },
+            INQUIRY_PATHS[0]: {"inquiries_company_id_id_key"},
+            INQUIRY_PATHS[1]: {"inquiry_replies"},
+            INQUIRY_PATHS[2]: {"inquiry_reply_correlation"},
+            INQUIRY_PATHS[3]: {"finalize_inquiry_reply"},
+        }
+        available: set[str] = set()
+
+        for path in FINAL_ACTIVE_PATHS:
+            with self.subTest(path=path, phase="requirements"):
+                self.assertTrue(
+                    required_before.get(path, set()) <= available,
+                    f"missing prerequisite before {path}",
+                )
+            provided = migration_capabilities(sql_by_path[path])
+            with self.subTest(path=path, phase="provisions"):
+                self.assertTrue(
+                    expected_provided.get(path, set()) <= provided,
+                    f"missing provision in {path}",
+                )
+            available.update(provided)
 
     def test_pre_baseline_legacy_migrations_are_archived_with_verified_hashes(self) -> None:
         """Reject replayable legacy migrations, altered archive bytes, and missing checksums."""

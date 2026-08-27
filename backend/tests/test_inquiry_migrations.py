@@ -32,6 +32,12 @@ FINALIZE_INQUIRY_REPLY_MIGRATION_PATH = (
     / "migrations"
     / "202608070004_finalize_inquiry_reply.sql"
 )
+INQUIRY_MIGRATION_PATHS = (
+    MIGRATION_PATH,
+    INQUIRY_REPLIES_MIGRATION_PATH,
+    LINE_MESSAGE_LOG_INQUIRY_REPLY_MIGRATION_PATH,
+    FINALIZE_INQUIRY_REPLY_MIGRATION_PATH,
+)
 
 
 def _has_exact_inquiry_replies_grant_contract(sql: str) -> bool:
@@ -97,6 +103,18 @@ def _finalizer_result_key_sets(sql: str) -> list[list[str]]:
 
 
 class InquiryWorkflowMigrationTests(unittest.TestCase):
+    def test_inquiry_migrations_are_named_in_dependency_order(self) -> None:
+        """Protect the execution order used by the per-migration contracts."""
+        self.assertEqual(
+            (
+                "202608070001_inquiry_workflow_columns.sql",
+                "202608070002_inquiry_replies.sql",
+                "202608070003_line_message_log_inquiry_reply.sql",
+                "202608070004_finalize_inquiry_reply.sql",
+            ),
+            tuple(path.name for path in INQUIRY_MIGRATION_PATHS),
+        )
+
     def test_inquiry_metadata_contract(self) -> None:
         """Protect inquiry metadata DDL from unsafe tenant or status backfills."""
         self.assertTrue(
