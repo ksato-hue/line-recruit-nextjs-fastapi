@@ -158,9 +158,10 @@ def inquiry_chain_contract_errors(
 
 
 def migration_capabilities(sql: str) -> set[str]:
+    executable_sql = mask_sql_comments_and_literals(sql)
     statements = [
-        normalize_sql_fragment(mask_sql_comments_and_literals(statement))
-        for statement in split_top_level_sql_statements(sql)
+        normalize_sql_fragment(statement)
+        for statement in split_top_level_sql_statements(executable_sql)
     ]
     capabilities = set()
 
@@ -1954,6 +1955,54 @@ class StagingMigrationChainTests(unittest.TestCase):
         for mutation, sql, capability in invalid_provisions:
             with self.subTest(mutation=mutation):
                 self.assertNotIn(capability, migration_capabilities(sql))
+
+    def test_migration_capabilities_ignore_semicolons_in_inert_sql(
+        self,
+    ) -> None:
+        """Do not split strings, comments, or dollar bodies at inert semicolons."""
+        inert_table = (
+            "create table public.inquiries (id uuid, line_user_id text, "
+            "message text, status text, created_at timestamptz, "
+            "company_id text);"
+        )
+        cases = (
+            (
+                "single-quoted string",
+                f"select 'inert; {inert_table}';",
+            ),
+            (
+                "line comment",
+                f"-- inert; {inert_table}\nselect 1;",
+            ),
+            (
+                "block comment",
+                f"/* inert; {inert_table} */\nselect 1;",
+            ),
+            (
+                "dollar-quoted body",
+                f"do $body$ begin perform 1; {inert_table} end; $body$;",
+            ),
+        )
+
+        for mutation, sql in cases:
+            with self.subTest(mutation=mutation):
+                try:
+                    capabilities = migration_capabilities(sql)
+                except ValueError as error:
+                    self.fail(f"valid inert SQL raised ValueError: {error}")
+                self.assertNotIn("inquiries", capabilities)
+
+    def test_migration_capabilities_reject_unterminated_inert_sql(self) -> None:
+        """Do not accept an unterminated string, block comment, or dollar body."""
+        incomplete = (
+            "select 'unterminated;",
+            "/* unterminated;",
+            "do $body$ begin perform 1;",
+        )
+        for sql in incomplete:
+            with self.subTest(sql=sql):
+                with self.assertRaises(ValueError):
+                    migration_capabilities(sql)
 
     def test_correlation_capability_requires_each_exact_target(self) -> None:
         """Reject correlation DDL when its column, FK, or index targets another table."""
