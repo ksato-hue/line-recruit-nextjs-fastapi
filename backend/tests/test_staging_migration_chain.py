@@ -158,49 +158,149 @@ def inquiry_chain_contract_errors(
 
 
 def migration_capabilities(sql: str) -> set[str]:
-    normalized = normalize_sql_fragment(mask_sql_comments_and_literals(sql))
+    statements = [
+        normalize_sql_fragment(mask_sql_comments_and_literals(statement))
+        for statement in split_top_level_sql_statements(sql)
+    ]
     capabilities = set()
-    patterns = {
-        "inquiries": r"\bcreate table public\.inquiries\s*\(",
+
+    required_table_columns = {
+        "inquiries": (
+            r"(?:\(|, )id uuid\b",
+            r"(?:\(|, )line_user_id text\b",
+            r"(?:\(|, )message text\b",
+            r"(?:\(|, )status text\b",
+            r"(?:\(|, )created_at timestamptz\b",
+            r"(?:\(|, )company_id text\b",
+        ),
         "line_message_logs": (
-            r"\bcreate table public\.line_message_logs\s*\("
-        ),
-        "set_updated_at": (
-            r"\bcreate or replace function public\.set_updated_at\s*\("
-        ),
-        "inquiries_company_id_id_key": (
-            r"\badd constraint inquiries_company_id_id_key "
-            r"unique \(company_id, id\)"
+            r"(?:\(|, )id uuid\b",
+            r"(?:\(|, )created_at timestamptz\b",
+            r"(?:\(|, )line_user_id text\b",
+            r"(?:\(|, )message text\b",
+            r"(?:\(|, )direction text\b",
+            r"(?:\(|, )message_type text\b",
+            r"(?:\(|, )company_id text\b",
         ),
         "inquiry_replies": (
-            r"\bcreate table public\.inquiry_replies\s*\("
-        ),
-        "finalize_inquiry_reply": (
-            r"\bcreate function public\.finalize_inquiry_reply\s*\("
+            r"(?:\(|, )id uuid\b",
+            r"(?:\(|, )company_id text\b",
+            r"(?:\(|, )inquiry_id uuid\b",
+            r"(?:\(|, )assignee_name text\b",
+            r"(?:\(|, )message text\b",
+            r"(?:\(|, )delivery_status text\b",
+            r"(?:\(|, )sent_at timestamptz\b",
         ),
     }
-    for capability, pattern in patterns.items():
-        if re.search(pattern, normalized):
+    table_statements = {}
+    for capability, column_patterns in required_table_columns.items():
+        table_name = capability
+        statement = next(
+            (
+                candidate
+                for candidate in statements
+                if re.fullmatch(
+                    rf"create table public\.{table_name} \(.*\);",
+                    candidate,
+                )
+                and all(
+                    re.search(pattern, candidate)
+                    for pattern in column_patterns
+                )
+            ),
+            None,
+        )
+        if statement is not None:
+            table_statements[capability] = statement
             capabilities.add(capability)
 
-    if re.search(r"\bcreate extension if not exists pgcrypto\b", normalized) and re.search(
-        r"\bdefault gen_random_uuid\(\)", normalized
+    if any(
+        re.fullmatch(
+            r"create or replace function public\.set_updated_at\(\) "
+            r"returns trigger language plpgsql security invoker "
+            r"set search_path = pg_catalog as ;",
+            statement,
+        )
+        for statement in statements
+    ):
+        capabilities.add("set_updated_at")
+
+    if any(
+        re.fullmatch(
+            r"create function public\.finalize_inquiry_reply\("
+            r"p_company_id text, p_inquiry_id uuid, p_reply_id uuid\) "
+            r"returns jsonb language plpgsql security invoker "
+            r"set search_path = pg_catalog as ;",
+            statement,
+        )
+        for statement in statements
+    ):
+        capabilities.add("finalize_inquiry_reply")
+
+    if any(
+        re.fullmatch(
+            r"create extension if not exists pgcrypto(?: with schema extensions)?;",
+            statement,
+        )
+        for statement in statements
+    ) and any(
+        "default gen_random_uuid()" in statement
+        for statement in table_statements.values()
     ):
         capabilities.add("uuid_generation")
 
-    correlation_patterns = (
-        r"\badd column if not exists inquiry_reply_id uuid\b",
-        (
-            r"\bforeign key \(company_id, inquiry_reply_id\) references "
-            r"public\.inquiry_replies \(company_id, id\)"
-        ),
-        (
-            r"\bcreate unique index if not exists "
-            r"uq_line_message_logs_company_inquiry_reply on "
-            r"public\.line_message_logs \(company_id, inquiry_reply_id\)"
-        ),
+    if any(
+        statement.startswith("alter table public.inquiries ")
+        and re.search(
+            r"\badd constraint inquiries_company_id_id_key "
+            r"unique \(company_id, id\)",
+            statement,
+        )
+        for statement in statements
+    ):
+        capabilities.add("inquiries_company_id_id_key")
+
+    inquiry_replies_statement = table_statements.get("inquiry_replies")
+    if inquiry_replies_statement is not None and re.search(
+        r"\bconstraint inquiry_replies_company_id_id_key "
+        r"unique \(company_id, id\)",
+        inquiry_replies_statement,
+    ):
+        capabilities.add("inquiry_replies_company_id_id_key")
+
+    has_correlation_column = any(
+        re.fullmatch(
+            r"alter table public\.line_message_logs "
+            r"add column if not exists inquiry_reply_id uuid;",
+            statement,
+        )
+        for statement in statements
     )
-    if all(re.search(pattern, normalized) for pattern in correlation_patterns):
+    has_correlation_foreign_key = any(
+        statement.startswith("alter table public.line_message_logs ")
+        and re.search(
+            r"\badd constraint line_message_logs_company_inquiry_reply_fkey "
+            r"foreign key \(company_id, inquiry_reply_id\) references "
+            r"public\.inquiry_replies \(company_id, id\) on delete restrict",
+            statement,
+        )
+        for statement in statements
+    )
+    has_correlation_unique_index = any(
+        re.fullmatch(
+            r"create unique index if not exists "
+            r"uq_line_message_logs_company_inquiry_reply on "
+            r"public\.line_message_logs \(company_id, inquiry_reply_id\) "
+            r"where inquiry_reply_id is not null;",
+            statement,
+        )
+        for statement in statements
+    )
+    if (
+        has_correlation_column
+        and has_correlation_foreign_key
+        and has_correlation_unique_index
+    ):
         capabilities.add("inquiry_reply_correlation")
     return capabilities
 
@@ -1783,6 +1883,164 @@ class StagingMigrationChainTests(unittest.TestCase):
                     inquiry_chain_contract_errors(active_paths, sql_by_path),
                 )
 
+    def test_migration_capabilities_require_complete_target_bound_ddl(
+        self,
+    ) -> None:
+        """Reject truncated, partial, wrong-signature, or wrong-table DDL."""
+        invalid_provisions = (
+            (
+                "truncated inquiries table",
+                "create table public.inquiries (",
+                "inquiries",
+            ),
+            (
+                "partial inquiries table",
+                "create table public.inquiries (id uuid);",
+                "inquiries",
+            ),
+            (
+                "truncated line message logs table",
+                "create table public.line_message_logs (",
+                "line_message_logs",
+            ),
+            (
+                "truncated inquiry replies table",
+                "create table public.inquiry_replies (",
+                "inquiry_replies",
+            ),
+            (
+                "truncated timestamp function",
+                "create or replace function public.set_updated_at (",
+                "set_updated_at",
+            ),
+            (
+                "wrong timestamp function signature",
+                "create or replace function public.set_updated_at(p_id uuid) "
+                "returns trigger language sql as $$ select null; $$;",
+                "set_updated_at",
+            ),
+            (
+                "bodyless timestamp function",
+                "create or replace function public.set_updated_at() "
+                "returns trigger;",
+                "set_updated_at",
+            ),
+            (
+                "truncated finalizer",
+                "create function public.finalize_inquiry_reply (",
+                "finalize_inquiry_reply",
+            ),
+            (
+                "wrong finalizer signature",
+                "create function public.finalize_inquiry_reply(p_reply_id uuid) "
+                "returns jsonb language sql as $$ select '{}'::jsonb; $$;",
+                "finalize_inquiry_reply",
+            ),
+            (
+                "bodyless finalizer",
+                "create function public.finalize_inquiry_reply("
+                "p_company_id text, p_inquiry_id uuid, p_reply_id uuid) "
+                "returns jsonb;",
+                "finalize_inquiry_reply",
+            ),
+            (
+                "inquiries unique on wrong table",
+                "alter table public.not_inquiries add constraint "
+                "inquiries_company_id_id_key unique (company_id, id);",
+                "inquiries_company_id_id_key",
+            ),
+        )
+
+        for mutation, sql, capability in invalid_provisions:
+            with self.subTest(mutation=mutation):
+                self.assertNotIn(capability, migration_capabilities(sql))
+
+    def test_correlation_capability_requires_each_exact_target(self) -> None:
+        """Reject correlation DDL when its column, FK, or index targets another table."""
+        column = (
+            "alter table public.line_message_logs "
+            "add column if not exists inquiry_reply_id uuid;"
+        )
+        foreign_key = (
+            "alter table public.line_message_logs add constraint "
+            "line_message_logs_company_inquiry_reply_fkey foreign key "
+            "(company_id, inquiry_reply_id) references "
+            "public.inquiry_replies (company_id, id) on delete restrict;"
+        )
+        unique_index = (
+            "create unique index if not exists "
+            "uq_line_message_logs_company_inquiry_reply on "
+            "public.line_message_logs (company_id, inquiry_reply_id) "
+            "where inquiry_reply_id is not null;"
+        )
+        canonical = "\n".join((column, foreign_key, unique_index))
+        self.assertIn(
+            "inquiry_reply_correlation",
+            migration_capabilities(canonical),
+        )
+
+        mutations = (
+            (
+                "column target",
+                canonical.replace(
+                    "alter table public.line_message_logs add column",
+                    "alter table public.wrong add column",
+                    1,
+                ),
+            ),
+            (
+                "foreign-key target",
+                canonical.replace(
+                    "alter table public.line_message_logs add constraint",
+                    "alter table public.wrong add constraint",
+                    1,
+                ),
+            ),
+            (
+                "index target",
+                canonical.replace(
+                    "on public.line_message_logs (company_id, inquiry_reply_id)",
+                    "on public.wrong (company_id, inquiry_reply_id)",
+                    1,
+                ),
+            ),
+        )
+        for mutation, sql in mutations:
+            with self.subTest(mutation=mutation):
+                self.assertNotIn(
+                    "inquiry_reply_correlation",
+                    migration_capabilities(sql),
+                )
+
+    def test_inquiry_replies_composite_unique_is_an_explicit_provision(
+        self,
+    ) -> None:
+        """Reject a missing or wrong-table key required by migration 3's FK."""
+        canonical = (REPOSITORY_ROOT / INQUIRY_PATHS[1]).read_text(
+            encoding="utf-8"
+        )
+        unique_clause = (
+            "  constraint inquiry_replies_company_id_id_key "
+            "unique (company_id, id),\n"
+        )
+        self.assertIn(unique_clause, canonical)
+        missing = canonical.replace(unique_clause, "", 1)
+        misplaced = missing + (
+            "\nalter table public.not_inquiry_replies add constraint "
+            "inquiry_replies_company_id_id_key unique (company_id, id);\n"
+        )
+
+        self.assertIn(
+            "inquiry_replies_company_id_id_key",
+            migration_capabilities(canonical),
+        )
+        for mutation, sql in (("missing", missing), ("misplaced", misplaced)):
+            with self.subTest(mutation=mutation):
+                self.assertNotIn(
+                    "inquiry_replies_company_id_id_key",
+                    migration_capabilities(sql),
+                )
+
     def test_inquiry_migration_dependencies_are_satisfied_in_order(self) -> None:
         """Reject any inquiry migration that precedes an object it requires."""
         sql_by_path = {
@@ -1802,6 +2060,7 @@ class StagingMigrationChainTests(unittest.TestCase):
             INQUIRY_PATHS[2]: {
                 "line_message_logs",
                 "inquiry_replies",
+                "inquiry_replies_company_id_id_key",
             },
             INQUIRY_PATHS[3]: {
                 "inquiries",
@@ -1818,7 +2077,10 @@ class StagingMigrationChainTests(unittest.TestCase):
                 "uuid_generation",
             },
             INQUIRY_PATHS[0]: {"inquiries_company_id_id_key"},
-            INQUIRY_PATHS[1]: {"inquiry_replies"},
+            INQUIRY_PATHS[1]: {
+                "inquiry_replies",
+                "inquiry_replies_company_id_id_key",
+            },
             INQUIRY_PATHS[2]: {"inquiry_reply_correlation"},
             INQUIRY_PATHS[3]: {"finalize_inquiry_reply"},
         }
