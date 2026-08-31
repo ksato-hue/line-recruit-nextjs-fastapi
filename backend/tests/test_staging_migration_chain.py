@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import tempfile
 import unittest
 from collections.abc import Mapping, Sequence
 from pathlib import Path
@@ -141,6 +142,45 @@ def canonical_archive_blob_sha256(archive_path: Path, repository_path: str) -> s
     return hashlib.sha256(blob).hexdigest()
 
 
+def inquiry_checkout_equivalence_errors() -> list[str]:
+    errors = []
+    comparisons = (
+        (
+            ["git", "diff", "--quiet", "--", *INQUIRY_PATHS],
+            "inquiry migration working tree differs from index",
+        ),
+        (
+            [
+                "git",
+                "diff",
+                "--cached",
+                "--quiet",
+                "HEAD",
+                "--",
+                *INQUIRY_PATHS,
+            ],
+            "inquiry migration index differs from HEAD",
+        ),
+    )
+    for command, error in comparisons:
+        result = subprocess.run(
+            command,
+            cwd=REPOSITORY_ROOT,
+            check=False,
+            capture_output=True,
+        )
+        if result.returncode == 1:
+            errors.append(error)
+        elif result.returncode != 0:
+            raise subprocess.CalledProcessError(
+                result.returncode,
+                command,
+                output=result.stdout,
+                stderr=result.stderr,
+            )
+    return errors
+
+
 def inquiry_chain_contract_errors(
     active_paths: Sequence[str], inquiry_sql_by_path: Mapping[str, bytes]
 ) -> list[str]:
@@ -159,6 +199,7 @@ def inquiry_chain_contract_errors(
             errors.append(f"missing inquiry migration: {path}")
         elif hashlib.sha256(sql).hexdigest() != expected_hash:
             errors.append(f"SHA-256 mismatch: {path}")
+    errors.extend(inquiry_checkout_equivalence_errors())
     return errors
 
 
@@ -1894,6 +1935,77 @@ class StagingMigrationChainTests(unittest.TestCase):
                     canonical_blobs,
                 ),
             )
+
+    def test_inquiry_guard_rejects_worktree_mutation_with_crlf_checkout(
+        self,
+    ) -> None:
+        """Accept clean CRLF but reject a real protected-SQL checkout edit."""
+        with tempfile.TemporaryDirectory() as temporary_directory:
+            clone_root = Path(temporary_directory) / "repository"
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "core.autocrlf=true",
+                    "clone",
+                    "--quiet",
+                    "--no-hardlinks",
+                    str(REPOSITORY_ROOT),
+                    str(clone_root),
+                ],
+                check=True,
+            )
+            checkout_eol = subprocess.run(
+                ["git", "ls-files", "--eol", "--", *INQUIRY_PATHS],
+                cwd=clone_root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout
+            self.assertEqual(len(INQUIRY_PATHS), checkout_eol.count("w/crlf"))
+            canonical_blobs = {
+                path: subprocess.run(
+                    ["git", "show", f"HEAD:{path}"],
+                    cwd=clone_root,
+                    check=True,
+                    capture_output=True,
+                ).stdout
+                for path in INQUIRY_PATHS
+            }
+
+            with mock.patch(f"{__name__}.REPOSITORY_ROOT", clone_root):
+                self.assertEqual(
+                    [],
+                    inquiry_chain_contract_errors(
+                        FINAL_ACTIVE_PATHS,
+                        canonical_blobs,
+                    ),
+                )
+                protected_sql = clone_root / INQUIRY_PATHS[0]
+                with protected_sql.open(
+                    "a", encoding="utf-8", newline=""
+                ) as migration:
+                    migration.write("\r\n-- isolated worktree mutation\r\n")
+
+                self.assertIn(
+                    "inquiry migration working tree differs from index",
+                    inquiry_chain_contract_errors(
+                        FINAL_ACTIVE_PATHS,
+                        canonical_blobs,
+                    ),
+                )
+                subprocess.run(
+                    ["git", "add", "--", INQUIRY_PATHS[0]],
+                    cwd=clone_root,
+                    check=True,
+                )
+                self.assertIn(
+                    "inquiry migration index differs from HEAD",
+                    inquiry_chain_contract_errors(
+                        FINAL_ACTIVE_PATHS,
+                        canonical_blobs,
+                    ),
+                )
 
     def test_inquiry_git_blobs_match_task_9_base(self) -> None:
         """Reject any inquiry SQL blob change after the approved Task 9 base."""
