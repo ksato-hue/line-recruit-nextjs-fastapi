@@ -55,16 +55,16 @@ INQUIRY_PATHS = (
 FINAL_ACTIVE_PATHS = (BASELINE_PATH, SECURITY_PATH, *INQUIRY_PATHS)
 CANONICAL_INQUIRY_SHA256 = {
     "supabase/migrations/202608070001_inquiry_workflow_columns.sql": (
-        "60f690c9a8f16a1e6e956be7ca359f7cc663804ea9da3360b7ee56736dc9cd36"
+        "30c760d9bc1a5fc7a061ba23475c08e6601ed30fd8d48bdec236fd9a88b4962b"
     ),
     "supabase/migrations/202608070002_inquiry_replies.sql": (
-        "ff07907eeffbba788f7f63d4289c51bde1dfab367bfaf331c7a3042b8b110664"
+        "13d936b3598176f4675ac52eaae07950973741fb29c92d4e57782b670c495935"
     ),
     "supabase/migrations/202608070003_line_message_log_inquiry_reply.sql": (
-        "c00fc97b35a28bab30e7977d8e8c0f752e473534e9881027e9aa12f5b9466714"
+        "25cbdc3bcb71d8a0c85095dd444edec824a67b3c0af8c39bd67c047c9e17d428"
     ),
     "supabase/migrations/202608070004_finalize_inquiry_reply.sql": (
-        "d638c10210ab770d3bb76b7bf689583961aacbc9fd3233e8e5c98ccb619627e9"
+        "8efd6dc9ab4ae4519b607f6ea75a3a8b555b546decd46f33d2dec7ebb0d304a9"
     ),
 }
 BASE_TABLES = (
@@ -109,14 +109,19 @@ LEGACY_MIGRATION_PREFIXES = tuple(
 )
 
 
-def canonical_git_blob_sha256(revision: str, repository_path: str) -> str:
-    blob = subprocess.run(
+def canonical_git_blob_bytes(revision: str, repository_path: str) -> bytes:
+    return subprocess.run(
         ["git", "show", f"{revision}:{repository_path}"],
         cwd=REPOSITORY_ROOT,
         check=True,
         capture_output=True,
     ).stdout
-    return hashlib.sha256(blob).hexdigest()
+
+
+def canonical_git_blob_sha256(revision: str, repository_path: str) -> str:
+    return hashlib.sha256(
+        canonical_git_blob_bytes(revision, repository_path)
+    ).hexdigest()
 
 
 def canonical_archive_blob_sha256(archive_path: Path, repository_path: str) -> str:
@@ -1811,9 +1816,7 @@ class StagingMigrationChainTests(unittest.TestCase):
                 )
 
         expected_hashes = {
-            path: hashlib.sha256(
-                (REPOSITORY_ROOT / path).read_bytes()
-            ).hexdigest()
+            path: canonical_git_blob_sha256("HEAD", path)
             for path in INQUIRY_PATHS
         }
         self.assertEqual(lock["inquiry_migration_sha256"], expected_hashes)
@@ -1826,7 +1829,7 @@ class StagingMigrationChainTests(unittest.TestCase):
             for path in sorted(MIGRATIONS_DIRECTORY.glob("*.sql"))
         )
         inquiry_sql_by_path = {
-            path: (REPOSITORY_ROOT / path).read_bytes()
+            path: canonical_git_blob_bytes("HEAD", path)
             for path in INQUIRY_PATHS
         }
 
@@ -1840,11 +1843,73 @@ class StagingMigrationChainTests(unittest.TestCase):
             lock["inquiry_migration_sha256"],
         )
 
+    def test_inquiry_lock_uses_canonical_git_blob_hashes(self) -> None:
+        """Reject checkout-dependent inquiry hashes in the chain lock."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        expected_hashes = {
+            path: canonical_git_blob_sha256("HEAD", path)
+            for path in INQUIRY_PATHS
+        }
+
+        self.assertEqual(
+            expected_hashes,
+            lock["inquiry_migration_sha256"],
+        )
+
+    def test_inquiry_identity_ignores_checkout_line_endings(self) -> None:
+        """Verify Git blob bytes even when a checkout would contain CRLF."""
+        canonical_blobs = {
+            path: subprocess.run(
+                ["git", "show", f"HEAD:{path}"],
+                cwd=REPOSITORY_ROOT,
+                check=True,
+                capture_output=True,
+            ).stdout
+            for path in INQUIRY_PATHS
+        }
+        crlf_checkout_blobs = {
+            path: blob.replace(b"\n", b"\r\n")
+            for path, blob in canonical_blobs.items()
+        }
+        self.assertNotEqual(
+            {
+                path: hashlib.sha256(blob).hexdigest()
+                for path, blob in canonical_blobs.items()
+            },
+            {
+                path: hashlib.sha256(blob).hexdigest()
+                for path, blob in crlf_checkout_blobs.items()
+            },
+        )
+
+        with mock.patch.object(
+            Path,
+            "read_bytes",
+            side_effect=AssertionError("checkout bytes must not be read"),
+        ):
+            self.assertEqual(
+                [],
+                inquiry_chain_contract_errors(
+                    FINAL_ACTIVE_PATHS,
+                    canonical_blobs,
+                ),
+            )
+
+    def test_inquiry_git_blobs_match_task_9_base(self) -> None:
+        """Reject any inquiry SQL blob change after the approved Task 9 base."""
+        task_9_base = "3baa4eb616e56c1e262c63fa9becfb5b5016c2e6"
+        for path in INQUIRY_PATHS:
+            with self.subTest(path=path):
+                self.assertEqual(
+                    canonical_git_blob_sha256(task_9_base, path),
+                    canonical_git_blob_sha256("HEAD", path),
+                )
+
     def test_inquiry_chain_guard_rejects_in_memory_mutations(self) -> None:
         """Prove rename, reorder, and content mutations cannot pass the guard."""
         canonical_paths = list(FINAL_ACTIVE_PATHS)
         canonical_sql = {
-            path: (REPOSITORY_ROOT / path).read_bytes()
+            path: canonical_git_blob_bytes("HEAD", path)
             for path in INQUIRY_PATHS
         }
         renamed_path = INQUIRY_PATHS[0].replace(

@@ -14,9 +14,9 @@
     "supabase/migrations/202608070004_finalize_inquiry_reply.sql"
   ],
   "inquiry_migration_sha256": {
-    "supabase/migrations/202608070001_inquiry_workflow_columns.sql": "60f690c9a8f16a1e6e956be7ca359f7cc663804ea9da3360b7ee56736dc9cd36",
-    "supabase/migrations/202608070002_inquiry_replies.sql": "ff07907eeffbba788f7f63d4289c51bde1dfab367bfaf331c7a3042b8b110664",
-    "supabase/migrations/202608070003_line_message_log_inquiry_reply.sql": "c00fc97b35a28bab30e7977d8e8c0f752e473534e9881027e9aa12f5b9466714",
-    "supabase/migrations/202608070004_finalize_inquiry_reply.sql": "d638c10210ab770d3bb76b7bf689583961aacbc9fd3233e8e5c98ccb619627e9"
+    "supabase/migrations/202608070001_inquiry_workflow_columns.sql": "30c760d9bc1a5fc7a061ba23475c08e6601ed30fd8d48bdec236fd9a88b4962b",
+    "supabase/migrations/202608070002_inquiry_replies.sql": "13d936b3598176f4675ac52eaae07950973741fb29c92d4e57782b670c495935",
+    "supabase/migrations/202608070003_line_message_log_inquiry_reply.sql": "25cbdc3bcb71d8a0c85095dd444edec824a67b3c0af8c39bd67c047c9e17d428",
+    "supabase/migrations/202608070004_finalize_inquiry_reply.sql": "8efd6dc9ab4ae4519b607f6ea75a3a8b555b546decd46f33d2dec7ebb0d304a9"
   }
 }
