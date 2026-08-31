@@ -86,7 +86,7 @@ APPLICATION_FUNCTIONS = (
     "public.set_updated_at()",
     (
         "public.complete_application_session("
-        "uuid, text, text, text, jsonb, text, jsonb, timestamptz, text)"
+        "uuid, text, text, text, text, text, text, text, text)"
     ),
 )
 LEGACY_ARCHIVE_DIRECTORY = (
@@ -940,6 +940,26 @@ def completion_privilege_security_sql(
         "GRANT EXECUTE ON FUNCTION "
         f"{grant_targets} TO service_role;\n"
     )
+
+
+def database_security_completion_inventory_errors(
+    baseline_migration: str,
+    database_security_test: str,
+) -> list[str]:
+    expected_signatures = [completion_function_argument_types(baseline_migration)]
+    inventory_pattern = re.compile(
+        r"'public\.complete_application_session\((?P<arguments>[^()]*)\)'"
+    )
+    actual_signatures = [
+        tuple(split_top_level_comma_items(match.group("arguments")))
+        for match in inventory_pattern.finditer(database_security_test.lower())
+    ]
+    if actual_signatures == expected_signatures:
+        return []
+    return [
+        "Task 8 complete_application_session() inventory must match the baseline "
+        "signature exactly"
+    ]
 
 
 def completion_table_reference_contract_errors(body: str) -> list[str]:
@@ -1807,6 +1827,22 @@ class StagingMigrationChainTests(unittest.TestCase):
         """Reject pgTAP coverage that omits a fail-closed runtime invariant."""
         sql = DATABASE_SECURITY_TEST_PATH.read_text(encoding="utf-8")
         errors = database_security_contract_errors(sql)
+        self.assertEqual([], errors, "\n".join(errors))
+
+    def test_database_security_completion_inventory_matches_baseline_signature(
+        self,
+    ) -> None:
+        """Reject a Task 8 function inventory that targets a stale RPC overload."""
+        baseline_migration = (REPOSITORY_ROOT / BASELINE_PATH).read_text(
+            encoding="utf-8"
+        )
+        database_security_test = DATABASE_SECURITY_TEST_PATH.read_text(
+            encoding="utf-8"
+        )
+        errors = database_security_completion_inventory_errors(
+            baseline_migration,
+            database_security_test,
+        )
         self.assertEqual([], errors, "\n".join(errors))
 
     def test_database_security_contract_requires_service_role_rls_capability(

@@ -31,7 +31,7 @@ INSERT INTO task8_application_functions (function_signature)
 VALUES
   ('public.set_updated_at()'),
   (
-    'public.complete_application_session(uuid, text, text, text, jsonb, text, jsonb, timestamptz, text)'
+    'public.complete_application_session(uuid, text, text, text, text, text, text, text, text)'
   );
 
 SELECT is(
