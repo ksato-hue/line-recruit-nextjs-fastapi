@@ -1955,6 +1955,19 @@ class StagingMigrationChainTests(unittest.TestCase):
                 ],
                 check=True,
             )
+            subprocess.run(
+                ["git", "config", "--local", "core.autocrlf", "true"],
+                cwd=clone_root,
+                check=True,
+            )
+            clone_autocrlf = subprocess.run(
+                ["git", "config", "--local", "--get", "core.autocrlf"],
+                cwd=clone_root,
+                check=False,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            self.assertEqual("true", clone_autocrlf)
             checkout_eol = subprocess.run(
                 ["git", "ls-files", "--eol", "--", *INQUIRY_PATHS],
                 cwd=clone_root,
