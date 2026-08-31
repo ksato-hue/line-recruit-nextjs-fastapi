@@ -53,10 +53,10 @@ REVOKE ALL PRIVILEGES ON FUNCTION
     text,
     text,
     text,
-    jsonb,
     text,
-    jsonb,
-    timestamptz,
+    text,
+    text,
+    text,
     text
   )
 FROM PUBLIC, anon, authenticated;
@@ -68,10 +68,10 @@ GRANT EXECUTE ON FUNCTION
     text,
     text,
     text,
-    jsonb,
     text,
-    jsonb,
-    timestamptz,
+    text,
+    text,
+    text,
     text
   )
 TO service_role;

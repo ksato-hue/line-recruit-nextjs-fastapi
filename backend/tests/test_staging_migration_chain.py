@@ -843,6 +843,105 @@ def completion_function_body(migration: str) -> str:
     return normalize_sql_fragment(function.group("body"))
 
 
+def completion_function_argument_types(migration: str) -> tuple[str, ...]:
+    normalized = re.sub(r"--[^\n]*|/\*.*?\*/", "", migration, flags=re.DOTALL)
+    function = re.search(
+        r"\bcreate\s+(?:or\s+replace\s+)?function\s+"
+        r"public\s*\.\s*complete_application_session\s*\("
+        r"(?P<arguments>.*?)\)\s*returns\s+jsonb\b",
+        normalized.lower(),
+        flags=re.DOTALL,
+    )
+    if function is None:
+        raise ValueError("complete_application_session() is absent")
+
+    argument_types = []
+    for argument in split_top_level_comma_items(function.group("arguments")):
+        declaration = normalize_sql_fragment(argument)
+        match = re.fullmatch(
+            r"[a-z_][\w$]*\s+(?P<argument_type>[a-z_][\w$]*)"
+            r"(?:\s+default\s+null)?",
+            declaration,
+        )
+        if match is None:
+            raise ValueError(
+                "complete_application_session() has an unsupported argument "
+                f"declaration: {argument}"
+            )
+        argument_types.append(match.group("argument_type"))
+    return tuple(argument_types)
+
+
+def completion_function_signature(argument_types: Sequence[str]) -> str:
+    return "public.complete_application_session(" + ", ".join(argument_types) + ")"
+
+
+def completion_privilege_argument_types(
+    migration: str,
+    statement_prefix: str,
+) -> list[tuple[str, ...]]:
+    statements = [
+        normalize_sql_fragment(statement)
+        for statement in split_top_level_sql_statements(
+            re.sub(r"--[^\n]*|/\*.*?\*/", "", migration, flags=re.DOTALL)
+        )
+    ]
+    target_pattern = re.compile(
+        r"public\.complete_application_session\((?P<arguments>[^()]*)\)"
+    )
+    argument_types = []
+    for statement in statements:
+        if not statement.startswith(statement_prefix):
+            continue
+        for target in target_pattern.finditer(statement):
+            argument_types.append(
+                tuple(split_top_level_comma_items(target.group("arguments")))
+            )
+    return argument_types
+
+
+def completion_privilege_signature_errors(
+    baseline_migration: str,
+    security_migration: str,
+) -> list[str]:
+    baseline_signature = completion_function_argument_types(baseline_migration)
+    expected_signatures = [baseline_signature]
+    checks = (
+        ("REVOKE", "revoke all privileges on function "),
+        ("GRANT", "grant execute on function "),
+    )
+    errors = []
+    for statement_name, statement_prefix in checks:
+        actual_signatures = completion_privilege_argument_types(
+            security_migration,
+            statement_prefix,
+        )
+        if actual_signatures != expected_signatures:
+            errors.append(
+                f"{statement_name} complete_application_session() signature "
+                "must match the baseline exactly"
+            )
+    return errors
+
+
+def completion_privilege_security_sql(
+    revoke_signatures: Sequence[Sequence[str]],
+    grant_signatures: Sequence[Sequence[str]],
+) -> str:
+    revoke_targets = ", ".join(
+        completion_function_signature(signature) for signature in revoke_signatures
+    )
+    grant_targets = ", ".join(
+        completion_function_signature(signature) for signature in grant_signatures
+    )
+    return (
+        "REVOKE ALL PRIVILEGES ON FUNCTION "
+        f"{revoke_targets} FROM PUBLIC, anon, authenticated;\n"
+        "GRANT EXECUTE ON FUNCTION "
+        f"{grant_targets} TO service_role;\n"
+    )
+
+
 def completion_table_reference_contract_errors(body: str) -> list[str]:
     body_without_string_literals = re.sub(r"'(?:''|[^'])*'", "''", body)
     references = re.findall(
@@ -1505,6 +1604,107 @@ class StagingMigrationChainTests(unittest.TestCase):
         self.assertEqual(9, len(first_arguments))
         self.assertEqual(first_arguments, replay_arguments)
 
+    def test_security_completion_privileges_match_baseline_signature(self) -> None:
+        """Reject privilege targets that drift from the baseline RPC overload."""
+        lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
+        baseline_migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        security_migration = (REPOSITORY_ROOT / lock["security_path"]).read_text(
+            encoding="utf-8"
+        )
+
+        self.assertEqual(
+            ("uuid", "text", "text", "text", "text", "text", "text", "text", "text"),
+            completion_function_argument_types(baseline_migration),
+        )
+        errors = completion_privilege_signature_errors(
+            baseline_migration,
+            security_migration,
+        )
+        self.assertEqual([], errors, "\n".join(errors))
+
+    def test_security_completion_privilege_checker_rejects_obsolete_signature(
+        self,
+    ) -> None:
+        """Reject the obsolete jsonb/timestamptz completion overload."""
+        baseline_migration = (REPOSITORY_ROOT / BASELINE_PATH).read_text(
+            encoding="utf-8"
+        )
+        obsolete_signature = (
+            "uuid",
+            "text",
+            "text",
+            "text",
+            "jsonb",
+            "text",
+            "jsonb",
+            "timestamptz",
+            "text",
+        )
+        errors = completion_privilege_signature_errors(
+            baseline_migration,
+            completion_privilege_security_sql(
+                [obsolete_signature],
+                [obsolete_signature],
+            ),
+        )
+        self.assertEqual(
+            [
+                "REVOKE complete_application_session() signature must match the baseline exactly",
+                "GRANT complete_application_session() signature must match the baseline exactly",
+            ],
+            errors,
+        )
+
+    def test_security_completion_privilege_checker_rejects_equal_count_type_drift(
+        self,
+    ) -> None:
+        """Reject any type mismatch even when the target keeps nine arguments."""
+        baseline_migration = (REPOSITORY_ROOT / BASELINE_PATH).read_text(
+            encoding="utf-8"
+        )
+        baseline_signature = completion_function_argument_types(baseline_migration)
+        drifted_signature = (*baseline_signature[:4], "uuid", *baseline_signature[5:])
+        errors = completion_privilege_signature_errors(
+            baseline_migration,
+            completion_privilege_security_sql(
+                [drifted_signature],
+                [drifted_signature],
+            ),
+        )
+        self.assertEqual(
+            [
+                "REVOKE complete_application_session() signature must match the baseline exactly",
+                "GRANT complete_application_session() signature must match the baseline exactly",
+            ],
+            errors,
+        )
+
+    def test_security_completion_privilege_checker_rejects_same_name_overload(
+        self,
+    ) -> None:
+        """Reject a privilege statement that also targets another same-name overload."""
+        baseline_migration = (REPOSITORY_ROOT / BASELINE_PATH).read_text(
+            encoding="utf-8"
+        )
+        baseline_signature = completion_function_argument_types(baseline_migration)
+        different_overload = (*baseline_signature[:-1], "uuid")
+        errors = completion_privilege_signature_errors(
+            baseline_migration,
+            completion_privilege_security_sql(
+                [baseline_signature, different_overload],
+                [baseline_signature, different_overload],
+            ),
+        )
+        self.assertEqual(
+            [
+                "REVOKE complete_application_session() signature must match the baseline exactly",
+                "GRANT complete_application_session() signature must match the baseline exactly",
+            ],
+            errors,
+        )
+
     def test_fail_closed_security_migration_is_exact(self) -> None:
         """Reject missing RLS or any privilege broadening beyond the allowlist."""
         lock = json.loads(LOCK_PATH.read_text(encoding="utf-8"))
@@ -1529,7 +1729,17 @@ class StagingMigrationChainTests(unittest.TestCase):
         qualified_tables = ", ".join(
             f"public.{table_name}" for table_name in BASE_TABLES
         )
-        functions = ", ".join(APPLICATION_FUNCTIONS)
+        baseline_migration = (REPOSITORY_ROOT / lock["baseline_path"]).read_text(
+            encoding="utf-8"
+        )
+        functions = ", ".join(
+            (
+                "public.set_updated_at()",
+                completion_function_signature(
+                    completion_function_argument_types(baseline_migration)
+                ),
+            )
+        )
         client_roles = "public, anon, authenticated"
         expected_statements = [
             "begin;",
