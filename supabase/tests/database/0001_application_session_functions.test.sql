@@ -58,12 +58,6 @@ VALUES
     pg_catalog.current_setting('task7.company_a'),
     pg_catalog.current_setting('task7.user_a'),
     'cancelled'
-  ),
-  (
-    pg_catalog.current_setting('task7.session_stale')::uuid,
-    pg_catalog.current_setting('task7.company_a'),
-    pg_catalog.current_setting('task7.user_a'),
-    'active'
   );
 
 INSERT INTO task7_rpc_results (scenario, result)
@@ -197,6 +191,14 @@ SELECT throws_ok(
   'P0001',
   'application session not found',
   'cross-user completion is rejected'
+);
+
+INSERT INTO public.application_sessions (id, company_id, line_user_id, status)
+VALUES (
+  pg_catalog.current_setting('task7.session_stale')::uuid,
+  pg_catalog.current_setting('task7.company_a'),
+  pg_catalog.current_setting('task7.user_a'),
+  'active'
 );
 
 INSERT INTO public.applicants (

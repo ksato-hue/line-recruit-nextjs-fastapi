@@ -1783,6 +1783,10 @@ class StagingMigrationChainTests(unittest.TestCase):
             ),
             f"grant execute on function {functions} to service_role;",
             (
+                "alter default privileges revoke all privileges on functions "
+                f"from {client_roles};"
+            ),
+            (
                 "alter default privileges in schema public revoke all privileges "
                 f"on tables from {client_roles};"
             ),
