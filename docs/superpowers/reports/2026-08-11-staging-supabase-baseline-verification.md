@@ -273,3 +273,25 @@ No database URLs, credentials, tokens, row data, or production tenant/customer v
 - RLS remains enabled without FORCE RLS or policies, and no broad browser grants were added.
 
 No database URLs, credentials, tokens, row data, production or staging values, or remote-access evidence are recorded here.
+
+## Task 13 application regression evidence (2026-09-28)
+
+Task 13A reconciled stale Backend test expectations with the Task 11 machine-readable fixture and Task 12 security test contract. The regression tests now validate the current fixture shape and all 18 security assertions, including the approved business table/function inventories and actual role controls. No application/runtime code or database contract was changed.
+
+### Backend and Python
+
+- Focused command: `python -m unittest tests.test_application_session_rpc_contract tests.test_inquiry_migrations tests.test_inquiry_response_api tests.test_inquiry_response_delivery tests.test_inquiry_response_policy tests.test_inquiry_rollout_docs -v`
+- Focused Backend: 116 tests, PASS. RPC JSON contract, company/user scope, idempotency, inquiry migration/API/delivery policy, `delivery_unknown`, and rollout documentation checks passed.
+- `python -m pip check`: PASS (`No broken requirements found`).
+- `python -m compileall backend`: PASS.
+- Full Backend: 471 tests; skipped 1; failures 0; errors 0.
+
+### Frontend and schema contract
+
+- `npm ci`: PASS; 30 packages installed. npm reported 3 audit findings (2 high, 1 critical).
+- `npm run typecheck`: PASS.
+- `npm run build`: PASS; Next.js production build completed.
+- `python scripts/render_schema_contract_test.py --check`: PASS.
+- `git diff --check`: PASS.
+
+No database URLs, credentials, tokens, row data, or production tenant/customer values are recorded in this evidence. No production, staging, MCP, or LINE connection was used for these regression checks.
