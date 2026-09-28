@@ -89,6 +89,11 @@ APPLICATION_FUNCTIONS = (
         "uuid, text, text, text, text, text, text, text, text)"
     ),
 )
+TASK12_BUSINESS_TABLES = tuple(sorted((*BASE_TABLES, "inquiry_replies")))
+TASK12_APPLICATION_FUNCTIONS = (
+    *APPLICATION_FUNCTIONS,
+    "public.finalize_inquiry_reply(text, uuid, uuid)",
+)
 LEGACY_ARCHIVE_DIRECTORY = (
     REPOSITORY_ROOT / "supabase" / "legacy_migrations" / "2026-07-pre-baseline"
 )
@@ -446,7 +451,7 @@ def expected_database_security_assertion_signatures(
                 IS NOT NULL
             )
             """,
-            "2::bigint",
+            "3::bigint",
         ),
         (
             "is",
@@ -462,7 +467,7 @@ def expected_database_security_assertion_signatures(
                 AND relation.relrowsecurity
             )
             """,
-            "12::bigint",
+            "13::bigint",
         ),
         (
             "is",
@@ -527,9 +532,26 @@ def expected_database_security_assertion_signatures(
               CROSS JOIN (
                 VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')
               ) AS table_privilege(privilege_name)
-              WHERE NOT pg_catalog.has_table_privilege(
+              WHERE expected.table_name <> 'inquiry_replies'
+                AND NOT pg_catalog.has_table_privilege(
                 'service_role',
                 pg_catalog.format('public.%I', expected.table_name),
+                table_privilege.privilege_name
+              )
+            )
+            """,
+            "0::bigint",
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
+              FROM (VALUES ('SELECT'), ('INSERT'), ('UPDATE'))
+                AS table_privilege(privilege_name)
+              WHERE NOT pg_catalog.has_table_privilege(
+                'service_role',
+                'public.inquiry_replies',
                 table_privilege.privilege_name
               )
             )
@@ -640,6 +662,22 @@ def expected_database_security_assertion_signatures(
             """
             (
               SELECT pg_catalog.count(*)
+              FROM task12_browser_select_results
+              WHERE denied
+            )
+            """,
+            "26::bigint",
+        ),
+        (
+            "ok",
+            "true",
+            None,
+        ),
+        (
+            "is",
+            """
+            (
+              SELECT pg_catalog.count(*)
               FROM (
                 VALUES ('anon'), ('authenticated')
               ) AS client_role(role_name)
@@ -710,19 +748,19 @@ def database_security_contract_errors(sql: str) -> list[str]:
         errors.append("pgTAP contract must begin a transaction")
     if not statements or statements[-1] != "rollback;":
         errors.append("pgTAP contract must end with rollback")
-    if statements.count("select plan(15);") != 1:
-        errors.append("pgTAP contract must plan exactly 15 assertions")
+    if statements.count("select plan(18);") != 1:
+        errors.append("pgTAP contract must plan exactly 18 assertions")
     if statements.count("select * from finish();") != 1:
         errors.append("pgTAP contract must finish exactly once")
 
     expected_table_inventory = normalize_sql_fragment(
         "INSERT INTO task8_base_tables (table_name) VALUES "
-        + ", ".join(f"('{table_name}')" for table_name in BASE_TABLES)
+        + ", ".join(f"('{table_name}')" for table_name in TASK12_BUSINESS_TABLES)
         + ";"
     )
     expected_function_inventory = normalize_sql_fragment(
         "INSERT INTO task8_application_functions (function_signature) VALUES "
-        + ", ".join(f"('{function}')" for function in APPLICATION_FUNCTIONS)
+        + ", ".join(f"('{function}')" for function in TASK12_APPLICATION_FUNCTIONS)
         + ";"
     )
     required_statements = (
@@ -736,6 +774,12 @@ def database_security_contract_errors(sql: str) -> list[str]:
             "(function_signature text PRIMARY KEY) ON COMMIT DROP;"
         ),
         expected_function_inventory,
+        normalize_sql_fragment(
+            "CREATE TEMPORARY TABLE task12_browser_select_results "
+            "(role_name text NOT NULL, table_name text NOT NULL, "
+            "denied boolean NOT NULL) ON COMMIT DROP;"
+        ),
+        "grant insert on task12_browser_select_results to anon, authenticated;",
         normalize_sql_fragment(
             "CREATE TABLE public.task8_default_privilege_table "
             "(id integer PRIMARY KEY);"
@@ -753,6 +797,46 @@ def database_security_contract_errors(sql: str) -> list[str]:
                 "missing or altered structural statement: " + required_statement
             )
 
+    browser_probes = [
+        statement for statement in statements if statement.startswith("do $$")
+    ]
+    browser_probe_tokens = (
+        "execute pg_catalog.format('set local role %i', browser_role)",
+        "execute pg_catalog.format('select 1 from public.%i limit 1', business_table)",
+        "exception when insufficient_privilege then",
+        "insert into task12_browser_select_results values",
+        "execute 'reset role'",
+    )
+    if len(browser_probes) != 1 or not all(
+        token in browser_probes[0] for token in browser_probe_tokens
+    ):
+        errors.append("browser-role SELECT denial must execute under each role")
+
+    service_operations = (
+        "set local role service_role;",
+        "insert into public.app_settings (company_id, key, value)",
+        "update public.app_settings ",
+        "delete from public.app_settings ",
+        "reset role;",
+    )
+    service_positions = [
+        next(
+            (
+                index
+                for index, statement in enumerate(statements)
+                if statement.startswith(operation)
+            ),
+            None,
+        )
+        for operation in service_operations
+    ]
+    if any(position is None for position in service_positions) or (
+        service_positions != sorted(service_positions)
+    ):
+        errors.append(
+            "service_role must execute synthetic INSERT, UPDATE, DELETE in order"
+        )
+
     assertion_signatures = [
         signature
         for statement in statements
@@ -760,7 +844,7 @@ def database_security_contract_errors(sql: str) -> list[str]:
     ]
     if assertion_signatures != expected_database_security_assertion_signatures():
         errors.append(
-            "pgTAP assertion structures must match the exact 15-case security matrix"
+            "pgTAP assertion structures must match the exact 18-case security matrix"
         )
     return errors
 
@@ -1166,11 +1250,11 @@ def completion_update_contract_errors(body: str) -> list[str]:
 
 
 def expected_column_definition(name: str, contract: dict[str, object]) -> str:
-    definition = f"{name} {contract['type']}"
+    definition = f"{name} {contract['normalized_type']}"
     if not contract["nullable"]:
         definition += " NOT NULL"
-    if contract["default"] is not None:
-        definition += f" DEFAULT {contract['default']}"
+    if contract["normalized_default"] is not None:
+        definition += f" DEFAULT {contract['normalized_default']}"
     return normalize_sql_fragment(definition)
 
 
@@ -1193,36 +1277,53 @@ class StagingMigrationChainTests(unittest.TestCase):
                 flags=re.DOTALL,
             )
         }
-        self.assertEqual(set(table_bodies), set(contract["tables"]))
+        fixture_tables = {item["name"] for item in contract["tables"]}
+        self.assertEqual(set(table_bodies), fixture_tables)
+
+        fixture_columns = {}
+        for column in contract["columns"]:
+            fixture_columns.setdefault(column["table"], {})[column["name"]] = column
+        fixture_constraints = {}
+        for constraint in contract["constraints"]:
+            fixture_constraints.setdefault(constraint["table"], {})[
+                constraint["name"]
+            ] = constraint
 
         actual_table_items = {}
         all_constraint_definitions = {}
-        for table_name, table_contract in contract["tables"].items():
+        for table_name in fixture_tables:
             actual_items = [
                 normalize_sql_fragment(item)
                 for item in split_top_level_comma_items(table_bodies[table_name])
             ]
-            expected_items = [
+            expected_items = {
                 expected_column_definition(column_name, column_contract)
-                for column_name, column_contract in table_contract["columns"].items()
-            ]
-            for constraint_name, definition in table_contract["constraints"].items():
+                for column_name, column_contract in fixture_columns[table_name].items()
+            }
+            for constraint_name, constraint in fixture_constraints.get(
+                table_name, {}
+            ).items():
                 normalized_definition = normalize_sql_fragment(
-                    f"CONSTRAINT {constraint_name} {definition}"
+                    f"CONSTRAINT {constraint_name} {constraint['normalized_definition']}"
                 )
-                expected_items.append(normalized_definition)
+                expected_items.add(normalized_definition)
                 all_constraint_definitions[constraint_name] = normalized_definition
+            self.assertEqual(len(actual_items), len(expected_items))
             self.assertEqual(
-                actual_items,
+                set(actual_items),
                 expected_items,
                 f"unexpected structural definition for public.{table_name}",
             )
             actual_table_items[table_name] = actual_items
 
         self.assertEqual(len(contract["tables"]), 12)
+        self.assertEqual(len(contract["columns"]), 98)
         self.assertEqual(len(all_constraint_definitions), 19)
 
-        legacy_company_columns = contract["legacy_nullable_company_id_columns"]
+        legacy_company_columns = [
+            item["object_key"].removeprefix("public.")
+            for item in contract["removed_tenant_defaults"]
+        ]
         self.assertEqual(len(legacy_company_columns), 6)
         for qualified_column in legacy_company_columns:
             table_name, column_name = qualified_column.split(".")
@@ -1230,7 +1331,12 @@ class StagingMigrationChainTests(unittest.TestCase):
                 self.assertEqual(column_name, "company_id")
                 self.assertIn("company_id text", actual_table_items[table_name])
 
-        for qualified_column in contract["required_company_id_columns"]:
+        required_company_columns = [
+            f"{column['table']}.{column['name']}"
+            for column in contract["columns"]
+            if column["name"] == "company_id" and not column["nullable"]
+        ]
+        for qualified_column in required_company_columns:
             table_name, column_name = qualified_column.split(".")
             with self.subTest(required_company_id=qualified_column):
                 self.assertEqual(column_name, "company_id")
@@ -1276,13 +1382,18 @@ class StagingMigrationChainTests(unittest.TestCase):
             )
 
         expected_explicit_indexes = {
-            name: normalize_sql_fragment(definition)
-            for name, definition in contract["indexes"]["explicit"].items()
+            index["name"]: normalize_sql_fragment(index["normalized_definition"])
+            for index in contract["indexes"]
+            if index["normalized_definition"].lower().startswith("create ")
         }
         self.assertEqual(explicit_indexes, expected_explicit_indexes)
         self.assertEqual(len(explicit_indexes), 28)
 
-        constraint_backed_indexes = contract["indexes"]["constraint_backed"]
+        constraint_backed_indexes = [
+            index["name"]
+            for index in contract["indexes"]
+            if not index["normalized_definition"].lower().startswith("create ")
+        ]
         self.assertEqual(len(constraint_backed_indexes), 15)
         for index_name in constraint_backed_indexes:
             with self.subTest(constraint_backed_index=index_name):
@@ -1297,43 +1408,23 @@ class StagingMigrationChainTests(unittest.TestCase):
         )
 
         expected_triggers = {
-            name: normalize_sql_fragment(definition)
-            for name, definition in contract["triggers"].items()
+            trigger["name"]: normalize_sql_fragment(trigger["normalized_definition"])
+            for trigger in contract["triggers"]
         }
         self.assertEqual(triggers, expected_triggers)
         self.assertEqual(len(triggers), 7)
 
         self.assertEqual(
-            contract["task_7_completion_rpc_body"],
-            "separately tested in Task 7",
+            {item["signature"] for item in contract["functions"]},
+            set(APPLICATION_FUNCTIONS),
         )
-        self.assertEqual(
-            contract["function_signatures"],
-            [
-                {
-                    "name": "set_updated_at",
-                    "argument_types": [],
-                    "returns": "trigger",
-                    "required_in_task_6": True,
-                },
-                {
-                    "name": "complete_application_session",
-                    "argument_types": [
-                        "uuid",
-                        "text",
-                        "text",
-                        "text",
-                        "text",
-                        "text",
-                        "text",
-                        "text",
-                        "text",
-                    ],
-                    "returns": "jsonb",
-                    "required_in_task_6": False,
-                },
-            ],
-        )
+        for function in contract["functions"]:
+            self.assertEqual(
+                function["signature"],
+                f"public.{function['name']}("
+                + ", ".join(function["identity_arguments"])
+                + ")",
+            )
 
     def test_baseline_timestamp_function_is_secure_and_has_no_business_dml(self) -> None:
         """Reject a baseline that can expose or alter more than timestamp updates."""
@@ -1356,7 +1447,10 @@ class StagingMigrationChainTests(unittest.TestCase):
         expected_statement_count = (
             5
             + len(contract["tables"])
-            + len(contract["indexes"]["explicit"])
+            + sum(
+                index["normalized_definition"].lower().startswith("create ")
+                for index in contract["indexes"]
+            )
             + len(contract["triggers"])
         )
         self.assertEqual(len(statements), expected_statement_count)
@@ -1424,7 +1518,10 @@ class StagingMigrationChainTests(unittest.TestCase):
                 )
                 for statement in create_statements
             ),
-            len(contract["indexes"]["explicit"]),
+            sum(
+                index["normalized_definition"].lower().startswith("create ")
+                for index in contract["indexes"]
+            ),
         )
         self.assertEqual(
             sum(
@@ -1833,6 +1930,21 @@ class StagingMigrationChainTests(unittest.TestCase):
         errors = database_security_contract_errors(sql)
         self.assertEqual([], errors, "\n".join(errors))
 
+    def test_database_security_contract_requires_executed_role_controls(self) -> None:
+        """Reject catalog-only checks that omit actual browser and backend roles."""
+        sql = DATABASE_SECURITY_TEST_PATH.read_text(encoding="utf-8")
+        for required_sql in (
+            "EXECUTE pg_catalog.format('SET LOCAL ROLE %I', browser_role);",
+            "SET LOCAL ROLE service_role;",
+            "INSERT INTO public.app_settings (company_id, key, value)",
+            "UPDATE public.app_settings",
+            "DELETE FROM public.app_settings",
+        ):
+            with self.subTest(required_sql=required_sql):
+                self.assertIn(required_sql, sql)
+                mutated = sql.replace(required_sql, "", 1)
+                self.assertTrue(database_security_contract_errors(mutated))
+
     def test_database_security_completion_inventory_matches_baseline_signature(
         self,
     ) -> None:
@@ -1877,7 +1989,7 @@ class StagingMigrationChainTests(unittest.TestCase):
             "pgTAP must prove service_role can bypass RLS or owns every base table",
         )
 
-    def test_database_security_contract_requires_both_functions_to_exist(
+    def test_database_security_contract_requires_all_functions_to_exist(
         self,
     ) -> None:
         """Reject privilege assertions that can discard unresolved signatures."""
@@ -1895,18 +2007,18 @@ class StagingMigrationChainTests(unittest.TestCase):
                         "task8_application_functions",
                         "pg_catalog.to_regprocedure",
                         "is not null",
-                        "2::bigint",
+                        "3::bigint",
                     )
                 )
                 for statement in statements
             ),
-            "pgTAP must fail unless both exact application signatures resolve",
+            "pgTAP must fail unless all three exact application signatures resolve",
         )
 
     def test_database_security_contract_rejects_inert_assertion_tokens(
         self,
     ) -> None:
-        """Reject real query text hidden in 15 unconditional assertion labels."""
+        """Reject real query text hidden in 18 unconditional assertion labels."""
         sql = DATABASE_SECURITY_TEST_PATH.read_text(encoding="utf-8")
         inert_statements = []
         replaced_assertions = 0
@@ -1919,7 +2031,7 @@ class StagingMigrationChainTests(unittest.TestCase):
             inert_statements.append(
                 "SELECT ok(true, $inert$" + statement + "$inert$);"
             )
-        self.assertEqual(15, replaced_assertions)
+        self.assertEqual(18, replaced_assertions)
         inert_sql = "\n".join(inert_statements)
         with mock.patch.object(Path, "read_text", return_value=inert_sql):
             with self.assertRaises(AssertionError):
