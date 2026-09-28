@@ -243,3 +243,33 @@ The final local catalog has zero unexplained differences for:
 The approved intentional differences above remain named separately and are not treated as unexplained drift.
 
 No database URLs, credentials, tokens, row data, or production tenant/customer values are recorded in this evidence.
+
+## Task 12 fail-closed access evidence (2026-09-28)
+
+### TDD RED and minimum test correction
+
+- The first RED run preserved existing `0001`, `0003`, and `0004` success but exposed one real contract issue: `inquiry_replies` is created after the security migration and intentionally grants `service_role` SELECT/INSERT/UPDATE, not DELETE. Treating it as one of the twelve baseline tables requiring full CRUD produced one false positive failure.
+- The negative execution probe initially also attempted to write its result table while running as a browser role. The probe was corrected by granting INSERT only on that synthetic temporary result table; no business-table privilege was granted.
+- The minimum test-only correction excludes `inquiry_replies` from the twelve baseline full-CRUD assertion and adds a separate positive assertion for its required SELECT/INSERT/UPDATE privileges. No migration SQL was changed.
+
+### Local verification
+
+- Pristine local reset replayed the exact six migrations in order:
+  `202608060001`, `202608060002`, `202608070001`, `202608070002`, `202608070003`, `202608070004`.
+- pgTAP: 5 files, 69 tests, 0 failures.
+- `0001_application_session_functions.test.sql`: PASS.
+- `0002_fail_closed_security.test.sql`: PASS, including browser-role execution denial and service-role positive controls.
+- `0003_baseline_structure.test.sql`: PASS.
+- `0004_schema_equivalence.test.sql`: PASS.
+- `0005_default_privileges.test.sql`: PASS.
+- Local DB lint at error level: PASS.
+
+### Security results
+
+- `anon` and `authenticated` have no SELECT/INSERT/UPDATE/DELETE privilege on the twelve baseline business tables or `public.inquiry_replies`; actual SELECT attempts are denied.
+- `anon` and `authenticated` have no EXECUTE privilege on `set_updated_at()`, `complete_application_session(...)`, or `finalize_inquiry_reply(...)`.
+- `service_role` retains public schema USAGE, required CRUD on the twelve baseline tables, required SELECT/INSERT/UPDATE on `inquiry_replies`, and EXECUTE on all three application functions.
+- Synthetic migration-owner table, sequence, and function receive no automatic browser-role privileges; all checks run inside a transaction and roll back.
+- RLS remains enabled without FORCE RLS or policies, and no broad browser grants were added.
+
+No database URLs, credentials, tokens, row data, production or staging values, or remote-access evidence are recorded here.

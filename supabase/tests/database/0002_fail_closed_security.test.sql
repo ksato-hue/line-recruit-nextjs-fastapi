@@ -2,7 +2,7 @@ BEGIN;
 
 CREATE EXTENSION IF NOT EXISTS pgtap WITH SCHEMA extensions;
 
-SELECT plan(15);
+SELECT plan(18);
 
 CREATE TEMPORARY TABLE task8_base_tables (
   table_name text PRIMARY KEY
@@ -19,6 +19,7 @@ VALUES
   ('faq_settings'),
   ('faqs'),
   ('inquiries'),
+  ('inquiry_replies'),
   ('interview_slots'),
   ('line_message_logs'),
   ('question_tree_settings');
@@ -32,6 +33,9 @@ VALUES
   ('public.set_updated_at()'),
   (
     'public.complete_application_session(uuid, text, text, text, text, text, text, text, text)'
+  ),
+  (
+    'public.finalize_inquiry_reply(text, uuid, uuid)'
   );
 
 SELECT is(
@@ -40,8 +44,8 @@ SELECT is(
     FROM task8_application_functions AS expected
     WHERE pg_catalog.to_regprocedure(expected.function_signature) IS NOT NULL
   ),
-  2::bigint,
-  'both exact application function signatures resolve'
+  3::bigint,
+  'all exact application function signatures resolve'
 );
 
 SELECT is(
@@ -55,8 +59,8 @@ SELECT is(
     WHERE namespace.nspname = 'public'
       AND relation.relrowsecurity
   ),
-  12::bigint,
-  'all 12 base tables have row-level security enabled'
+  13::bigint,
+  'all business tables have row-level security enabled'
 );
 
 SELECT is(
@@ -117,7 +121,8 @@ SELECT is(
     CROSS JOIN (
       VALUES ('SELECT'), ('INSERT'), ('UPDATE'), ('DELETE')
     ) AS table_privilege(privilege_name)
-    WHERE NOT pg_catalog.has_table_privilege(
+    WHERE expected.table_name <> 'inquiry_replies'
+      AND NOT pg_catalog.has_table_privilege(
       'service_role',
       pg_catalog.format('public.%I', expected.table_name),
       table_privilege.privilege_name
@@ -125,6 +130,20 @@ SELECT is(
   ),
   0::bigint,
   'service_role has required CRUD and SELECT access on every base table'
+);
+
+SELECT is(
+  (
+    SELECT pg_catalog.count(*)
+    FROM (VALUES ('SELECT'), ('INSERT'), ('UPDATE')) AS table_privilege(privilege_name)
+    WHERE NOT pg_catalog.has_table_privilege(
+      'service_role',
+      'public.inquiry_replies',
+      table_privilege.privilege_name
+    )
+  ),
+  0::bigint,
+  'service_role has the required inquiry reply read/write access'
 );
 
 SELECT ok(
@@ -181,7 +200,7 @@ SELECT is(
     )
   ),
   0::bigint,
-  'anon and authenticated cannot execute either application function'
+  'anon and authenticated cannot execute any application function'
 );
 
 SELECT is(
@@ -195,7 +214,7 @@ SELECT is(
     )
   ),
   0::bigint,
-  'service_role can execute both application functions'
+  'service_role can execute all application functions'
 );
 
 SELECT is(
@@ -217,6 +236,59 @@ SELECT is(
 SELECT ok(
   pg_catalog.has_schema_privilege('service_role', 'public', 'USAGE'),
   'service_role retains public schema usage'
+);
+
+CREATE TEMPORARY TABLE task12_browser_select_results (
+  role_name text NOT NULL,
+  table_name text NOT NULL,
+  denied boolean NOT NULL
+) ON COMMIT DROP;
+
+GRANT INSERT ON task12_browser_select_results TO anon, authenticated;
+
+DO $$
+DECLARE
+  browser_role text;
+  business_table text;
+BEGIN
+  FOR browser_role IN SELECT role_name FROM (VALUES ('anon'), ('authenticated')) AS roles(role_name) LOOP
+    FOR business_table IN SELECT table_name FROM task8_base_tables LOOP
+      EXECUTE pg_catalog.format('SET LOCAL ROLE %I', browser_role);
+      BEGIN
+        EXECUTE pg_catalog.format('SELECT 1 FROM public.%I LIMIT 1', business_table);
+        INSERT INTO task12_browser_select_results VALUES (browser_role, business_table, false);
+      EXCEPTION WHEN insufficient_privilege THEN
+        INSERT INTO task12_browser_select_results VALUES (browser_role, business_table, true);
+      END;
+      EXECUTE 'RESET ROLE';
+    END LOOP;
+  END LOOP;
+END;
+$$;
+
+SELECT is(
+  (
+    SELECT pg_catalog.count(*)
+    FROM task12_browser_select_results
+    WHERE denied
+  ),
+  26::bigint,
+  'anon and authenticated are denied actual SELECT execution on every business table'
+);
+
+SET LOCAL ROLE service_role;
+INSERT INTO public.app_settings (company_id, key, value)
+VALUES ('task12-synthetic', 'task12', '{}'::jsonb);
+UPDATE public.app_settings
+SET value = '{"verified":true}'::jsonb
+WHERE company_id = 'task12-synthetic' AND key = 'task12';
+DELETE FROM public.app_settings
+WHERE company_id = 'task12-synthetic' AND key = 'task12';
+RESET ROLE;
+
+SELECT ok(
+  true,
+  'service_role can execute a synthetic table INSERT UPDATE DELETE sequence'
 );
 
 CREATE TABLE public.task8_default_privilege_table (
