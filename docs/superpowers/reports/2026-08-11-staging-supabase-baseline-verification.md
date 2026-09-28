@@ -181,3 +181,65 @@ Read-only host checks (no installer download, GUI, elevation, reboot, license ac
 Human review approved the non-final ordering values `202608060001_public_schema_current_state_baseline.sql` and `202608060002_fail_closed_security_privileges.sql`, ahead of `202608070001`. The exact tracked local CLI `2.113.0` listed the required ten-version order in an isolated temporary project with Vector excluded. The approved lock records the two paths, server role `service_role`, six final active paths in order, and SHA-256 checksums for all four active inquiry migrations.
 
 This gate deliberately does not create the two approved migration SQL files; they remain future work. No production or staging database/MCP access, migration application, legacy move, or Task 3 work occurred.
+
+## Task 11 schema equivalence evidence (2026-09-28)
+
+### Fixture inventory
+
+- Tables: 12
+- Columns: 98
+- Constraints: 19
+- Indexes: 43
+- Triggers: 7
+- Functions: 2
+
+### Intentional differences
+
+- Six removed tenant defaults are intentionally absent from the local baseline.
+- `public.inquiries.company_id`: production baseline nullable; final inquiry workflow chain NOT NULL.
+- `public.inquiries.status`: production baseline nullable; final inquiry workflow chain NOT NULL.
+- `public.complete_application_session(...)` uses the approved hardened function contract.
+- Fail-closed ACL/RLS differences are intentional and separately verified by the security test.
+
+### TDD evidence
+
+- Initial fixture contract was RED before the machine-readable fixture was completed.
+- Fixture GREEN: 4 tests passed.
+- Initial renderer `--check` was RED before canonical rendering was implemented.
+- Final renderer `--check`: PASS.
+- Deterministic generation: PASS; two consecutive renders were byte-identical.
+
+### Local verification
+
+- Pristine six-migration replay: PASS.
+- Exact migration order:
+  - `202608060001`
+  - `202608060002`
+  - `202608070001`
+  - `202608070002`
+  - `202608070003`
+  - `202608070004`
+- pgTAP: 4 files, 63 tests, 0 failures.
+- `0001_application_session_functions.test.sql`: PASS.
+- `0002_fail_closed_security.test.sql`: PASS.
+- `0003_baseline_structure.test.sql`: PASS.
+- `0004_schema_equivalence.test.sql`: PASS.
+- Local DB lint at error level: PASS.
+
+### Structural equivalence
+
+The final local catalog has zero unexplained differences for:
+
+- tables
+- columns
+- column types
+- nullability
+- defaults
+- constraints
+- indexes
+- triggers
+- function signatures and definitions
+
+The approved intentional differences above remain named separately and are not treated as unexplained drift.
+
+No database URLs, credentials, tokens, row data, or production tenant/customer values are recorded in this evidence.
